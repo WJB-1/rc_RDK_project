@@ -12,8 +12,12 @@ perception/action_interface.py - 导航大脑 -> 底盘电控 动作下发接口
 import time
 from typing import Dict, Optional, Callable
 
-from robocup_rescue_brain.navigation.state_machine import AgentStateMachine, AgentState
-from robocup_rescue_brain.navigation.map_config import ACTION_TYPES
+try:
+    from ..navigation.state_machine import AgentStateMachine, AgentState
+    from ..navigation.map_config import ACTION_TYPES
+except ImportError:
+    from navigation.state_machine import AgentStateMachine, AgentState
+    from navigation.map_config import ACTION_TYPES
 
 
 class ActionInterface:

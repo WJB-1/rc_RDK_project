@@ -14,10 +14,16 @@ perception/perception_adapter.py - 感知适配层 (Perception Adapter)
 import time
 from typing import Optional, Dict
 
-from robocup_rescue_brain.navigation.state_machine import AgentStateMachine
-from robocup_rescue_brain.navigation.contracts import (
-    OdomUpdate, RfidEvent, CrossroadEvent,
-)
+try:
+    from ..navigation.state_machine import AgentStateMachine
+    from ..navigation.contracts import (
+        OdomUpdate, RfidEvent, CrossroadEvent,
+    )
+except ImportError:
+    from navigation.state_machine import AgentStateMachine
+    from navigation.contracts import (
+        OdomUpdate, RfidEvent, CrossroadEvent,
+    )
 
 
 class PerceptionAdapter:

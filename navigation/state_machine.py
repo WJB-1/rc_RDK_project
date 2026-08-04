@@ -30,7 +30,10 @@ from .map_oracle import MapOracle
 from .map_config import NODE_COORDS
 from .path_planner import PathPlanner
 from .edge_executor import EdgeExecutor
-from robocup_rescue_brain import config as _cfg
+try:
+    from .. import config as _cfg
+except ImportError:
+    import config as _cfg
 
 
 class AgentStateMachine:
