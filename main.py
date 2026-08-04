@@ -245,10 +245,13 @@ class RescueBrain:
             self.logger.info(f"模式: {'手动' if self._manual_mode else '自动'}")
             return
 
+        from communication import ActionCode, encode_action
+
         if self.bridge is None:
             self.logger.warning("STM32 桥接层未初始化，无法发送指令")
             return
 
+        # --- 持续运动 (按下走，松开发 stop) ---
         if cmd == 'forward':
             vx = payload.get('vx', 300)
             self.logger.info(f"[手动控制] 前进 vx={vx}")
@@ -258,27 +261,36 @@ class RescueBrain:
             self.logger.info(f"[手动控制] 后退 vx={vx}")
             self.bridge.send_velocity(-vx, 0)
         elif cmd == 'left':
-            wz = payload.get('wz', 100)
-            self.logger.info(f"[手动控制] 左转 wz={wz}")
-            self.bridge.send_velocity(0, wz)
+            # 原地左转: 先急停再发 CMD_TURN_IMU +90
+            angle = payload.get('angle', 90)
+            self.logger.info(f"[手动控制] 原地左转 angle={angle}")
+            self.bridge._serial_send(encode_action(ActionCode.STOP))
+            self.bridge.send_turn_imu(angle)
         elif cmd == 'right':
-            wz = payload.get('wz', 100)
-            self.logger.info(f"[手动控制] 右转 wz={wz}")
-            self.bridge.send_velocity(0, -wz)
+            # 原地右转: 先急停再发 CMD_TURN_IMU -90
+            angle = payload.get('angle', 90)
+            self.logger.info(f"[手动控制] 原地右转 angle={angle}")
+            self.bridge._serial_send(encode_action(ActionCode.STOP))
+            self.bridge.send_turn_imu(-angle)
+
+        # --- 离散指令 (点击即执行) ---
         elif cmd == 'stop':
-            from communication import ActionCode, encode_action
             self.logger.info("[手动控制] 发送急停指令")
             self.bridge._serial_send(encode_action(ActionCode.STOP))
         elif cmd == 'reset_odom':
-            from communication import ActionCode, encode_action
             self.logger.info("[手动控制] 发送里程清零指令")
             self.bridge._serial_send(encode_action(ActionCode.RESET_ODOM))
-        elif cmd == 'turn_left_90':
-            self.logger.info("[手动控制] 发送左转90度指令")
-            self.bridge.send_intersection_turn("left")
-        elif cmd == 'turn_right_90':
-            self.logger.info("[手动控制] 发送右转90度指令")
-            self.bridge.send_intersection_turn("right")
+        elif cmd == 'turn_imu':
+            # 原地 IMU 转向 (CMD_TURN_IMU 0x03)
+            angle = payload.get('angle', 90)
+            self.logger.info(f"[手动控制] 原地转向 angle={angle}")
+            self.bridge._serial_send(encode_action(ActionCode.STOP))
+            self.bridge.send_turn_imu(angle)
+        elif cmd == 'intersection_turn':
+            # 路口边走边转 (CMD_INTERSECTION_TURN 0x05)
+            direction = payload.get('direction', 'left')
+            self.logger.info(f"[手动控制] 路口边走边转 direction={direction}")
+            self.bridge.send_intersection_turn(direction)
 
     def _push_debug_data(self, seg_frame, offset_mm, is_intersection):
         """推送数据到 Web 面板"""
