@@ -287,14 +287,17 @@ def encode_intersection_turn(direction: str, distance_mm: int = 150) -> bytes:
 
     Args:
         direction: "left" 或 "right"
-        distance_mm: 离路口距离 mm (下位机当前固定用80mm触发，
-                     但协议按 move.h 文档发送 [distance][direction])
+        distance_mm: 离路口距离 mm（保留参数，但下位机 move_3.c 实际只看第1字节方向，
+                     距离由下位机固定用80mm阈值判断，不读取此参数）
 
-    下位机行为:
-        1. 记录当前里程和方向
+    下位机行为 (move_3.c:454-486):
+        1. 记录当前里程和方向 (只读 payload[0])
         2. 继续前进直到达到触发距离 (80mm)
         3. 开始边走边转90度
         4. 完成后自动恢复直行
+
+    【重要】下位机 Move_HandleIntersectionTurn 只读取 payload[0] 作为方向，
+           不读取 distance 字段。因此 payload 只发 1 字节方向。
     """
     if direction == "left":
         dir_code = TurnDirection.LEFT
@@ -302,8 +305,8 @@ def encode_intersection_turn(direction: str, distance_mm: int = 150) -> bytes:
         dir_code = TurnDirection.RIGHT
     else:
         raise ValueError(f"方向必须是 'left' 或 'right', 得到: {direction}")
-    # 按 move.h 文档: [distance_L][distance_H][direction]  共3字节
-    payload = struct.pack("<hB", distance_mm, dir_code)
+    # 下位机实际只读 payload[0] 作为方向，只发 1 字节
+    payload = bytes([dir_code])
     return _build_frame(CmdID.INTERSECTION_TURN, payload)
 
 
