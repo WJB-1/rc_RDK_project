@@ -357,20 +357,16 @@ body {
             <div class="control-grid">
                 <div></div>
                 <button class="btn btn-forward" id="btnForward"
-                    onmousedown="sendCmd('forward')" onmouseup="sendCmd('stop')"
-                    ontouchstart="sendCmd('forward')" ontouchend="sendCmd('stop')">前进</button>
+                    onclick="sendCmd('forward')">前进</button>
                 <div></div>
                 <button class="btn btn-left" id="btnLeft"
-                    onmousedown="sendCmd('left')" onmouseup="sendCmd('stop')"
-                    ontouchstart="sendCmd('left')" ontouchend="sendCmd('stop')">左转</button>
+                    onclick="sendCmd('left')">左转</button>
                 <button class="btn btn-stop" id="btnStop" onclick="sendCmd('stop')">急停</button>
                 <button class="btn btn-right" id="btnRight"
-                    onmousedown="sendCmd('right')" onmouseup="sendCmd('stop')"
-                    ontouchstart="sendCmd('right')" ontouchend="sendCmd('stop')">右转</button>
+                    onclick="sendCmd('right')">右转</button>
                 <div></div>
                 <button class="btn btn-backward" id="btnBackward"
-                    onmousedown="sendCmd('backward')" onmouseup="sendCmd('stop')"
-                    ontouchstart="sendCmd('backward')" ontouchend="sendCmd('stop')">后退</button>
+                    onclick="sendCmd('backward')">后退</button>
                 <div></div>
             </div>
             <div class="slider-group">
