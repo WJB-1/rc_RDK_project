@@ -62,6 +62,13 @@ function onWsMessage(event) {
         document.getElementById('segImage').src = 'data:image/jpeg;base64,' + data.seg_image;
     }
 
+    // 同步小车位置到 sim.pos（拖拽期间不覆盖，保留用户操作）
+    if (data.position && !carDragging) {
+        sim.pos.x = data.position[0];
+        sim.pos.y = data.position[1];
+        sim.pos.yaw = data.position[2];
+    }
+
     if (data.map_data) {
         gNodes = data.map_data.nodes || {};
         gEdges = data.map_data.edges || [];

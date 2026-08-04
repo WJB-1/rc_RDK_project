@@ -388,18 +388,10 @@ body {
                 </div>
             </div>
             <div class="section-divider"></div>
-            <div style="font-size:12px;color:#888;margin-bottom:4px;">原地 IMU 转向</div>
-            <div style="display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px;">
-                <button class="btn btn-action" onclick="sendCmd('turn_left_90')">左转90°</button>
-                <button class="btn btn-action" onclick="sendCmd('turn_right_90')">右转90°</button>
-            </div>
-            <div style="font-size:12px;color:#888;margin-bottom:4px;">路口边走边转 (发指令后车自动前进到路口执行)</div>
-            <div style="display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px;">
-                <button class="btn btn-action" style="background:#e67e22;" onclick="sendCmd('intersection_left_90')">路口左转</button>
-                <button class="btn btn-action" style="background:#e67e22;" onclick="sendCmd('intersection_right_90')">路口右转</button>
-            </div>
             <div style="display: flex; gap: 6px; flex-wrap: wrap;">
                 <button class="btn btn-action" onclick="sendCmd('reset_odom')">清零里程</button>
+                <button class="btn btn-action" onclick="sendCmd('turn_left_90')">左转90°</button>
+                <button class="btn btn-action" onclick="sendCmd('turn_right_90')">右转90°</button>
             </div>
             <div class="cmd-log" id="cmdLog">
                 <div style="color:#666;font-size:10px;">指令发送日志...</div>
@@ -637,6 +629,13 @@ function onWsMessage(event) {
 
     if (data.seg_image) {
         document.getElementById('segImage').src = 'data:image/jpeg;base64,' + data.seg_image;
+    }
+
+    // 同步小车位置到 sim.pos（拖拽期间不覆盖，保留用户操作）
+    if (data.position && !carDragging) {
+        sim.pos.x = data.position[0];
+        sim.pos.y = data.position[1];
+        sim.pos.yaw = data.position[2];
     }
 
     if (data.map_data) {
@@ -1306,22 +1305,25 @@ function updateSlider(name, value) {
 }
 
 function sendCmd(cmd) {
-    // 全手动模式，不区分自动/手动，直接发送
     const cmdMap = {
-        'forward':     { type: 'move', vx: vxSpeed, wz: 0 },
-        'backward':    { type: 'move', vx: -vxSpeed, wz: 0 },
-        'left':        { type: 'move', vx: 0, wz: wzSpeed },
-        'right':       { type: 'move', vx: 0, wz: -wzSpeed },
-        'stop':        { type: 'action', action: 'stop' },
-        'reset_odom':  { type: 'action', action: 'reset_odom' },
-        'turn_left_90':  { type: 'turn', angle: 90 },
-        'turn_right_90': { type: 'turn', angle: -90 },
+        // 持续运动 (mousedown 按下 / mouseup 松开 → stop)
+        'forward':        { cmd: 'forward', vx: vxSpeed },
+        'backward':       { cmd: 'backward', vx: vxSpeed },
+        'left':           { cmd: 'left', angle: 90 },
+        'right':          { cmd: 'right', angle: 90 },
+        // 离散指令 (click 点击即执行)
+        'stop':           { cmd: 'stop' },
+        'reset_odom':     { cmd: 'reset_odom' },
+        'turn_left_90':   { cmd: 'turn_imu', angle: 90 },
+        'turn_right_90':  { cmd: 'turn_imu', angle: -90 },
+        'intersection_left_90':  { cmd: 'intersection_turn', direction: 'left' },
+        'intersection_right_90': { cmd: 'intersection_turn', direction: 'right' },
     };
 
     const payload = cmdMap[cmd];
     if (payload) {
         if (typeof sendApiCmd === 'function') {
-            sendApiCmd(cmd, payload);
+            sendApiCmd(payload.cmd, payload);
         }
         logCmd(`发送: ${cmd}`);
     }
