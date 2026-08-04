@@ -304,8 +304,15 @@ class RobotBridge:
         logger.info(f"[SEND VELOCITY] vx={vx_mms}, wz={wz_mrads}, pkt={pkt.hex()}")
         self._serial_send(pkt)
 
+    def send_turn_imu(self, angle_deg: float):
+        """发送原地 IMU 转向指令 (CMD_TURN_IMU 0x03)"""
+        logger.info(f"[SEND TURN_IMU] angle={angle_deg}")
+        self._serial_send(encode_turn(angle_deg))
+        self.odom.on_turn_cmd(angle_deg)
+
     def send_intersection_turn(self, direction: str):
-        """发送路口边走边转指令"""
+        """发送路口边走边转指令 (CMD_INTERSECTION_TURN 0x05)"""
+        logger.info(f"[SEND INTERSECTION_TURN] direction={direction}")
         self._serial_send(encode_intersection_turn(direction))
 
     def send_lane_offset(self, offset_mm: float):

@@ -8,7 +8,6 @@
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
-
 #if defined(__GNUC__)
 #pragma GCC optimize("Os")
 #endif
@@ -64,13 +63,29 @@ float delta_distance=0;
 
 /* 左右轮目标速度的总上限，单位 cm/s */
 static const float kWheelSpeedLimitCmps = 80.0f;
+
+/* -------------------- Straight-line correction parameters -------------------- */
+
+/* IMU is the primary straight-line controller. Output unit: mrad/s. */
+volatile float straight_yaw_kp = 60.0f; /* Output mrad/s per yaw error degree. */
+volatile float straight_yaw_kd = 4.0f;  /* Output mrad/s per gyro degree/s. */
+static const float kStraightYawMax = 1000.0f; /* mrad/s */
+
+/* Vision is auxiliary. error > 0 means the lane is left of the car. */
+volatile float straight_vision_kp = 1.0f; /* Output mrad/s per image pixel. */
+static const float kVisionDeadband = 3.0f; /* pixel */
+static const float kVisionMax = 120.0f;    /* mrad/s */
+static const uint32_t kVisionTimeoutMs = 200U;
+
+/* Limit the final IMU + vision steering command. */
+static const float kStraightTotalMax = 300.0f; /* mrad/s */
 /* -------------------- 原地转向参数 -------------------- */
 
 /* 原地转向结束时，允许的角度误差窗口，单位度 */
-static const float kTurnFinishWindowDeg = 1.0f;
+static const float kTurnFinishWindow = 1.0f; /* degree */
 
 /* 原地转向结束时，允许的最大角速度，单位 deg/s */
-static const float kTurnFinishGyroDps = 10.0f;
+static const float kTurnFinishGyro = 10.0f; /* degree/s */
 
 /* 原地转向完成判据需要连续满足的 20ms 周期数 */
 static const uint8_t kTurnFinishStableTicks = 4U;
@@ -93,16 +108,16 @@ static const float kDefaultServoMoveTimeMs = 300.0f;
 /* -------------------- 路口边走边转参数 -------------------- */
 
 /* 路口触发距离阈值 */
-static const int16_t kIntersectionTriggerDistanceMm = 80;
+static const int16_t kIntersectionTriggerDistanceMm = 75;
 
 /* 路口默认转角，当前固定 90 度 */
-static const float kCornerTurnAngleDeg = 90.0f;
+static const float kCornerTurnAngle = 90.0f; /* degree */
 
 /* 边走边转结束时的角度误差窗口，单位度 */
-static const float kCornerFinishWindowDeg = 1.0f;
+static const float kCornerFinishWindow = 0.8f; /* degree */
 
 /* 边走边转结束时允许的最大角速度，单位 deg/s */
-static const float kCornerFinishGyroDps = 20.0f;
+static const float kCornerFinishGyro = 20.0f; /* degree/s */
 
 /* 边走边转完成判据需要连续满足的 20ms 周期数 */
 static const uint8_t kCornerFinishStableTicks = 5U;
@@ -114,17 +129,23 @@ static const float kCornerOuterLoopKp = 1.0f;
 static const float kCornerOuterLoopKd = 0.015f;
 
 /* 边走边转时允许叠加的最大左右轮差速，单位 cm/s */
-static const float kCornerMaxDeltaCmps = 50.0f;
+static const float kCornerMaxDeltaCmps = 20.0f;
 
 /* 边走边转时内侧轮允许的最小速度，单位 cm/s */
 static const float kCornerMinInnerWheelSpeedCmps = 0.0f;
 
-/* 边走边转时若上位机没给速度，则默认以前进 20cm/s 转弯 */
-static const float kCornerDefaultForwardSpeedCmps = 20.0f;
+/* 边走边转时若上位机没给速度，则默认以前进 30cm/s 转弯 */
+static const float kCornerDefaultForwardSpeedCmps = 30.0f;
 
 
-float vision_error = 0.0f;
-float vision_correction = 0.0f;
+volatile float vision_error = 0.0f;
+volatile float vision_correction = 0.0f;
+volatile uint8_t straight_imu_enabled = 0U;
+volatile uint8_t straight_vision_enabled = 0U;
+volatile float straight_target_yaw = 0.0f;
+volatile float straight_yaw_error = 0.0f;
+volatile float straight_imu_correction = 0.0f;
+volatile float straight_total_correction = 0.0f;
 
 /* 把浮点数限制在指定区间内 */
 static float Move_ClampFloat(float value, float min_value, float max_value)
@@ -141,7 +162,7 @@ static float Move_ClampFloat(float value, float min_value, float max_value)
 }
 
 /* 把角度归一化到 [-180, 180) 区间，避免跨 180 度时误差突变 */
-static float Move_NormalizeAngleDeg(float angle)
+static float Move_NormalizeAngle(float angle)
 {
     while (angle>= 180.0f)
     {
@@ -220,13 +241,21 @@ typedef struct
      */
     int16_t linear_mm_s_cmd;
 
+    /* Straight-line heading is captured when cruise starts or a turn finishes. */
+    float cruise_target_yaw;
+    bool cruise_heading_valid;
+
+    /* A stale camera result must not keep steering the car. */
+    uint32_t last_vision_tick;
+    bool vision_valid;
+
     bool cruise_enabled;     /* 是否处于普通巡航状态 */
     bool turn_active;        /* 是否处于原地转向状态 */
     bool corner_turn_active; /* 是否处于边走边转状态 */
 
     /* 原地转向和边走边转都会用到这组 yaw 状态 */
-    float turn_start_yaw_deg;
-    float turn_target_yaw_deg;
+    float turn_start_yaw;
+    float turn_target_yaw;
 
     /* 边走边转时继续前进的基础速度，单位 cm/s */
     float corner_forward_speed_cm_s;
@@ -318,15 +347,12 @@ static void Move_SetStatus(uint8_t status)
 /* 把当前整车累计里程打包成回包，单位 mm */
 static void Move_QueueOdometry(void)
 {
-    uint8_t payload[8];
+    uint8_t payload[6];
     int32_t odom_mm = (int32_t)lroundf(car_distance * 10.0f);
-    int16_t yaw_01deg = (int16_t)lroundf(imuData.yaw * 10.0f);
-    int16_t speed_mms = (int16_t)lroundf(target.speed * 10.0f);
+    int16_t yaw_scaled = (int16_t)lroundf(Move_NormalizeAngle(imuData.yaw) * 10.0f);
     Move_WriteU32LE(payload, (uint32_t)odom_mm);
-    payload[4] = (uint8_t)(yaw_01deg & 0xFF);
-    payload[5] = (uint8_t)((yaw_01deg >> 8) & 0xFF);
-    payload[6] = (uint8_t)(speed_mms & 0xFF);
-    payload[7] = (uint8_t)((speed_mms >> 8) & 0xFF);
+    payload[4] = (uint8_t)(yaw_scaled & 0xFF);
+    payload[5] = (uint8_t)((yaw_scaled >> 8) & 0xFF);
     Move_EnqueueFeedback(FB_ODOMETRY, payload, sizeof(payload));
 }
 
@@ -338,17 +364,59 @@ static void Move_QueueOdometry(void)
 
 static float Move_CalcVisionCorrection(void)
 {
-    static float kp = 5.0f;
+    float error = vision_error;
 
-    vision_correction = kp * vision_error;
+    if ((straight_vision_enabled == 0U) ||
+        (!g_move.vision_valid) ||
+        ((uint32_t)(HAL_GetTick() - g_move.last_vision_tick) > kVisionTimeoutMs))
+    {
+        vision_correction = 0.0f;
+        return 0.0f;
+    }
 
-    vision_correction =
-        Move_ClampFloat(
-            vision_correction,
-            -300.0f,
-             300.0f);
+    if (fabsf(error) <= kVisionDeadband)
+    {
+        error = 0.0f;
+    }
+
+    vision_correction = Move_ClampFloat(straight_vision_kp * error,
+                                        -kVisionMax,
+                                        kVisionMax);
 
     return vision_correction;
+}
+
+static float Move_CalcImuCorrection(void)
+{
+    float yaw_error;
+    float correction;
+
+    if (straight_imu_enabled == 0U)
+    {
+        /* Capture a fresh heading when IMU correction is enabled again. */
+        g_move.cruise_heading_valid = false;
+        straight_target_yaw = imuData.yaw;
+        straight_yaw_error = 0.0f;
+        straight_imu_correction = 0.0f;
+        return 0.0f;
+    }
+
+    if (!g_move.cruise_heading_valid)
+    {
+        g_move.cruise_target_yaw = imuData.yaw;
+        straight_target_yaw = g_move.cruise_target_yaw;
+        g_move.cruise_heading_valid = true;
+    }
+
+    yaw_error = Move_NormalizeAngle(g_move.cruise_target_yaw - imuData.yaw);
+    correction = straight_yaw_kp * yaw_error
+               - straight_yaw_kd * imuData.gyro[0];
+
+    straight_yaw_error = yaw_error;
+    straight_imu_correction = Move_ClampFloat(correction,
+                                              -kStraightYawMax,
+                                              kStraightYawMax);
+    return straight_imu_correction;
 }
 /*
  * 普通巡航速度换算
@@ -364,12 +432,29 @@ static float Move_CalcVisionCorrection(void)
 static void Move_ApplyCruiseVector(void)
 {
     float linear_cm_s = (float)g_move.linear_mm_s_cmd * 0.1f;
-    float angular_rad_s = 0.0f;
+    float correction = 0.0f;
     float wheel_delta = 0.0f;
-    angular_rad_s =Move_CalcVisionCorrection() * 0.001f;
 
-    /* 只有纯直行命令才叠加视觉自动纠偏 */
-    wheel_delta = angular_rad_s * (width * 0.5f);
+    /* A zero-speed command must stop instead of rotating due to correction. */
+    if (fabsf(linear_cm_s) < 0.01f)
+    {
+        g_move.cruise_heading_valid = false;
+        straight_target_yaw = imuData.yaw;
+        straight_yaw_error = 0.0f;
+        straight_imu_correction = 0.0f;
+        straight_total_correction = 0.0f;
+        Move_SetWheelSpeed(0.0f, 0.0f);
+        start = 0;
+        return;
+    }
+
+    correction = Move_CalcImuCorrection() + Move_CalcVisionCorrection();
+    correction = Move_ClampFloat(correction,
+                                 -kStraightTotalMax,
+                                 kStraightTotalMax);
+    straight_total_correction = correction;
+
+    wheel_delta = correction * 0.001f * (width * 0.5f);
 
     Move_SetWheelSpeed(linear_cm_s - wheel_delta, linear_cm_s + wheel_delta);
 
@@ -388,15 +473,16 @@ static void Move_ApplyCruiseVector(void)
  * ============================================================ */
 
 /* 启动一次原地 IMU 转向 */
-static void Move_StartTurn(int16_t angle_deg)
+static void Move_StartTurn(int16_t angle)
 {
     g_move.turn_active = true;
     g_move.corner_turn_active = false;
+    g_move.cruise_heading_valid = false;
 
     g_move.turn_settle_count = 0U;
-    g_move.turn_start_yaw_deg = imuData.yaw;
-    g_move.turn_target_yaw_deg = imuData.yaw + (float)angle_deg;
-    target.turn_yaw_angle = (float)angle_deg;
+    g_move.turn_start_yaw = imuData.yaw;
+    g_move.turn_target_yaw = imuData.yaw + (float)angle;
+    target.turn_yaw_angle = (float)angle;
     g_move.last_motion_cmd_tick = HAL_GetTick();
 
     PID_out_clear();
@@ -429,14 +515,15 @@ static float Move_GetCornerForwardSpeedCmps(void)
 /* 开始执行“边直行边转弯”的 90 度转向 */
 static void Move_StartIntersectionTurn(uint8_t direction)
 {
-    float signed_angle = (direction == MOVE_TURN_DIR_LEFT) ? kCornerTurnAngleDeg : -kCornerTurnAngleDeg;
+    float signed_angle = (direction == MOVE_TURN_DIR_LEFT) ? kCornerTurnAngle : -kCornerTurnAngle;
 
     g_move.turn_active = false;
     g_move.corner_turn_active = true;
+    g_move.cruise_heading_valid = false;
 
     g_move.turn_settle_count = 0U;
-    g_move.turn_start_yaw_deg = imuData.yaw;
-    g_move.turn_target_yaw_deg = imuData.yaw + signed_angle;
+    g_move.turn_start_yaw = imuData.yaw;
+    g_move.turn_target_yaw = imuData.yaw + signed_angle;
     g_move.corner_forward_speed_cm_s = Move_GetCornerForwardSpeedCmps();
     g_move.cruise_enabled = true;
     g_move.last_motion_cmd_tick = HAL_GetTick();
@@ -476,8 +563,8 @@ static void Move_HandleIntersectionTurn(const uint8_t *payload, uint8_t len)
     g_move.wait_corner_turn = true;
 
     g_move.cruise_enabled = true;
-    /* 固定10cm/s前进 */
-    g_move.linear_mm_s_cmd = 200;
+    /* 固定30cm/s前进 */
+    g_move.linear_mm_s_cmd = 300;
     /* 立即应用 */
     Move_ApplyCruiseVector();
 
@@ -488,7 +575,6 @@ static void Move_HandleIntersectionTurn(const uint8_t *payload, uint8_t len)
 /* ============================================================
  * 6. 协议解析与命令分发模块
  * ============================================================ */
-
 /* 处理离散动作命令，例如急停和里程清零 */
 static void Move_HandleAction(uint8_t action)
 {
@@ -601,12 +687,13 @@ static void Move_HandleFrame(uint8_t cmd, const uint8_t *payload, uint8_t len)
     case CMD_INTERSECTION_TURN:
         Move_HandleIntersectionTurn(payload, len);
         break;
-            case CMD_VISION_ERROR:
+    case CMD_VISION_ERROR:
         {
             if(len >= 2)
             {
-                vision_error =
-                    (float)Move_ReadI16LE(payload);
+                vision_error = (float)Move_ReadI16LE(payload);
+                g_move.last_vision_tick = HAL_GetTick();
+                g_move.vision_valid = true;
             }
                 break;
         }
@@ -755,12 +842,12 @@ void Move_Process20ms(void)
 {
     if (g_move.turn_active)
     {
-        float yaw_error_deg = Move_NormalizeAngleDeg(g_move.turn_target_yaw_deg - imuData.yaw);
-        float yaw_rate_dps = imuData.gyro[0];
+        float yaw_error = Move_NormalizeAngle(g_move.turn_target_yaw - imuData.yaw);
+        float yaw_rate = imuData.gyro[0];
         float command_speed = 0.0f;
 
-        if ((fabsf(yaw_error_deg) <= kTurnFinishWindowDeg) &&
-            (fabsf(yaw_rate_dps) <= kTurnFinishGyroDps))
+        if ((fabsf(yaw_error) <= kTurnFinishWindow) &&
+            (fabsf(yaw_rate) <= kTurnFinishGyro))
         {
             g_move.turn_settle_count++;
         }
@@ -780,10 +867,10 @@ void Move_Process20ms(void)
         }
         else
         {
-            command_speed = kTurnOuterLoopKp * fabsf(yaw_error_deg) - kTurnOuterLoopKd * fabsf(yaw_rate_dps);
+            command_speed = kTurnOuterLoopKp * fabsf(yaw_error) - kTurnOuterLoopKd * fabsf(yaw_rate);
             command_speed = Move_ClampFloat(command_speed, kTurnMinWheelSpeedCmps, kTurnMaxWheelSpeedCmps);
 
-            if (yaw_error_deg >= 0.0f)
+            if (yaw_error >= 0.0f)
             {
                 /* 左转：左轮后退，右轮前进 */
                 Move_SetWheelSpeed(-command_speed, command_speed);
@@ -799,14 +886,14 @@ void Move_Process20ms(void)
     }
     else if (g_move.corner_turn_active)
     {
-        float yaw_error_deg = Move_NormalizeAngleDeg(g_move.turn_target_yaw_deg - imuData.yaw);
-        float yaw_rate_dps = imuData.gyro[0];
+        float yaw_error = Move_NormalizeAngle(g_move.turn_target_yaw - imuData.yaw);
+        float yaw_rate = imuData.gyro[0];
         float turn_delta_cm_s = 0.0f;
         float left_speed = 0.0f;
         float right_speed = 0.0f;
 
-        if ((fabsf(yaw_error_deg) <= kCornerFinishWindowDeg) &&
-            (fabsf(yaw_rate_dps) <= kCornerFinishGyroDps))
+        if ((fabsf(yaw_error) <= kCornerFinishWindow) &&
+            (fabsf(yaw_rate) <= kCornerFinishGyro))
         {
             g_move.turn_settle_count++;
         }
@@ -817,22 +904,15 @@ void Move_Process20ms(void)
 
         if (g_move.turn_settle_count >= kCornerFinishStableTicks)
         {
-            /*
-             * 边走边转结束后：
-             * 1. 退出 corner_turn_active
-             * 2. 把 wz 清零，恢复成普通直行
-             * 3. 重新锁定当前 yaw，继续直行航向保持
-             */
             g_move.corner_turn_active = false;
             g_move.turn_settle_count = 0U;
-
-
+            g_move.cruise_heading_valid = false;
             Move_ApplyCruiseVector();
             Move_SetStatus(MOVE_STATUS_IDLE);
         }
         else
         {
-            turn_delta_cm_s = kCornerOuterLoopKp * yaw_error_deg - kCornerOuterLoopKd * yaw_rate_dps;
+            turn_delta_cm_s = kCornerOuterLoopKp * yaw_error - kCornerOuterLoopKd * yaw_rate;
             turn_delta_cm_s = Move_ClampFloat(turn_delta_cm_s, -kCornerMaxDeltaCmps, kCornerMaxDeltaCmps);
 
             left_speed = g_move.corner_forward_speed_cm_s - turn_delta_cm_s;
@@ -906,10 +986,19 @@ void Move_EmergencyStop(void)
     g_move.cruise_enabled = false;
     g_move.turn_active = false;
     g_move.corner_turn_active = false;
+    g_move.wait_corner_turn = false;
+    g_move.cruise_heading_valid = false;
+    g_move.vision_valid = false;
 
     g_move.linear_mm_s_cmd = 0;
     g_move.corner_forward_speed_cm_s = 0.0f;
     g_move.turn_settle_count = 0U;
+    vision_error = 0.0f;
+    vision_correction = 0.0f;
+    straight_target_yaw = imuData.yaw;
+    straight_yaw_error = 0.0f;
+    straight_imu_correction = 0.0f;
+    straight_total_correction = 0.0f;
 
     PID_out_clear();
     Move_SetWheelSpeed(0.0f, 0.0f);
@@ -940,5 +1029,3 @@ uint8_t Move_GetStatus(void)
 {
     return g_move.current_status;
 }
-
-

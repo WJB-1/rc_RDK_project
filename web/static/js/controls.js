@@ -23,22 +23,25 @@ function updateSlider(name, value) {
 }
 
 function sendCmd(cmd) {
-    // 全手动模式，不区分自动/手动，直接发送
     const cmdMap = {
-        'forward':     { type: 'move', vx: vxSpeed, wz: 0 },
-        'backward':    { type: 'move', vx: -vxSpeed, wz: 0 },
-        'left':        { type: 'move', vx: 0, wz: wzSpeed },
-        'right':       { type: 'move', vx: 0, wz: -wzSpeed },
-        'stop':        { type: 'action', action: 'stop' },
-        'reset_odom':  { type: 'action', action: 'reset_odom' },
-        'turn_left_90':  { type: 'turn', angle: 90 },
-        'turn_right_90': { type: 'turn', angle: -90 },
+        // 持续运动 (mousedown 按下 / mouseup 松开 → stop)
+        'forward':        { cmd: 'forward', vx: vxSpeed },
+        'backward':       { cmd: 'backward', vx: vxSpeed },
+        'left':           { cmd: 'left', angle: 90 },
+        'right':          { cmd: 'right', angle: 90 },
+        // 离散指令 (click 点击即执行)
+        'stop':           { cmd: 'stop' },
+        'reset_odom':     { cmd: 'reset_odom' },
+        'turn_left_90':   { cmd: 'turn_imu', angle: 90 },
+        'turn_right_90':  { cmd: 'turn_imu', angle: -90 },
+        'intersection_left_90':  { cmd: 'intersection_turn', direction: 'left' },
+        'intersection_right_90': { cmd: 'intersection_turn', direction: 'right' },
     };
 
     const payload = cmdMap[cmd];
     if (payload) {
         if (typeof sendApiCmd === 'function') {
-            sendApiCmd(cmd, payload);
+            sendApiCmd(payload.cmd, payload);
         }
         logCmd(`发送: ${cmd}`);
     }
