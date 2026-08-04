@@ -421,6 +421,18 @@ class AgentStateMachine:
     # 查询接口
     # ================================================================
 
+    @property
+    def target_node(self) -> str:
+        """当前边任务的目标节点"""
+        if self.executor.current_task:
+            return self.executor.current_task.to_node
+        return ""
+
+    @property
+    def planned_path(self) -> List[str]:
+        """缓存的全局路径节点序列"""
+        return self.planner.get_cached_sequence()
+
     def get_state_name(self) -> str:
         return self.state.name
 
