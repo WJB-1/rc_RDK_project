@@ -161,18 +161,18 @@ class TestEncoders(unittest.TestCase):
         self.assertEqual(frame[4], 90)
 
     def test_encode_intersection_turn_left(self):
-        """路口左转 — payload: [distance_L][distance_H][direction] 共3字节"""
+        """路口左转 — payload: [direction] 共1字节（匹配下位机 move_3.c）"""
         frame = encode_intersection_turn("left")
         self.assertEqual(frame[2], CmdID.INTERSECTION_TURN)
-        # LEN = 3 (distance int16 + direction uint8)
-        self.assertEqual(frame[3], 3)
-        # direction 在 payload 的第3字节 (frame[6])
-        self.assertEqual(frame[6], TurnDirection.LEFT)
+        # LEN = 1 (只有 direction uint8)
+        self.assertEqual(frame[3], 1)
+        # direction 在 payload 第1字节 (frame[4])
+        self.assertEqual(frame[4], TurnDirection.LEFT)
 
     def test_encode_intersection_turn_right(self):
-        """路口右转 — direction 在 payload 第3字节 (frame[6])"""
+        """路口右转 — payload 只有 1 字节方向"""
         frame = encode_intersection_turn("right")
-        self.assertEqual(frame[6], TurnDirection.RIGHT)
+        self.assertEqual(frame[4], TurnDirection.RIGHT)
 
     def test_encode_intersection_turn_invalid(self):
         """无效方向抛出异常"""
