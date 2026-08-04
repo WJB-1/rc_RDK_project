@@ -1,0 +1,479 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="UTF-8">
+    <title>STM32 通信调试面板</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Microsoft YaHei', monospace;
+            background: #1a1a2e;
+            color: #eee;
+            padding: 20px;
+        }
+
+        h1 {
+            color: #00d4aa;
+            margin-bottom: 20px;
+            text-align: center;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        /* 控制面板 */
+        .control-panel {
+            background: #16213e;
+            border-radius: 10px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+
+        .control-panel h2 {
+            color: #e94560;
+            margin-bottom: 15px;
+        }
+
+        .btn-row {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            margin-bottom: 15px;
+        }
+
+        button {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: bold;
+            transition: all 0.2s;
+        }
+
+        button:hover {
+            transform: translateY(-2px);
+            opacity: 0.9;
+        }
+
+        .btn-fwd {
+            background: #00d4aa;
+            color: #000;
+        }
+
+        .btn-bwd {
+            background: #f39c12;
+            color: #000;
+        }
+
+        .btn-left {
+            background: #3498db;
+            color: #fff;
+        }
+
+        .btn-right {
+            background: #3498db;
+            color: #fff;
+        }
+
+        .btn-stop {
+            background: #e74c3c;
+            color: #fff;
+        }
+
+        .btn-action {
+            background: #9b59b6;
+            color: #fff;
+        }
+
+        .btn-turn {
+            background: #1abc9c;
+            color: #fff;
+        }
+
+        .speed-control {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            margin-top: 10px;
+        }
+
+        .speed-control label {
+            color: #aaa;
+        }
+
+        .speed-control input[type="range"] {
+            width: 200px;
+        }
+
+        .speed-control span {
+            color: #00d4aa;
+            font-weight: bold;
+            min-width: 60px;
+        }
+
+        /* 状态栏 */
+        .status-bar {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+
+        .status-card {
+            background: #16213e;
+            border-radius: 10px;
+            padding: 15px;
+            text-align: center;
+        }
+
+        .status-card h3 {
+            color: #888;
+            font-size: 12px;
+            margin-bottom: 8px;
+        }
+
+        .status-card .value {
+            font-size: 24px;
+            font-weight: bold;
+            color: #00d4aa;
+        }
+
+        .status-card .sub {
+            font-size: 11px;
+            color: #666;
+            margin-top: 5px;
+        }
+
+        /* 通信日志 */
+        .log-panel {
+            background: #16213e;
+            border-radius: 10px;
+            padding: 20px;
+        }
+
+        .log-panel h2 {
+            color: #e94560;
+            margin-bottom: 15px;
+            display: flex;
+            justify-content: space-between;
+        }
+
+        .log-controls {
+            display: flex;
+            gap: 10px;
+        }
+
+        .log-controls button {
+            padding: 6px 16px;
+            font-size: 12px;
+        }
+
+        .log-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+        }
+
+        .log-table th {
+            background: #0f3460;
+            padding: 10px;
+            text-align: left;
+            color: #aaa;
+            position: sticky;
+            top: 0;
+        }
+
+        .log-table td {
+            padding: 8px 10px;
+            border-bottom: 1px solid #2a2a4a;
+            vertical-align: top;
+        }
+
+        .log-table tr:hover {
+            background: #1a1a3e;
+        }
+
+        .dir-tx {
+            color: #00d4aa;
+            font-weight: bold;
+        }
+
+        .dir-rx {
+            color: #e94560;
+            font-weight: bold;
+        }
+
+        .hex-dump {
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            background: #0a0a1a;
+            padding: 5px 8px;
+            border-radius: 4px;
+            word-break: break-all;
+        }
+
+        .details {
+            font-size: 11px;
+            color: #aaa;
+            margin-top: 4px;
+        }
+
+        .details div {
+            margin: 2px 0;
+        }
+
+        .valid-ok {
+            color: #00d4aa;
+        }
+
+        .valid-fail {
+            color: #e74c3c;
+        }
+
+        .log-container {
+            max-height: 500px;
+            overflow-y: auto;
+            border-radius: 6px;
+        }
+
+        .connection-status {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: bold;
+        }
+
+        .conn-ok {
+            background: #00d4aa;
+            color: #000;
+        }
+
+        .conn-fail {
+            background: #e74c3c;
+            color: #fff;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <h1>🔧 STM32 通信调试面板</h1>
+
+        <!-- 状态栏 -->
+        <div class="status-bar">
+            <div class="status-card">
+                <h3>串口状态</h3>
+                <div class="value">
+                    <span class="connection-status {{ 'conn-ok' if connected else 'conn-fail' }}">
+                        {{ '已连接' if connected else '未连接' }}
+                    </span>
+                </div>
+                <div class="sub">{{ port }} @ {{ baudrate }}bps</div>
+            </div>
+            <div class="status-card">
+                <h3>发送 / 接收</h3>
+                <div class="value">{{ tx_count }} / {{ rx_count }}</div>
+                <div class="sub">帧数</div>
+            </div>
+            <div class="status-card">
+                <h3>发送 / 接收</h3>
+                <div class="value">{{ tx_bytes }} / {{ rx_bytes }}</div>
+                <div class="sub">字节数</div>
+            </div>
+            <div class="status-card">
+                <h3>运行时间</h3>
+                <div class="value">{{ uptime }}</div>
+                <div class="sub">{{ last_status.stm_status }} | {{ last_status.last_update }}</div>
+            </div>
+        </div>
+
+        <!-- 下位机状态 -->
+        <div class="status-bar" style="grid-template-columns: repeat(4, 1fr);">
+            <div class="status-card">
+                <h3>累计距离</h3>
+                <div class="value">{{ last_status.dist_mm }} mm</div>
+            </div>
+            <div class="status-card">
+                <h3>航向角</h3>
+                <div class="value">{{ "%.1f"|format(last_status.yaw_deg) }}°</div>
+            </div>
+            <div class="status-card">
+                <h3>当前速度</h3>
+                <div class="value">{{ last_status.speed_mms }} mm/s</div>
+            </div>
+            <div class="status-card">
+                <h3>下位机状态</h3>
+                <div class="value">{{ last_status.stm_status }}</div>
+            </div>
+        </div>
+
+        <!-- 控制面板 -->
+        <div class="control-panel">
+            <h2>🎮 手动控制</h2>
+            <div class="btn-row">
+                <button class="btn-fwd" onclick="sendCmd('forward')">⬆ 前进</button>
+                <button class="btn-bwd" onclick="sendCmd('backward')">⬇ 后退</button>
+                <button class="btn-left" onclick="sendCmd('left')">⬅ 左转</button>
+                <button class="btn-right" onclick="sendCmd('right')">➡ 右转</button>
+                <button class="btn-stop" onclick="sendCmd('stop')">🛑 急停</button>
+            </div>
+            <div class="btn-row">
+                <button class="btn-action" onclick="sendCmd('reset_odom')">🔄 里程清零</button>
+                <button class="btn-turn" onclick="sendCmd('turn_left_90')">↩ 左转90°</button>
+                <button class="btn-turn" onclick="sendCmd('turn_right_90')">↪ 右转90°</button>
+            </div>
+            <div class="speed-control">
+                <label>线速度 vx:</label>
+                <input type="range" id="vxSlider" min="0" max="500" value="300"
+                    oninput="document.getElementById('vxVal').textContent=this.value+' mm/s'">
+                <span id="vxVal">300 mm/s</span>
+
+                <label style="margin-left:20px">角速度 wz:</label>
+                <input type="range" id="wzSlider" min="0" max="500" value="100"
+                    oninput="document.getElementById('wzVal').textContent=this.value+' mrad/s'">
+                <span id="wzVal">100 mrad/s</span>
+            </div>
+        </div>
+
+        <!-- 通信日志 -->
+        <div class="log-panel">
+            <h2>
+                📡 通信日志
+                <div class="log-controls">
+                    <button onclick="toggleAutoScroll()" id="autoScrollBtn">⏸ 暂停滚动</button>
+                    <button onclick="clearLog()">🗑 清空</button>
+                    <button onclick="location.reload()">🔄 刷新</button>
+                </div>
+            </h2>
+            <div class="log-container" id="logContainer">
+                <table class="log-table">
+                    <thead>
+                        <tr>
+                            <th width="90">时间</th>
+                            <th width="100">方向</th>
+                            <th width="80">命令</th>
+                            <th width="200">十六进制</th>
+                            <th>解析</th>
+                        </tr>
+                    </thead>
+                    <tbody id="logBody">
+                        {% for entry in logs %}
+                        <tr>
+                            <td>{{ entry.time }}</td>
+                            <td class="dir-{{ entry.dir|lower }}">{{ entry.dir_label }}</td>
+                            <td>
+                                {{ entry.parsed.cmd }}
+                                {% if entry.parsed.valid %}
+                                <span class="valid-ok">✓</span>
+                                {% else %}
+                                <span class="valid-fail">✗</span>
+                                {% endif %}
+                            </td>
+                            <td>
+                                <div class="hex-dump">{{ entry.hex }}</div>
+                                <div style="font-size:10px;color:#666;margin-top:2px;">
+                                    LEN={{ entry.parsed.len }} | CS={{ entry.parsed.checksum }}
+                                    {% if entry.parsed.checksum_ok %}✓{% else %}✗{% endif %}
+                                </div>
+                            </td>
+                            <td>
+                                <div class="details">
+                                    {% for d in entry.parsed.details %}
+                                    <div>• {{ d }}</div>
+                                    {% endfor %}
+                                    {% if entry.desc %}
+                                    <div style="color:#f39c12;">📝 {{ entry.desc }}</div>
+                                    {% endif %}
+                                </div>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let autoScroll = true;
+
+        function toggleAutoScroll() {
+            autoScroll = !autoScroll;
+            document.getElementById('autoScrollBtn').textContent = autoScroll ? '⏸ 暂停滚动' : '▶ 继续滚动';
+        }
+
+        function clearLog() {
+            fetch('/api/clear', { method: 'POST' }).then(() => location.reload());
+        }
+
+        function sendCmd(cmd) {
+            const vx = document.getElementById('vxSlider').value;
+            const wz = document.getElementById('wzSlider').value;
+            fetch('/api/send', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ cmd: cmd, vx: parseInt(vx), wz: parseInt(wz) })
+            }).then(r => r.json()).then(data => {
+                console.log('发送结果:', data);
+            });
+        }
+
+        // 自动刷新日志
+        setInterval(() => {
+            fetch('/api/log')
+                .then(r => r.json())
+                .then(data => {
+                    updateTable(data.logs);
+                    updateStatus(data.stats, data.last_status);
+                });
+        }, 500);
+
+        function updateTable(logs) {
+            const tbody = document.getElementById('logBody');
+            tbody.innerHTML = logs.map(e => `
+                <tr>
+                    <td>${e.time}</td>
+                    <td class="dir-${e.dir.toLowerCase()}">${e.dir_label}</td>
+                    <td>
+                        ${e.parsed.cmd}
+                        ${e.parsed.valid ? '<span class="valid-ok">✓</span>' : '<span class="valid-fail">✗</span>'}
+                    </td>
+                    <td>
+                        <div class="hex-dump">${e.hex}</div>
+                        <div style="font-size:10px;color:#666;margin-top:2px;">
+                            LEN=${e.parsed.len} | CS=${e.parsed.checksum}
+                            ${e.parsed.checksum_ok ? '✓' : '✗'}
+                        </div>
+                    </td>
+                    <td>
+                        <div class="details">
+                            ${e.parsed.details.map(d => `<div>• ${d}</div>`).join('')}
+                            ${e.desc ? `<div style="color:#f39c12;">📝 ${e.desc}</div>` : ''}
+                        </div>
+                    </td>
+                </tr>
+            `).join('');
+
+            if (autoScroll) {
+                const container = document.getElementById('logContainer');
+                container.scrollTop = container.scrollHeight;
+            }
+        }
+
+        function updateStatus(stats, status) {
+            // 简化处理，直接刷新页面或更新DOM
+        }
+    </script>
+</body>
+
+</html>

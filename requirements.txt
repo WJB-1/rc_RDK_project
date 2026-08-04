@@ -1,0 +1,24 @@
+# RoboCup Rescue Brain - 依赖清单
+# RDK X5 平台 | Python 3.8+
+
+# 核心依赖
+pyyaml>=6.0
+numpy>=1.21.0
+
+# 视觉处理
+opencv-python>=4.5.0
+opencv-contrib-python>=4.5.0
+
+# RDK X5 BPU推理 (地平线官方库)
+# 注: 以下库需从地平线官方SDK安装
+# hobot_dnn
+# hobot_cv
+
+# GPIO控制 (RDK X5使用libgpiod)
+gpiod>=1.5.0
+
+# 串口通讯
+pyserial>=3.5
+
+# 可选: 性能监控
+# psutil>=5.9.0

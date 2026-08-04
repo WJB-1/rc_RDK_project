@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Test outputs
+test/**/output/
+test/**/runs/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+logs/
+
+# Models (too large)
+models/*.bin
+models/*.pt
+models/*.onnx
+
+# OS
+.DS_Store
+Thumbs.db

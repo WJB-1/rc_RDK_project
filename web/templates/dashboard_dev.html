@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RoboCup Rescue Brain — 可视化调试面板</title>
+<link rel="stylesheet" href="../static/css/dashboard.css">
+
+</head>
+<body>
+
+<!-- ===== 顶部状态栏 ===== -->
+<div class="header">
+    <div class="status-dot" id="statusDot"></div>
+    <span>RoboCup Rescue Brain — 可视化调试面板</span>
+    <span class="fps" id="fpsDisplay">初始化中...</span>
+</div>
+
+<!-- ===== 主布局：左右并排 ==== -->
+<div class="main-container">
+
+    <!-- 左侧：摄像头/分割图 -->
+    <div class="left-panel">
+        <div class="video-container" style="flex: 1;">
+            <img id="segImage" src="" alt="车道分割">
+            <span class="video-label">BiSeNet 车道分割 (WebSocket 实时)</span>
+        </div>
+    </div>
+
+    <!-- 中间：地图（主角，占满剩余空间） -->
+    <div class="map-container">
+        <canvas id="mapCanvas"></canvas>
+        <div class="legend">
+            <div class="legend-item"><div class="legend-dot" style="background:#e74c3c;"></div>当前位置</div>
+            <div class="legend-item"><div class="legend-dot" style="background:#27ae60;"></div>已打卡</div>
+            <div class="legend-item"><div class="legend-dot" style="background:#f39c12;"></div>下一目标</div>
+            <div class="legend-item"><div class="legend-dot" style="background:#3498db;"></div>规划路径</div>
+            <div class="legend-item"><div class="legend-dot" style="background:#95a5a6;"></div>未打卡</div>
+        </div>
+    </div>
+
+    <!-- 右侧：控制 + 遥测 + 路径 + 日志 -->
+    <div class="right-panel">
+
+        <!-- 模拟器控制 (独立模式) -->
+        <div class="debug-panel" id="simControls" style="display:none;">
+            <div class="panel-title">内置模拟器</div>
+            <div class="slider-group">
+                <label>起始位置</label>
+                <select id="simStartNode" style="width:100%;padding:4px;background:#0f3460;color:#eee;border:1px solid #1a4a8a;border-radius:3px;font-size:12px;">
+                    <option value="START">START (起点)</option>
+                </select>
+            </div>
+            <button class="btn btn-action" id="btnSim" onclick="toggleSimulation()" style="margin-top:6px;">启动模拟</button>
+            <div style="margin-top:6px; font-size:11px; color:#888;">
+                选择起始节点后点击启动，小车将从该位置出发沿巡逻路径行驶
+            </div>
+        </div>
+
+        <!-- 手动控制面板 -->
+        <div class="debug-panel">
+            <div class="panel-title">手动控制</div>
+            <div style="display: flex; gap: 6px; margin-bottom: 8px;">
+                <button class="btn btn-mode active" id="modeAuto" onclick="setMode('auto')">自动</button>
+                <button class="btn btn-mode" id="modeManual" onclick="setMode('manual')">手动</button>
+            </div>
+            <div class="control-grid">
+                <div></div>
+                <button class="btn btn-forward" id="btnForward"
+                    onmousedown="sendCmd('forward')" onmouseup="sendCmd('stop')"
+                    ontouchstart="sendCmd('forward')" ontouchend="sendCmd('stop')">前进</button>
+                <div></div>
+                <button class="btn btn-left" id="btnLeft"
+                    onmousedown="sendCmd('left')" onmouseup="sendCmd('stop')"
+                    ontouchstart="sendCmd('left')" ontouchend="sendCmd('stop')">左转</button>
+                <button class="btn btn-stop" id="btnStop" onclick="sendCmd('stop')">急停</button>
+                <button class="btn btn-right" id="btnRight"
+                    onmousedown="sendCmd('right')" onmouseup="sendCmd('stop')"
+                    ontouchstart="sendCmd('right')" ontouchend="sendCmd('stop')">右转</button>
+                <div></div>
+                <button class="btn btn-backward" id="btnBackward"
+                    onmousedown="sendCmd('backward')" onmouseup="sendCmd('stop')"
+                    ontouchstart="sendCmd('backward')" ontouchend="sendCmd('stop')">后退</button>
+                <div></div>
+            </div>
+            <div class="slider-group">
+                <label>线速度 vx (mm/s)</label>
+                <div class="slider-row">
+                    <input type="range" id="vxSlider" min="0" max="500" value="300" oninput="updateSlider('vx', this.value)">
+                    <span class="value-display" id="vxValue">300</span>
+                </div>
+            </div>
+            <div class="slider-group">
+                <label>角速度 wz (mrad/s)</label>
+                <div class="slider-row">
+                    <input type="range" id="wzSlider" min="0" max="500" value="100" oninput="updateSlider('wz', this.value)">
+                    <span class="value-display" id="wzValue">100</span>
+                </div>
+            </div>
+            <div class="section-divider"></div>
+            <div style="display: flex; gap: 6px; flex-wrap: wrap;">
+                <button class="btn btn-action" onclick="sendCmd('reset_odom')">清零里程</button>
+                <button class="btn btn-action" onclick="sendCmd('turn_left_90')">左转90°</button>
+                <button class="btn btn-action" onclick="sendCmd('turn_right_90')">右转90°</button>
+            </div>
+            <div class="cmd-log" id="cmdLog">
+                <div style="color:#666;font-size:10px;">指令发送日志...</div>
+            </div>
+        </div>
+
+        <!-- 实时状态 -->
+        <div class="telemetry-panel">
+            <div class="panel-title">实时状态</div>
+            <div class="telemetry-grid">
+                <div class="metric">
+                    <div class="label">Agent 状态</div>
+                    <div class="value" id="agentState">--</div>
+                </div>
+                <div class="metric">
+                    <div class="label">打卡进度</div>
+                    <div class="value" id="progress">--</div>
+                </div>
+                <div class="metric">
+                    <div class="label">当前位置 (mm)</div>
+                    <div class="value" id="position">--</div>
+                </div>
+                <div class="metric">
+                    <div class="label">航向角</div>
+                    <div class="value" id="yaw">--</div>
+                </div>
+                <div class="metric">
+                    <div class="label">当前节点</div>
+                    <div class="value" id="currentNode">--</div>
+                </div>
+                <div class="metric">
+                    <div class="label">目标节点</div>
+                    <div class="value" id="targetNode">--</div>
+                </div>
+                <div class="metric">
+                    <div class="label">横向偏移</div>
+                    <div class="value" id="offsetMm">--</div>
+                </div>
+                <div class="metric">
+                    <div class="label">路口检测</div>
+                    <div class="value" id="intersection">--</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 路径规划 -->
+        <div class="path-info">
+            <div class="panel-title">路径规划</div>
+            <div class="path-list" id="pathList">等待数据...</div>
+        </div>
+
+        <!-- 事件日志 -->
+        <div class="event-log" id="eventLog">
+            <div class="panel-title">事件日志</div>
+        </div>
+
+    </div>
+</div>
+
+<!-- ===== 地图拓扑数据 (内嵌 JSON) ===== -->
+<script>
+window.__MAP_DATA__ = {"nodes":{"START":{"x":0,"y":0,"type":"base","rfid":false},"J_START":{"x":0,"y":200,"type":"junction","rfid":false},"N1":{"x":-400,"y":200,"type":"mission","rfid":true},"T1_L":{"x":-400,"y":1000,"type":"junction","rfid":false},"T2_L":{"x":-400,"y":1800,"type":"junction","rfid":false},"T3_L":{"x":-400,"y":2600,"type":"junction","rfid":false},"N6":{"x":-400,"y":3400,"type":"mission","rfid":true},"N5":{"x":-1200,"y":3400,"type":"mission","rfid":true},"N12":{"x":400,"y":200,"type":"mission","rfid":true},"T1_R":{"x":400,"y":1000,"type":"junction","rfid":false},"T2_R":{"x":400,"y":1800,"type":"junction","rfid":false},"T3_R":{"x":400,"y":2600,"type":"junction","rfid":false},"N7":{"x":400,"y":3400,"type":"mission","rfid":true},"N8":{"x":1200,"y":3400,"type":"mission","rfid":true},"N2":{"x":-1200,"y":1000,"type":"mission","rfid":true},"N3":{"x":-1200,"y":1800,"type":"mission","rfid":true},"N4":{"x":-1200,"y":2600,"type":"mission","rfid":true},"N11":{"x":1200,"y":1000,"type":"mission","rfid":true},"N10":{"x":1200,"y":1800,"type":"mission","rfid":true},"N9":{"x":1200,"y":2600,"type":"mission","rfid":true}},"edges":[{"node_a":"START","node_b":"J_START","distance_mm":200.0,"is_tunnel":false,"has_culvert":false,"speed_limit_ms":0.3},{"node_a":"J_START","node_b":"N1","distance_mm":400.0,"is_tunnel":false,"has_culvert":false,"speed_limit_ms":0.3},{"node_a":"J_START","node_b":"N12","distance_mm":400.0,"is_tunnel":false,"has_culvert":false,"speed_limit_ms":0.3},{"node_a":"N1","node_b":"N12","distance_mm":800.0,"is_tunnel":false,"has_culvert":false,"speed_limit_ms":0.3},{"node_a":"N1","node_b":"T1_L","distance_mm":800.0,"is_tunnel":false,"has_culvert":false,"speed_limit_ms":0.3},{"node_a":"T1_L","node_b":"T2_L","distance_mm":800.0,"is_tunnel":false,"has_culvert":false,"speed_limit_ms":0.3},{"node_a":"T2_L","node_b":"T3_L","distance_mm":800.0,"is_tunnel":false,"has_culvert":false,"speed_limit_ms":0.3},{"node_a":"T3_L","node_b":"N6","distance_mm":800.0,"is_tunnel":false,"has_culvert":false,"speed_limit_ms":0.3},{"node_a":"N12","node_b":"T1_R","distance_mm":800.0,"is_tunnel":false,"has_culvert":false,"speed_limit_ms":0.3},{"node_a":"T1_R","node_b":"T2_R","distance_mm":800.0,"is_tunnel":false,"has_culvert":false,"speed_limit_ms":0.3},{"node_a":"T2_R","node_b":"T3_R","distance_mm":800.0,"is_tunnel":false,"has_culvert":false,"speed_limit_ms":0.3},{"node_a":"T3_R","node_b":"N7","distance_mm":800.0,"is_tunnel":false,"has_culvert":false,"speed_limit_ms":0.3},{"node_a":"N2","node_b":"N3","distance_mm":800.0,"is_tunnel":false,"has_culvert":false,"speed_limit_ms":0.3},{"node_a":"N3","node_b":"N4","distance_mm":800.0,"is_tunnel":false,"has_culvert":false,"speed_limit_ms":0.3},{"node_a":"N4","node_b":"N5","distance_mm":800.0,"is_tunnel":false,"has_culvert":false,"speed_limit_ms":0.3},{"node_a":"N11","node_b":"N10","distance_mm":800.0,"is_tunnel":false,"has_culvert":false,"speed_limit_ms":0.3},{"node_a":"N10","node_b":"N9","distance_mm":800.0,"is_tunnel":false,"has_culvert":false,"speed_limit_ms":0.3},{"node_a":"N9","node_b":"N8","distance_mm":800.0,"is_tunnel":false,"has_culvert":false,"speed_limit_ms":0.3},{"node_a":"N2","node_b":"T1_L","distance_mm":800.0,"is_tunnel":false,"has_culvert":false,"speed_limit_ms":0.3},{"node_a":"N3","node_b":"T2_L","distance_mm":800.0,"is_tunnel":false,"has_culvert":false,"speed_limit_ms":0.3},{"node_a":"N4","node_b":"T3_L","distance_mm":800.0,"is_tunnel":false,"has_culvert":false,"speed_limit_ms":0.3},{"node_a":"T1_R","node_b":"N11","distance_mm":800.0,"is_tunnel":false,"has_culvert":false,"speed_limit_ms":0.3},{"node_a":"T2_R","node_b":"N10","distance_mm":800.0,"is_tunnel":false,"has_culvert":false,"speed_limit_ms":0.3},{"node_a":"T3_R","node_b":"N9","distance_mm":800.0,"is_tunnel":false,"has_culvert":false,"speed_limit_ms":0.3},{"node_a":"T1_L","node_b":"T1_R","distance_mm":800.0,"is_tunnel":true,"has_culvert":false,"speed_limit_ms":0.15},{"node_a":"T2_L","node_b":"T2_R","distance_mm":800.0,"is_tunnel":true,"has_culvert":false,"speed_limit_ms":0.15},{"node_a":"T3_L","node_b":"T3_R","distance_mm":800.0,"is_tunnel":true,"has_culvert":false,"speed_limit_ms":0.15},{"node_a":"N5","node_b":"N6","distance_mm":800.0,"is_tunnel":false,"has_culvert":false,"speed_limit_ms":0.3},{"node_a":"N6","node_b":"N7","distance_mm":800.0,"is_tunnel":true,"has_culvert":false,"speed_limit_ms":0.15},{"node_a":"N7","node_b":"N8","distance_mm":800.0,"is_tunnel":false,"has_culvert":false,"speed_limit_ms":0.3}],"patrol_path":["START","J_START","N1","N12","T1_R","N11","N10","N9","N8","N7","N6","N5","N4","N3","N2"],"patrol_dist_mm":10200.0,"all_paths":{"START->J_START":["START","J_START"],"J_START->START":["J_START","START"],"START->N1":["START","J_START","N1"],"N1->START":["N1","J_START","START"],"START->T1_L":["START","J_START","N1","T1_L"],"T1_L->START":["T1_L","N1","J_START","START"],"START->T2_L":["START","J_START","N1","T1_L","T2_L"],"T2_L->START":["T2_L","T1_L","N1","J_START","START"],"START->T3_L":["START","J_START","N1","T1_L","T2_L","T3_L"],"T3_L->START":["T3_L","T2_L","T1_L","N1","J_START","START"],"START->N6":["START","J_START","N1","T1_L","T2_L","T3_L","N6"],"N6->START":["N6","T3_L","T2_L","T1_L","N1","J_START","START"],"START->N5":["START","J_START","N1","T1_L","N2","N3","N4","N5"],"N5->START":["N5","N4","N3","N2","T1_L","N1","J_START","START"],"START->N12":["START","J_START","N12"],"N12->START":["N12","J_START","START"],"START->T1_R":["START","J_START","N12","T1_R"],"T1_R->START":["T1_R","N12","J_START","START"],"START->T2_R":["START","J_START","N12","T1_R","T2_R"],"T2_R->START":["T2_R","T1_R","N12","J_START","START"],"START->T3_R":["START","J_START","N12","T1_R","T2_R","T3_R"],"T3_R->START":["T3_R","T2_R","T1_R","N12","J_START","START"],"START->N7":["START","J_START","N12","T1_R","T2_R","T3_R","N7"],"N7->START":["N7","T3_R","T2_R","T1_R","N12","J_START","START"],"START->N8":["START","J_START","N12","T1_R","T2_R","T3_R","N7","N8"],"N8->START":["N8","N7","T3_R","T2_R","T1_R","N12","J_START","START"],"START->N2":["START","J_START","N1","T1_L","N2"],"N2->START":["N2","T1_L","N1","J_START","START"],"START->N3":["START","J_START","N1","T1_L","N2","N3"],"N3->START":["N3","N2","T1_L","N1","J_START","START"],"START->N4":["START","J_START","N1","T1_L","N2","N3","N4"],"N4->START":["N4","N3","N2","T1_L","N1","J_START","START"],"START->N11":["START","J_START","N12","T1_R","N11"],"N11->START":["N11","T1_R","N12","J_START","START"],"START->N10":["START","J_START","N12","T1_R","N11","N10"],"N10->START":["N10","N11","T1_R","N12","J_START","START"],"START->N9":["START","J_START","N12","T1_R","N11","N10","N9"],"N9->START":["N9","N10","N11","T1_R","N12","J_START","START"],"J_START->N1":["J_START","N1"],"N1->J_START":["N1","J_START"],"J_START->T1_L":["J_START","N1","T1_L"],"T1_L->J_START":["T1_L","N1","J_START"],"J_START->T2_L":["J_START","N1","T1_L","T2_L"],"T2_L->J_START":["T2_L","T1_L","N1","J_START"],"J_START->T3_L":["J_START","N1","T1_L","T2_L","T3_L"],"T3_L->J_START":["T3_L","T2_L","T1_L","N1","J_START"],"J_START->N6":["J_START","N1","T1_L","T2_L","T3_L","N6"],"N6->J_START":["N6","T3_L","T2_L","T1_L","N1","J_START"],"J_START->N5":["J_START","N1","T1_L","N2","N3","N4","N5"],"N5->J_START":["N5","N4","N3","N2","T1_L","N1","J_START"],"J_START->N12":["J_START","N12"],"N12->J_START":["N12","J_START"],"J_START->T1_R":["J_START","N12","T1_R"],"T1_R->J_START":["T1_R","N12","J_START"],"J_START->T2_R":["J_START","N12","T1_R","T2_R"],"T2_R->J_START":["T2_R","T1_R","N12","J_START"],"J_START->T3_R":["J_START","N12","T1_R","T2_R","T3_R"],"T3_R->J_START":["T3_R","T2_R","T1_R","N12","J_START"],"J_START->N7":["J_START","N12","T1_R","T2_R","T3_R","N7"],"N7->J_START":["N7","T3_R","T2_R","T1_R","N12","J_START"],"J_START->N8":["J_START","N12","T1_R","T2_R","T3_R","N7","N8"],"N8->J_START":["N8","N7","T3_R","T2_R","T1_R","N12","J_START"],"J_START->N2":["J_START","N1","T1_L","N2"],"N2->J_START":["N2","T1_L","N1","J_START"],"J_START->N3":["J_START","N1","T1_L","N2","N3"],"N3->J_START":["N3","N2","T1_L","N1","J_START"],"J_START->N4":["J_START","N1","T1_L","N2","N3","N4"],"N4->J_START":["N4","N3","N2","T1_L","N1","J_START"],"J_START->N11":["J_START","N12","T1_R","N11"],"N11->J_START":["N11","T1_R","N12","J_START"],"J_START->N10":["J_START","N12","T1_R","N11","N10"],"N10->J_START":["N10","N11","T1_R","N12","J_START"],"J_START->N9":["J_START","N12","T1_R","N11","N10","N9"],"N9->J_START":["N9","N10","N11","T1_R","N12","J_START"],"N1->T1_L":["N1","T1_L"],"T1_L->N1":["T1_L","N1"],"N1->T2_L":["N1","T1_L","T2_L"],"T2_L->N1":["T2_L","T1_L","N1"],"N1->T3_L":["N1","T1_L","T2_L","T3_L"],"T3_L->N1":["T3_L","T2_L","T1_L","N1"],"N1->N6":["N1","T1_L","T2_L","T3_L","N6"],"N6->N1":["N6","T3_L","T2_L","T1_L","N1"],"N1->N5":["N1","T1_L","N2","N3","N4","N5"],"N5->N1":["N5","N4","N3","N2","T1_L","N1"],"N1->N12":["N1","N12"],"N12->N1":["N12","N1"],"N1->T1_R":["N1","N12","T1_R"],"T1_R->N1":["T1_R","N12","N1"],"N1->T2_R":["N1","N12","T1_R","T2_R"],"T2_R->N1":["T2_R","T1_R","N12","N1"],"N1->T3_R":["N1","N12","T1_R","T2_R","T3_R"],"T3_R->N1":["T3_R","T2_R","T1_R","N12","N1"],"N1->N7":["N1","T1_L","T2_L","T3_L","N6","N7"],"N7->N1":["N7","N6","T3_L","T2_L","T1_L","N1"],"N1->N8":["N1","T1_L","T2_L","T3_L","N6","N7","N8"],"N8->N1":["N8","N7","N6","T3_L","T2_L","T1_L","N1"],"N1->N2":["N1","T1_L","N2"],"N2->N1":["N2","T1_L","N1"],"N1->N3":["N1","T1_L","N2","N3"],"N3->N1":["N3","N2","T1_L","N1"],"N1->N4":["N1","T1_L","N2","N3","N4"],"N4->N1":["N4","N3","N2","T1_L","N1"],"N1->N11":["N1","N12","T1_R","N11"],"N11->N1":["N11","T1_R","N12","N1"],"N1->N10":["N1","N12","T1_R","N11","N10"],"N10->N1":["N10","N11","T1_R","N12","N1"],"N1->N9":["N1","N12","T1_R","N11","N10","N9"],"N9->N1":["N9","N10","N11","T1_R","N12","N1"],"T1_L->T2_L":["T1_L","T2_L"],"T2_L->T1_L":["T2_L","T1_L"],"T1_L->T3_L":["T1_L","T2_L","T3_L"],"T3_L->T1_L":["T3_L","T2_L","T1_L"],"T1_L->N6":["T1_L","T2_L","T3_L","N6"],"N6->T1_L":["N6","T3_L","T2_L","T1_L"],"T1_L->N5":["T1_L","N2","N3","N4","N5"],"N5->T1_L":["N5","N4","N3","N2","T1_L"],"T1_L->N12":["T1_L","N1","N12"],"N12->T1_L":["N12","N1","T1_L"],"T1_L->T1_R":["T1_L","T1_R"],"T1_R->T1_L":["T1_R","T1_L"],"T1_L->T2_R":["T1_L","T1_R","T2_R"],"T2_R->T1_L":["T2_R","T1_R","T1_L"],"T1_L->T3_R":["T1_L","T1_R","T2_R","T3_R"],"T3_R->T1_L":["T3_R","T2_R","T1_R","T1_L"],"T1_L->N7":["T1_L","T2_L","T3_L","N6","N7"],"N7->T1_L":["N7","N6","T3_L","T2_L","T1_L"],"T1_L->N8":["T1_L","T2_L","T3_L","N6","N7","N8"],"N8->T1_L":["N8","N7","N6","T3_L","T2_L","T1_L"],"T1_L->N2":["T1_L","N2"],"N2->T1_L":["N2","T1_L"],"T1_L->N3":["T1_L","N2","N3"],"N3->T1_L":["N3","N2","T1_L"],"T1_L->N4":["T1_L","N2","N3","N4"],"N4->T1_L":["N4","N3","N2","T1_L"],"T1_L->N11":["T1_L","T1_R","N11"],"N11->T1_L":["N11","T1_R","T1_L"],"T1_L->N10":["T1_L","T1_R","N11","N10"],"N10->T1_L":["N10","N11","T1_R","T1_L"],"T1_L->N9":["T1_L","T1_R","N11","N10","N9"],"N9->T1_L":["N9","N10","N11","T1_R","T1_L"],"T2_L->T3_L":["T2_L","T3_L"],"T3_L->T2_L":["T3_L","T2_L"],"T2_L->N6":["T2_L","T3_L","N6"],"N6->T2_L":["N6","T3_L","T2_L"],"T2_L->N5":["T2_L","N3","N4","N5"],"N5->T2_L":["N5","N4","N3","T2_L"],"T2_L->N12":["T2_L","T1_L","N1","N12"],"N12->T2_L":["N12","N1","T1_L","T2_L"],"T2_L->T1_R":["T2_L","T1_L","T1_R"],"T1_R->T2_L":["T1_R","T1_L","T2_L"],"T2_L->T2_R":["T2_L","T2_R"],"T2_R->T2_L":["T2_R","T2_L"],"T2_L->T3_R":["T2_L","T2_R","T3_R"],"T3_R->T2_L":["T3_R","T2_R","T2_L"],"T2_L->N7":["T2_L","T3_L","N6","N7"],"N7->T2_L":["N7","N6","T3_L","T2_L"],"T2_L->N8":["T2_L","T3_L","N6","N7","N8"],"N8->T2_L":["N8","N7","N6","T3_L","T2_L"],"T2_L->N2":["T2_L","N3","N2"],"N2->T2_L":["N2","N3","T2_L"],"T2_L->N3":["T2_L","N3"],"N3->T2_L":["N3","T2_L"],"T2_L->N4":["T2_L","N3","N4"],"N4->T2_L":["N4","N3","T2_L"],"T2_L->N11":["T2_L","T2_R","N10","N11"],"N11->T2_L":["N11","N10","T2_R","T2_L"],"T2_L->N10":["T2_L","T2_R","N10"],"N10->T2_L":["N10","T2_R","T2_L"],"T2_L->N9":["T2_L","T2_R","N10","N9"],"N9->T2_L":["N9","N10","T2_R","T2_L"],"T3_L->N6":["T3_L","N6"],"N6->T3_L":["N6","T3_L"],"T3_L->N5":["T3_L","N4","N5"],"N5->T3_L":["N5","N4","T3_L"],"T3_L->N12":["T3_L","T2_L","T1_L","N1","N12"],"N12->T3_L":["N12","N1","T1_L","T2_L","T3_L"],"T3_L->T1_R":["T3_L","T2_L","T1_L","T1_R"],"T1_R->T3_L":["T1_R","T1_L","T2_L","T3_L"],"T3_L->T2_R":["T3_L","T2_L","T2_R"],"T2_R->T3_L":["T2_R","T2_L","T3_L"],"T3_L->T3_R":["T3_L","T3_R"],"T3_R->T3_L":["T3_R","T3_L"],"T3_L->N7":["T3_L","N6","N7"],"N7->T3_L":["N7","N6","T3_L"],"T3_L->N8":["T3_L","N6","N7","N8"],"N8->T3_L":["N8","N7","N6","T3_L"],"T3_L->N2":["T3_L","N4","N3","N2"],"N2->T3_L":["N2","N3","N4","T3_L"],"T3_L->N3":["T3_L","N4","N3"],"N3->T3_L":["N3","N4","T3_L"],"T3_L->N4":["T3_L","N4"],"N4->T3_L":["N4","T3_L"],"T3_L->N11":["T3_L","T3_R","N9","N10","N11"],"N11->T3_L":["N11","N10","N9","T3_R","T3_L"],"T3_L->N10":["T3_L","T3_R","N9","N10"],"N10->T3_L":["N10","N9","T3_R","T3_L"],"T3_L->N9":["T3_L","T3_R","N9"],"N9->T3_L":["N9","T3_R","T3_L"],"N6->N5":["N6","N5"],"N5->N6":["N5","N6"],"N6->N12":["N6","T3_L","T2_L","T1_L","N1","N12"],"N12->N6":["N12","N1","T1_L","T2_L","T3_L","N6"],"N6->T1_R":["N6","T3_L","T2_L","T1_L","T1_R"],"T1_R->N6":["T1_R","T1_L","T2_L","T3_L","N6"],"N6->T2_R":["N6","T3_L","T2_L","T2_R"],"T2_R->N6":["T2_R","T2_L","T3_L","N6"],"N6->T3_R":["N6","N7","T3_R"],"T3_R->N6":["T3_R","N7","N6"],"N6->N7":["N6","N7"],"N7->N6":["N7","N6"],"N6->N8":["N6","N7","N8"],"N8->N6":["N8","N7","N6"],"N6->N2":["N6","N5","N4","N3","N2"],"N2->N6":["N2","N3","N4","N5","N6"],"N6->N3":["N6","N5","N4","N3"],"N3->N6":["N3","N4","N5","N6"],"N6->N4":["N6","N5","N4"],"N4->N6":["N4","N5","N6"],"N6->N11":["N6","N7","N8","N9","N10","N11"],"N11->N6":["N11","N10","N9","N8","N7","N6"],"N6->N10":["N6","N7","N8","N9","N10"],"N10->N6":["N10","N9","N8","N7","N6"],"N6->N9":["N6","N7","N8","N9"],"N9->N6":["N9","N8","N7","N6"],"N5->N12":["N5","N4","N3","N2","T1_L","N1","N12"],"N12->N5":["N12","N1","T1_L","N2","N3","N4","N5"],"N5->T1_R":["N5","N4","N3","N2","T1_L","T1_R"],"T1_R->N5":["T1_R","T1_L","N2","N3","N4","N5"],"N5->T2_R":["N5","N4","N3","T2_L","T2_R"],"T2_R->N5":["T2_R","T2_L","N3","N4","N5"],"N5->T3_R":["N5","N6","N7","T3_R"],"T3_R->N5":["T3_R","N7","N6","N5"],"N5->N7":["N5","N6","N7"],"N7->N5":["N7","N6","N5"],"N5->N8":["N5","N6","N7","N8"],"N8->N5":["N8","N7","N6","N5"],"N5->N2":["N5","N4","N3","N2"],"N2->N5":["N2","N3","N4","N5"],"N5->N3":["N5","N4","N3"],"N3->N5":["N3","N4","N5"],"N5->N4":["N5","N4"],"N4->N5":["N4","N5"],"N5->N11":["N5","N6","N7","N8","N9","N10","N11"],"N11->N5":["N11","N10","N9","N8","N7","N6","N5"],"N5->N10":["N5","N6","N7","N8","N9","N10"],"N10->N5":["N10","N9","N8","N7","N6","N5"],"N5->N9":["N5","N6","N7","N8","N9"],"N9->N5":["N9","N8","N7","N6","N5"],"N12->T1_R":["N12","T1_R"],"T1_R->N12":["T1_R","N12"],"N12->T2_R":["N12","T1_R","T2_R"],"T2_R->N12":["T2_R","T1_R","N12"],"N12->T3_R":["N12","T1_R","T2_R","T3_R"],"T3_R->N12":["T3_R","T2_R","T1_R","N12"],"N12->N7":["N12","T1_R","T2_R","T3_R","N7"],"N7->N12":["N7","T3_R","T2_R","T1_R","N12"],"N12->N8":["N12","T1_R","T2_R","T3_R","N7","N8"],"N8->N12":["N8","N7","T3_R","T2_R","T1_R","N12"],"N12->N2":["N12","N1","T1_L","N2"],"N2->N12":["N2","T1_L","N1","N12"],"N12->N3":["N12","N1","T1_L","N2","N3"],"N3->N12":["N3","N2","T1_L","N1","N12"],"N12->N4":["N12","N1","T1_L","N2","N3","N4"],"N4->N12":["N4","N3","N2","T1_L","N1","N12"],"N12->N11":["N12","T1_R","N11"],"N11->N12":["N11","T1_R","N12"],"N12->N10":["N12","T1_R","N11","N10"],"N10->N12":["N10","N11","T1_R","N12"],"N12->N9":["N12","T1_R","N11","N10","N9"],"N9->N12":["N9","N10","N11","T1_R","N12"],"T1_R->T2_R":["T1_R","T2_R"],"T2_R->T1_R":["T2_R","T1_R"],"T1_R->T3_R":["T1_R","T2_R","T3_R"],"T3_R->T1_R":["T3_R","T2_R","T1_R"],"T1_R->N7":["T1_R","T2_R","T3_R","N7"],"N7->T1_R":["N7","T3_R","T2_R","T1_R"],"T1_R->N8":["T1_R","T2_R","T3_R","N7","N8"],"N8->T1_R":["N8","N7","T3_R","T2_R","T1_R"],"T1_R->N2":["T1_R","T1_L","N2"],"N2->T1_R":["N2","T1_L","T1_R"],"T1_R->N3":["T1_R","T1_L","N2","N3"],"N3->T1_R":["N3","N2","T1_L","T1_R"],"T1_R->N4":["T1_R","T1_L","N2","N3","N4"],"N4->T1_R":["N4","N3","N2","T1_L","T1_R"],"T1_R->N11":["T1_R","N11"],"N11->T1_R":["N11","T1_R"],"T1_R->N10":["T1_R","N11","N10"],"N10->T1_R":["N10","N11","T1_R"],"T1_R->N9":["T1_R","N11","N10","N9"],"N9->T1_R":["N9","N10","N11","T1_R"],"T2_R->T3_R":["T2_R","T3_R"],"T3_R->T2_R":["T3_R","T2_R"],"T2_R->N7":["T2_R","T3_R","N7"],"N7->T2_R":["N7","T3_R","T2_R"],"T2_R->N8":["T2_R","T3_R","N7","N8"],"N8->T2_R":["N8","N7","T3_R","T2_R"],"T2_R->N2":["T2_R","T2_L","N3","N2"],"N2->T2_R":["N2","N3","T2_L","T2_R"],"T2_R->N3":["T2_R","T2_L","N3"],"N3->T2_R":["N3","T2_L","T2_R"],"T2_R->N4":["T2_R","T2_L","N3","N4"],"N4->T2_R":["N4","N3","T2_L","T2_R"],"T2_R->N11":["T2_R","N10","N11"],"N11->T2_R":["N11","N10","T2_R"],"T2_R->N10":["T2_R","N10"],"N10->T2_R":["N10","T2_R"],"T2_R->N9":["T2_R","N10","N9"],"N9->T2_R":["N9","N10","T2_R"],"T3_R->N7":["T3_R","N7"],"N7->T3_R":["N7","T3_R"],"T3_R->N8":["T3_R","N7","N8"],"N8->T3_R":["N8","N7","T3_R"],"T3_R->N2":["T3_R","T3_L","N4","N3","N2"],"N2->T3_R":["N2","N3","N4","T3_L","T3_R"],"T3_R->N3":["T3_R","T3_L","N4","N3"],"N3->T3_R":["N3","N4","T3_L","T3_R"],"T3_R->N4":["T3_R","T3_L","N4"],"N4->T3_R":["N4","T3_L","T3_R"],"T3_R->N11":["T3_R","N9","N10","N11"],"N11->T3_R":["N11","N10","N9","T3_R"],"T3_R->N10":["T3_R","N9","N10"],"N10->T3_R":["N10","N9","T3_R"],"T3_R->N9":["T3_R","N9"],"N9->T3_R":["N9","T3_R"],"N7->N8":["N7","N8"],"N8->N7":["N8","N7"],"N7->N2":["N7","N6","N5","N4","N3","N2"],"N2->N7":["N2","N3","N4","N5","N6","N7"],"N7->N3":["N7","N6","N5","N4","N3"],"N3->N7":["N3","N4","N5","N6","N7"],"N7->N4":["N7","N6","N5","N4"],"N4->N7":["N4","N5","N6","N7"],"N7->N11":["N7","N8","N9","N10","N11"],"N11->N7":["N11","N10","N9","N8","N7"],"N7->N10":["N7","N8","N9","N10"],"N10->N7":["N10","N9","N8","N7"],"N7->N9":["N7","N8","N9"],"N9->N7":["N9","N8","N7"],"N8->N2":["N8","N7","N6","N5","N4","N3","N2"],"N2->N8":["N2","N3","N4","N5","N6","N7","N8"],"N8->N3":["N8","N7","N6","N5","N4","N3"],"N3->N8":["N3","N4","N5","N6","N7","N8"],"N8->N4":["N8","N7","N6","N5","N4"],"N4->N8":["N4","N5","N6","N7","N8"],"N8->N11":["N8","N9","N10","N11"],"N11->N8":["N11","N10","N9","N8"],"N8->N10":["N8","N9","N10"],"N10->N8":["N10","N9","N8"],"N8->N9":["N8","N9"],"N9->N8":["N9","N8"],"N2->N3":["N2","N3"],"N3->N2":["N3","N2"],"N2->N4":["N2","N3","N4"],"N4->N2":["N4","N3","N2"],"N2->N11":["N2","T1_L","T1_R","N11"],"N11->N2":["N11","T1_R","T1_L","N2"],"N2->N10":["N2","T1_L","T1_R","N11","N10"],"N10->N2":["N10","N11","T1_R","T1_L","N2"],"N2->N9":["N2","T1_L","T1_R","N11","N10","N9"],"N9->N2":["N9","N10","N11","T1_R","T1_L","N2"],"N3->N4":["N3","N4"],"N4->N3":["N4","N3"],"N3->N11":["N3","T2_L","T2_R","N10","N11"],"N11->N3":["N11","N10","T2_R","T2_L","N3"],"N3->N10":["N3","T2_L","T2_R","N10"],"N10->N3":["N10","T2_R","T2_L","N3"],"N3->N9":["N3","T2_L","T2_R","N10","N9"],"N9->N3":["N9","N10","T2_R","T2_L","N3"],"N4->N11":["N4","T3_L","T3_R","N9","N10","N11"],"N11->N4":["N11","N10","N9","T3_R","T3_L","N4"],"N4->N10":["N4","T3_L","T3_R","N9","N10"],"N10->N4":["N10","N9","T3_R","T3_L","N4"],"N4->N9":["N4","T3_L","T3_R","N9"],"N9->N4":["N9","T3_R","T3_L","N4"],"N11->N10":["N11","N10"],"N10->N11":["N10","N11"],"N11->N9":["N11","N10","N9"],"N9->N11":["N9","N10","N11"],"N10->N9":["N10","N9"],"N9->N10":["N9","N10"]},"all_dists":{"START->J_START":200.0,"J_START->START":200.0,"START->N1":600.0,"N1->START":600.0,"START->T1_L":1400.0,"T1_L->START":1400.0,"START->T2_L":2200.0,"T2_L->START":2200.0,"START->T3_L":3000.0,"T3_L->START":3000.0,"START->N6":3800.0,"N6->START":3800.0,"START->N5":4600.0,"N5->START":4600.0,"START->N12":600.0,"N12->START":600.0,"START->T1_R":1400.0,"T1_R->START":1400.0,"START->T2_R":2200.0,"T2_R->START":2200.0,"START->T3_R":3000.0,"T3_R->START":3000.0,"START->N7":3800.0,"N7->START":3800.0,"START->N8":4600.0,"N8->START":4600.0,"START->N2":2200.0,"N2->START":2200.0,"START->N3":3000.0,"N3->START":3000.0,"START->N4":3800.0,"N4->START":3800.0,"START->N11":2200.0,"N11->START":2200.0,"START->N10":3000.0,"N10->START":3000.0,"START->N9":3800.0,"N9->START":3800.0,"J_START->N1":400.0,"N1->J_START":400.0,"J_START->T1_L":1200.0,"T1_L->J_START":1200.0,"J_START->T2_L":2000.0,"T2_L->J_START":2000.0,"J_START->T3_L":2800.0,"T3_L->J_START":2800.0,"J_START->N6":3600.0,"N6->J_START":3600.0,"J_START->N5":4400.0,"N5->J_START":4400.0,"J_START->N12":400.0,"N12->J_START":400.0,"J_START->T1_R":1200.0,"T1_R->J_START":1200.0,"J_START->T2_R":2000.0,"T2_R->J_START":2000.0,"J_START->T3_R":2800.0,"T3_R->J_START":2800.0,"J_START->N7":3600.0,"N7->J_START":3600.0,"J_START->N8":4400.0,"N8->J_START":4400.0,"J_START->N2":2000.0,"N2->J_START":2000.0,"J_START->N3":2800.0,"N3->J_START":2800.0,"J_START->N4":3600.0,"N4->J_START":3600.0,"J_START->N11":2000.0,"N11->J_START":2000.0,"J_START->N10":2800.0,"N10->J_START":2800.0,"J_START->N9":3600.0,"N9->J_START":3600.0,"N1->T1_L":800.0,"T1_L->N1":800.0,"N1->T2_L":1600.0,"T2_L->N1":1600.0,"N1->T3_L":2400.0,"T3_L->N1":2400.0,"N1->N6":3200.0,"N6->N1":3200.0,"N1->N5":4000.0,"N5->N1":4000.0,"N1->N12":800.0,"N12->N1":800.0,"N1->T1_R":1600.0,"T1_R->N1":1600.0,"N1->T2_R":2400.0,"T2_R->N1":2400.0,"N1->T3_R":3200.0,"T3_R->N1":3200.0,"N1->N7":4000.0,"N7->N1":4000.0,"N1->N8":4800.0,"N8->N1":4800.0,"N1->N2":1600.0,"N2->N1":1600.0,"N1->N3":2400.0,"N3->N1":2400.0,"N1->N4":3200.0,"N4->N1":3200.0,"N1->N11":2400.0,"N11->N1":2400.0,"N1->N10":3200.0,"N10->N1":3200.0,"N1->N9":4000.0,"N9->N1":4000.0,"T1_L->T2_L":800.0,"T2_L->T1_L":800.0,"T1_L->T3_L":1600.0,"T3_L->T1_L":1600.0,"T1_L->N6":2400.0,"N6->T1_L":2400.0,"T1_L->N5":3200.0,"N5->T1_L":3200.0,"T1_L->N12":1600.0,"N12->T1_L":1600.0,"T1_L->T1_R":800.0,"T1_R->T1_L":800.0,"T1_L->T2_R":1600.0,"T2_R->T1_L":1600.0,"T1_L->T3_R":2400.0,"T3_R->T1_L":2400.0,"T1_L->N7":3200.0,"N7->T1_L":3200.0,"T1_L->N8":4000.0,"N8->T1_L":4000.0,"T1_L->N2":800.0,"N2->T1_L":800.0,"T1_L->N3":1600.0,"N3->T1_L":1600.0,"T1_L->N4":2400.0,"N4->T1_L":2400.0,"T1_L->N11":1600.0,"N11->T1_L":1600.0,"T1_L->N10":2400.0,"N10->T1_L":2400.0,"T1_L->N9":3200.0,"N9->T1_L":3200.0,"T2_L->T3_L":800.0,"T3_L->T2_L":800.0,"T2_L->N6":1600.0,"N6->T2_L":1600.0,"T2_L->N5":2400.0,"N5->T2_L":2400.0,"T2_L->N12":2400.0,"N12->T2_L":2400.0,"T2_L->T1_R":1600.0,"T1_R->T2_L":1600.0,"T2_L->T2_R":800.0,"T2_R->T2_L":800.0,"T2_L->T3_R":1600.0,"T3_R->T2_L":1600.0,"T2_L->N7":2400.0,"N7->T2_L":2400.0,"T2_L->N8":3200.0,"N8->T2_L":3200.0,"T2_L->N2":1600.0,"N2->T2_L":1600.0,"T2_L->N3":800.0,"N3->T2_L":800.0,"T2_L->N4":1600.0,"N4->T2_L":1600.0,"T2_L->N11":2400.0,"N11->T2_L":2400.0,"T2_L->N10":1600.0,"N10->T2_L":1600.0,"T2_L->N9":2400.0,"N9->T2_L":2400.0,"T3_L->N6":800.0,"N6->T3_L":800.0,"T3_L->N5":1600.0,"N5->T3_L":1600.0,"T3_L->N12":3200.0,"N12->T3_L":3200.0,"T3_L->T1_R":2400.0,"T1_R->T3_L":2400.0,"T3_L->T2_R":1600.0,"T2_R->T3_L":1600.0,"T3_L->T3_R":800.0,"T3_R->T3_L":800.0,"T3_L->N7":1600.0,"N7->T3_L":1600.0,"T3_L->N8":2400.0,"N8->T3_L":2400.0,"T3_L->N2":2400.0,"N2->T3_L":2400.0,"T3_L->N3":1600.0,"N3->T3_L":1600.0,"T3_L->N4":800.0,"N4->T3_L":800.0,"T3_L->N11":3200.0,"N11->T3_L":3200.0,"T3_L->N10":2400.0,"N10->T3_L":2400.0,"T3_L->N9":1600.0,"N9->T3_L":1600.0,"N6->N5":800.0,"N5->N6":800.0,"N6->N12":4000.0,"N12->N6":4000.0,"N6->T1_R":3200.0,"T1_R->N6":3200.0,"N6->T2_R":2400.0,"T2_R->N6":2400.0,"N6->T3_R":1600.0,"T3_R->N6":1600.0,"N6->N7":800.0,"N7->N6":800.0,"N6->N8":1600.0,"N8->N6":1600.0,"N6->N2":3200.0,"N2->N6":3200.0,"N6->N3":2400.0,"N3->N6":2400.0,"N6->N4":1600.0,"N4->N6":1600.0,"N6->N11":4000.0,"N11->N6":4000.0,"N6->N10":3200.0,"N10->N6":3200.0,"N6->N9":2400.0,"N9->N6":2400.0,"N5->N12":4800.0,"N12->N5":4800.0,"N5->T1_R":4000.0,"T1_R->N5":4000.0,"N5->T2_R":3200.0,"T2_R->N5":3200.0,"N5->T3_R":2400.0,"T3_R->N5":2400.0,"N5->N7":1600.0,"N7->N5":1600.0,"N5->N8":2400.0,"N8->N5":2400.0,"N5->N2":2400.0,"N2->N5":2400.0,"N5->N3":1600.0,"N3->N5":1600.0,"N5->N4":800.0,"N4->N5":800.0,"N5->N11":4800.0,"N11->N5":4800.0,"N5->N10":4000.0,"N10->N5":4000.0,"N5->N9":3200.0,"N9->N5":3200.0,"N12->T1_R":800.0,"T1_R->N12":800.0,"N12->T2_R":1600.0,"T2_R->N12":1600.0,"N12->T3_R":2400.0,"T3_R->N12":2400.0,"N12->N7":3200.0,"N7->N12":3200.0,"N12->N8":4000.0,"N8->N12":4000.0,"N12->N2":2400.0,"N2->N12":2400.0,"N12->N3":3200.0,"N3->N12":3200.0,"N12->N4":4000.0,"N4->N12":4000.0,"N12->N11":1600.0,"N11->N12":1600.0,"N12->N10":2400.0,"N10->N12":2400.0,"N12->N9":3200.0,"N9->N12":3200.0,"T1_R->T2_R":800.0,"T2_R->T1_R":800.0,"T1_R->T3_R":1600.0,"T3_R->T1_R":1600.0,"T1_R->N7":2400.0,"N7->T1_R":2400.0,"T1_R->N8":3200.0,"N8->T1_R":3200.0,"T1_R->N2":1600.0,"N2->T1_R":1600.0,"T1_R->N3":2400.0,"N3->T1_R":2400.0,"T1_R->N4":3200.0,"N4->T1_R":3200.0,"T1_R->N11":800.0,"N11->T1_R":800.0,"T1_R->N10":1600.0,"N10->T1_R":1600.0,"T1_R->N9":2400.0,"N9->T1_R":2400.0,"T2_R->T3_R":800.0,"T3_R->T2_R":800.0,"T2_R->N7":1600.0,"N7->T2_R":1600.0,"T2_R->N8":2400.0,"N8->T2_R":2400.0,"T2_R->N2":2400.0,"N2->T2_R":2400.0,"T2_R->N3":1600.0,"N3->T2_R":1600.0,"T2_R->N4":2400.0,"N4->T2_R":2400.0,"T2_R->N11":1600.0,"N11->T2_R":1600.0,"T2_R->N10":800.0,"N10->T2_R":800.0,"T2_R->N9":1600.0,"N9->T2_R":1600.0,"T3_R->N7":800.0,"N7->T3_R":800.0,"T3_R->N8":1600.0,"N8->T3_R":1600.0,"T3_R->N2":3200.0,"N2->T3_R":3200.0,"T3_R->N3":2400.0,"N3->T3_R":2400.0,"T3_R->N4":1600.0,"N4->T3_R":1600.0,"T3_R->N11":2400.0,"N11->T3_R":2400.0,"T3_R->N10":1600.0,"N10->T3_R":1600.0,"T3_R->N9":800.0,"N9->T3_R":800.0,"N7->N8":800.0,"N8->N7":800.0,"N7->N2":4000.0,"N2->N7":4000.0,"N7->N3":3200.0,"N3->N7":3200.0,"N7->N4":2400.0,"N4->N7":2400.0,"N7->N11":3200.0,"N11->N7":3200.0,"N7->N10":2400.0,"N10->N7":2400.0,"N7->N9":1600.0,"N9->N7":1600.0,"N8->N2":4800.0,"N2->N8":4800.0,"N8->N3":4000.0,"N3->N8":4000.0,"N8->N4":3200.0,"N4->N8":3200.0,"N8->N11":2400.0,"N11->N8":2400.0,"N8->N10":1600.0,"N10->N8":1600.0,"N8->N9":800.0,"N9->N8":800.0,"N2->N3":800.0,"N3->N2":800.0,"N2->N4":1600.0,"N4->N2":1600.0,"N2->N11":2400.0,"N11->N2":2400.0,"N2->N10":3200.0,"N10->N2":3200.0,"N2->N9":4000.0,"N9->N2":4000.0,"N3->N4":800.0,"N4->N3":800.0,"N3->N11":3200.0,"N11->N3":3200.0,"N3->N10":2400.0,"N10->N3":2400.0,"N3->N9":3200.0,"N9->N3":3200.0,"N4->N11":4000.0,"N11->N4":4000.0,"N4->N10":3200.0,"N10->N4":3200.0,"N4->N9":2400.0,"N9->N4":2400.0,"N11->N10":800.0,"N10->N11":800.0,"N11->N9":1600.0,"N9->N11":1600.0,"N10->N9":800.0,"N9->N10":800.0},"lane_width_mm":200.0,"expected_yaw":{"down":0.0,"right":90.0,"left":-90.0,"up":180.0},"mission_nodes":["N1","N12","N2","N11","N3","N10","N4","N9","N5","N6","N7","N8"],"junction_nodes":["J_START","T1_L","T1_R","T2_L","T2_R","T3_L","T3_R"],"field_size_mm":[3200,4400],"node_coords":{"START":{"x":0,"y":0},"J_START":{"x":0,"y":200},"N1":{"x":-400,"y":200},"T1_L":{"x":-400,"y":1000},"T2_L":{"x":-400,"y":1800},"T3_L":{"x":-400,"y":2600},"N6":{"x":-400,"y":3400},"N5":{"x":-1200,"y":3400},"N12":{"x":400,"y":200},"T1_R":{"x":400,"y":1000},"T2_R":{"x":400,"y":1800},"T3_R":{"x":400,"y":2600},"N7":{"x":400,"y":3400},"N8":{"x":1200,"y":3400},"N2":{"x":-1200,"y":1000},"N3":{"x":-1200,"y":1800},"N4":{"x":-1200,"y":2600},"N11":{"x":1200,"y":1000},"N10":{"x":1200,"y":1800},"N9":{"x":1200,"y":2600}}};
+</script>
+
+<!-- ===== 核心脚本 ===== -->
+<script src="../static/js/dashboard.js"></script>
+
+
+</body>
+</html>

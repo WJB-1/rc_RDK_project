@@ -1,0 +1,136 @@
+# ============================================
+# RoboCup Rescue Brain - 全局配置文件
+# 硬件平台: RDK X5 + STM32
+# ============================================
+
+# --------------------------------------------
+# 摄像头配置
+# --------------------------------------------
+cameras:
+  front:
+    device_id: 0              # 前视摄像头设备ID (巡线)
+    width: 1920
+    height: 1080
+    fps: 30
+    exposure: -1              # -1 自动曝光
+    auto_focus: false
+  side:
+    device_id: 1              # 侧视摄像头设备ID (涵洞侦察)
+    width: 1920
+    height: 1080
+    fps: 30
+    exposure: -1
+    auto_focus: true
+
+# --------------------------------------------
+# 补光灯配置
+# --------------------------------------------
+led:
+  front_pin: 17               # 前视补光灯GPIO
+  side_pin: 27                # 侧视补光灯GPIO
+  tunnel_brightness: 255
+  normal_brightness: 128
+
+# --------------------------------------------
+# 语义分割 (BiSeNetV2 BPU)
+# --------------------------------------------
+segmentation:
+  model_path: "models/bisenetv2_lane_x5.bin"
+  input_size: 512
+  target_class: 1              # 赛道类别索引
+
+# --------------------------------------------
+# 数学逆透视变换 (Analytical IPM)
+# --------------------------------------------
+math_ipm:
+  img_w: 1920
+  img_h: 1080
+  focal_length_mm: 2.8
+  pixel_size_mm: 0.003
+  camera_height_mm: 173
+  pitch_deg: 40.0
+  canvas_w: 400
+  canvas_h: 400
+  pixel_per_mm: 0.5
+  blind_spot_mm: 200.0
+  physical_track_width_mm: 200.0
+
+# --------------------------------------------
+# 串口通讯 (STM32)
+# --------------------------------------------
+serial:
+  port: "/dev/ttyUSB0"
+  baudrate: 115200
+  timeout: 0.01
+  write_timeout: 0.01
+
+# --------------------------------------------
+# Web 调试服务器
+# --------------------------------------------
+web_debug:
+  enabled: true
+  host: "0.0.0.0"
+  port: 5000
+
+# --------------------------------------------
+# 赛道物理参数
+# --------------------------------------------
+track:
+  lane_width_mm: 200.0         # 车道物理宽度
+  tunnel_segment_length_mm: 800.0
+  straight_segment_length_mm: 800.0
+  start_depth_mm: 200.0        # START → J_START 距离 (启动桥)
+  main_track_span_mm: 800.0    # N1 到 N12 的水平间距
+  half_track_span_mm: 400.0    # J_START → N1/N12 距离
+
+# --------------------------------------------
+# 边属性默认值
+# --------------------------------------------
+edge:
+  defaults:
+    speed_limit_ms: 0.30       # 普通路段巡航速度 m/s
+  tunnel:
+    speed_limit_ms: 0.15       # 隧道内降速 m/s
+  penalty_factor: 0.6          # TSP 隧道边权重降低 (1.0 = 无偏好)
+
+# --------------------------------------------
+# Agent 状态机参数
+# --------------------------------------------
+state_machine:
+  odom_update_hz: 50.0
+  approach_threshold_mm: 150.0
+  turn_finish_threshold_mm: 50.0
+  stop_distance_mm: 100.0
+  turn_timeout_s: 2.0           # 转弯超时额外秒数
+  # --- EDGE_EXECUTING ---
+  edge_obstacle_enable_ratio: 0.3   # 边走了 30% 后才启用障碍物检测
+  edge_backtrack_ratio: 0.8         # 回退时走了 80% 就认为回到了起点
+  edge_stall_timeout_s: 2.0         # 里程停滞 2s 报超时
+  edge_extra_distance_ratio: 1.5    # 走了 1.5×边长度还没到 → 超时
+  edge_stall_odom_delta_mm: 1.0     # 1mm 内视为停滞
+  # --- 视觉路口 ---
+  crossroad_max_distance_mm: 800     # 超过此距离不触发路口
+  crossroad_fallback_mm: 300         # 异常值兜底
+  crossroad_max_valid_mm: 2000       # 距离上限
+  # --- 视觉偏转角 ---
+  yaw_correction_alpha: 0.05         # 微调权重
+  yaw_correction_max_deg: 10.0       # 角度异常阈值
+  # --- 转向判定 ---
+  turn_straight_deg: 15.0            # |diff| < 此值 → 直行
+  turn_uturn_deg: 160.0              # |diff| > 此值 → 掉头
+
+# --------------------------------------------
+# 期望航向角常量
+# --------------------------------------------
+expected_yaw:
+  down: 0.0
+  right: 90.0
+  left: -90.0
+  up: 180.0
+
+# --------------------------------------------
+# 调试选项
+# --------------------------------------------
+debug:
+  show_video: false           # 本地 cv2.imshow (已废弃，用 Web 面板)
+  log_level: "INFO"
