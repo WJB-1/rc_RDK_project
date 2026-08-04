@@ -1,0 +1,1571 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RoboCup Rescue Brain — 可视化调试面板</title>
+<style>
+/* ============================================================
+   RoboCup Rescue Brain — 可视化调试面板 样式
+   独立 CSS 文件，供 debug_server.py 引用和浏览器直接调试
+   ============================================================ */
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+    background: #0a0a0a;
+    color: #eee;
+    font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif;
+    height: 100vh;
+    overflow: hidden;
+}
+
+/* ---- 顶部状态栏 ---- */
+.header {
+    height: 40px;
+    background: #1a1a2e;
+    border-bottom: 2px solid #16213e;
+    display: flex;
+    align-items: center;
+    padding: 0 20px;
+    font-size: 16px;
+    font-weight: bold;
+}
+.header .status-dot {
+    width: 10px; height: 10px;
+    border-radius: 50%;
+    margin-right: 10px;
+    background: #e74c3c;
+    transition: background 0.3s;
+}
+.header .status-dot.connected { background: #2ecc71; }
+.header .fps { margin-left: auto; font-size: 12px; color: #888; }
+
+/* ---- 主布局：左右并排 ---- */
+.main-container {
+    display: flex;
+    height: calc(100vh - 40px);
+    gap: 0;
+}
+
+.left-panel {
+    width: 380px;
+    min-width: 380px;
+    display: flex;
+    flex-direction: column;
+    padding: 10px;
+    gap: 10px;
+    flex-shrink: 0;
+    border-right: 2px solid #16213e;
+}
+
+.right-panel {
+    width: 360px;
+    min-width: 360px;
+    display: flex;
+    flex-direction: column;
+    padding: 10px;
+    gap: 10px;
+    border-left: 2px solid #16213e;
+    flex-shrink: 0;
+    overflow-y: auto;
+    background: #0d0d0d;
+}
+
+/* ---- 通用面板 ---- */
+.panel-title {
+    font-size: 14px;
+    color: #3498db;
+    margin-bottom: 8px;
+    font-weight: bold;
+}
+
+/* ---- 视频/图像区 ---- */
+.video-container {
+    background: #111;
+    border: 1px solid #333;
+    border-radius: 4px;
+    overflow: hidden;
+    position: relative;
+    min-height: 200px;
+    max-height: 300px;
+}
+.video-container img {
+    width: 100%; height: 100%;
+    object-fit: contain;
+}
+.video-label {
+    position: absolute;
+    top: 5px; left: 5px;
+    background: rgba(0,0,0,0.7);
+    padding: 2px 8px;
+    border-radius: 3px;
+    font-size: 11px;
+    color: #aaa;
+}
+
+/* ---- 地图容器 ---- */
+.map-container {
+    flex: 1;
+    background: #111;
+    border: 1px solid #333;
+    border-radius: 4px;
+    position: relative;
+    overflow: hidden;
+    min-height: 0;
+}
+.map-container canvas {
+    width: 100%; height: 100%;
+}
+
+/* ---- 按钮 ---- */
+.btn {
+    padding: 8px 4px;
+    border: none;
+    border-radius: 4px;
+    font-size: 12px;
+    cursor: pointer;
+    transition: opacity 0.2s;
+    font-weight: bold;
+}
+.btn:hover { opacity: 0.8; }
+.btn:active { opacity: 0.6; }
+
+.btn-forward  { background: #27ae60; color: #fff; }
+.btn-backward { background: #7f8c8d; color: #fff; }
+.btn-left     { background: #f39c12; color: #fff; }
+.btn-right    { background: #e67e22; color: #fff; }
+.btn-stop     { background: #e74c3c; color: #fff; }
+.btn-action   { background: #3498db; color: #fff; }
+
+.btn-mode {
+    background: #2c3e50; color: #fff;
+    border: 1px solid #3498db;
+}
+.btn-mode.active { background: #3498db; }
+
+.control-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 6px;
+    margin-bottom: 10px;
+}
+
+/* ---- 滑块 ---- */
+.slider-group { margin: 8px 0; }
+.slider-group label {
+    display: block;
+    font-size: 11px; color: #888;
+    margin-bottom: 4px;
+}
+.slider-row {
+    display: flex; align-items: center; gap: 8px;
+}
+.slider-row input[type="range"] {
+    flex: 1; height: 6px;
+}
+.slider-row .value-display {
+    width: 50px; text-align: right;
+    font-size: 12px;
+    font-family: 'Consolas', monospace;
+    color: #3498db;
+}
+
+/* ---- 指令日志 ---- */
+.cmd-log {
+    background: #0a0a0a;
+    border: 1px solid #222;
+    border-radius: 3px;
+    padding: 6px;
+    font-family: 'Consolas', monospace;
+    font-size: 10px; line-height: 1.6;
+    max-height: 120px; overflow-y: auto;
+    margin-top: 8px;
+}
+.cmd-log-item {
+    padding: 1px 0;
+    border-bottom: 1px solid #1a1a1a;
+}
+.cmd-log-time { color: #666; margin-right: 6px; }
+.cmd-log-cmd  { color: #3498db; }
+
+.section-divider {
+    border-top: 1px solid #333;
+    margin: 10px 0;
+}
+
+/* ---- 遥测面板 ---- */
+.telemetry-panel {
+    background: #111;
+    border: 1px solid #333;
+    border-radius: 4px;
+    padding: 10px;
+    overflow-y: auto;
+    max-height: 280px;
+}
+.telemetry-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px 12px;
+}
+.metric { margin: 4px 0; font-size: 12px; }
+.metric .label { color: #888; font-size: 10px; margin-bottom: 1px; }
+.metric .value {
+    font-weight: bold; font-size: 13px;
+    font-family: 'Consolas', monospace;
+}
+.metric .value.ok    { color: #2ecc71; }
+.metric .value.warn  { color: #f39c12; }
+.metric .value.alert { color: #e74c3c; }
+
+/* ---- 路径信息 ---- */
+.path-info {
+    background: #111;
+    border: 1px solid #333;
+    border-radius: 4px;
+    padding: 10px;
+    flex: 1;
+    overflow-y: auto;
+    min-height: 100px; max-height: 160px;
+}
+.path-list {
+    font-family: 'Consolas', monospace;
+    font-size: 11px; line-height: 1.6;
+}
+.path-node {
+    display: inline-block;
+    padding: 1px 5px; margin: 1px;
+    border-radius: 3px;
+    background: #2c3e50; color: #ecf0f1;
+    font-size: 10px;
+}
+.path-node.current  { background: #e74c3c; color: #fff; }
+.path-node.visited  { background: #27ae60; color: #fff; }
+.path-node.target   { background: #f39c12; color: #fff; }
+.path-node.planned  { background: #3498db; color: #fff; }
+
+/* ---- 事件日志 ---- */
+.event-log {
+    background: #111;
+    border: 1px solid #333;
+    border-radius: 4px;
+    padding: 10px;
+    flex: 2;
+    overflow-y: auto;
+    font-family: 'Consolas', monospace;
+    font-size: 11px; line-height: 1.5;
+    min-height: 120px; max-height: 180px;
+}
+.event-item {
+    padding: 2px 0;
+    border-bottom: 1px solid #1a1a1a;
+}
+.event-time { color: #666; margin-right: 8px; }
+.event-type { color: #3498db; margin-right: 8px; }
+
+/* ---- 图例 ---- */
+.legend {
+    display: flex; gap: 12px;
+    padding: 4px 8px;
+    font-size: 10px;
+    background: rgba(26, 26, 46, 0.9);
+    position: absolute;
+    bottom: 0; left: 0; right: 0;
+}
+.legend-item { display: flex; align-items: center; gap: 5px; }
+.legend-dot {
+    width: 10px; height: 10px;
+    border-radius: 50%;
+}
+
+/* ---- 控制面板卡片 ---- */
+.debug-panel {
+    background: #111;
+    border: 1px solid #333;
+    border-radius: 4px;
+    padding: 12px;
+    margin-bottom: 10px;
+}
+
+
+</style>
+</head>
+<body>
+
+<!-- ===== 顶部状态栏 ===== -->
+<div class="header">
+    <div class="status-dot" id="statusDot"></div>
+    <span>RoboCup Rescue Brain — 可视化调试面板</span>
+    <span class="fps" id="fpsDisplay">初始化中...</span>
+</div>
+
+<!-- ===== 主布局：左右并排 ==== -->
+<div class="main-container">
+
+    <!-- 左侧：摄像头/分割图 + 路径 + 事件日志 -->
+    <div class="left-panel">
+        <div class="video-container">
+            <img id="segImage" src="" alt="车道分割">
+            <span class="video-label">BiSeNet 车道分割 (WebSocket 实时)</span>
+        </div>
+        <div class="path-info">
+            <div class="panel-title">路径规划</div>
+            <div class="path-list" id="pathList">等待数据...</div>
+        </div>
+        <div class="event-log" id="eventLog">
+            <div class="panel-title">事件日志</div>
+        </div>
+    </div>
+
+    <!-- 中间：地图 -->
+    <div class="map-container">
+        <canvas id="mapCanvas"></canvas>
+        <div class="legend">
+            <div class="legend-item"><div class="legend-dot" style="background:#e74c3c;"></div>当前位置</div>
+            <div class="legend-item"><div class="legend-dot" style="background:#27ae60;"></div>已打卡</div>
+            <div class="legend-item"><div class="legend-dot" style="background:#f39c12;"></div>下一目标</div>
+            <div class="legend-item"><div class="legend-dot" style="background:#3498db;"></div>规划路径</div>
+            <div class="legend-item"><div class="legend-dot" style="background:#95a5a6;"></div>未打卡</div>
+        </div>
+    </div>
+
+    <!-- 右侧：控制 + 遥测 + 路径 + 日志 -->
+    <div class="right-panel">
+
+        <!-- 模拟器控制 (独立模式) -->
+        <div class="debug-panel" id="simControls" style="display:none;">
+            <div class="panel-title">内置模拟器</div>
+            <div class="slider-group">
+                <label>起始位置</label>
+                <select id="simStartNode" style="width:100%;padding:4px;background:#0f3460;color:#eee;border:1px solid #1a4a8a;border-radius:3px;font-size:12px;">
+                    <option value="START">START (起点)</option>
+                </select>
+            </div>
+            <button class="btn btn-action" id="btnSim" onclick="toggleSimulation()" style="margin-top:6px;">启动模拟</button>
+            <div style="margin-top:6px; font-size:11px; color:#888;">
+                选择起始节点后点击启动，小车将从该位置出发沿巡逻路径行驶
+            </div>
+        </div>
+
+        <!-- 手动控制面板 -->
+        <div class="debug-panel">
+            <div class="panel-title">手动控制</div>
+            <div style="display: flex; gap: 6px; margin-bottom: 8px;">
+                <button class="btn btn-mode active" id="modeAuto" onclick="setMode('auto')">自动</button>
+                <button class="btn btn-mode" id="modeManual" onclick="setMode('manual')">手动</button>
+            </div>
+            <div class="control-grid">
+                <div></div>
+                <button class="btn btn-forward" id="btnForward"
+                    onmousedown="sendCmd('forward')" onmouseup="sendCmd('stop')"
+                    ontouchstart="sendCmd('forward')" ontouchend="sendCmd('stop')">前进</button>
+                <div></div>
+                <button class="btn btn-left" id="btnLeft"
+                    onmousedown="sendCmd('left')" onmouseup="sendCmd('stop')"
+                    ontouchstart="sendCmd('left')" ontouchend="sendCmd('stop')">左转</button>
+                <button class="btn btn-stop" id="btnStop" onclick="sendCmd('stop')">急停</button>
+                <button class="btn btn-right" id="btnRight"
+                    onmousedown="sendCmd('right')" onmouseup="sendCmd('stop')"
+                    ontouchstart="sendCmd('right')" ontouchend="sendCmd('stop')">右转</button>
+                <div></div>
+                <button class="btn btn-backward" id="btnBackward"
+                    onmousedown="sendCmd('backward')" onmouseup="sendCmd('stop')"
+                    ontouchstart="sendCmd('backward')" ontouchend="sendCmd('stop')">后退</button>
+                <div></div>
+            </div>
+            <div class="slider-group">
+                <label>线速度 vx (mm/s)</label>
+                <div class="slider-row">
+                    <input type="range" id="vxSlider" min="0" max="500" value="300" oninput="updateSlider('vx', this.value)">
+                    <span class="value-display" id="vxValue">300</span>
+                </div>
+            </div>
+            <div class="slider-group">
+                <label>角速度 wz (mrad/s)</label>
+                <div class="slider-row">
+                    <input type="range" id="wzSlider" min="0" max="500" value="100" oninput="updateSlider('wz', this.value)">
+                    <span class="value-display" id="wzValue">100</span>
+                </div>
+            </div>
+            <div class="section-divider"></div>
+            <div style="display: flex; gap: 6px; flex-wrap: wrap;">
+                <button class="btn btn-action" onclick="sendCmd('reset_odom')">清零里程</button>
+                <button class="btn btn-action" onclick="sendCmd('turn_left_90')">左转90°</button>
+                <button class="btn btn-action" onclick="sendCmd('turn_right_90')">右转90°</button>
+            </div>
+            <div class="cmd-log" id="cmdLog">
+                <div style="color:#666;font-size:10px;">指令发送日志...</div>
+            </div>
+        </div>
+
+        <!-- 实时状态 -->
+        <div class="telemetry-panel">
+            <div class="panel-title">实时状态</div>
+            <div class="telemetry-grid">
+                <div class="metric">
+                    <div class="label">Agent 状态</div>
+                    <div class="value" id="agentState">--</div>
+                </div>
+                <div class="metric">
+                    <div class="label">打卡进度</div>
+                    <div class="value" id="progress">--</div>
+                </div>
+                <div class="metric">
+                    <div class="label">当前位置 (mm)</div>
+                    <div class="value" id="position">--</div>
+                </div>
+                <div class="metric">
+                    <div class="label">航向角</div>
+                    <div class="value" id="yaw">--</div>
+                </div>
+                <div class="metric">
+                    <div class="label">当前节点</div>
+                    <div class="value" id="currentNode">--</div>
+                </div>
+                <div class="metric">
+                    <div class="label">目标节点</div>
+                    <div class="value" id="targetNode">--</div>
+                </div>
+                <div class="metric">
+                    <div class="label">横向偏移</div>
+                    <div class="value" id="offsetMm">--</div>
+                </div>
+                <div class="metric">
+                    <div class="label">路口检测</div>
+                    <div class="value" id="intersection">--</div>
+                </div>
+            </div>
+        </div>
+
+    </div>
+</div>
+
+<!-- ===== 地图拓扑数据 ===== -->
+<script>
+window.__MAP_DATA__ = {"nodes":{"START":{"x":0,"y":0,"type":"base","rfid":false},"J_START":{"x":0,"y":200,"type":"junction","rfid":false},"N1":{"x":-400,"y":200,"type":"mission","rfid":true},"T1_L":{"x":-400,"y":1000,"type":"junction","rfid":false},"T2_L":{"x":-400,"y":1800,"type":"junction","rfid":false},"T3_L":{"x":-400,"y":2600,"type":"junction","rfid":false},"N6":{"x":-400,"y":3400,"type":"mission","rfid":true},"N5":{"x":-1200,"y":3400,"type":"mission","rfid":true},"N12":{"x":400,"y":200,"type":"mission","rfid":true},"T1_R":{"x":400,"y":1000,"type":"junction","rfid":false},"T2_R":{"x":400,"y":1800,"type":"junction","rfid":false},"T3_R":{"x":400,"y":2600,"type":"junction","rfid":false},"N7":{"x":400,"y":3400,"type":"mission","rfid":true},"N8":{"x":1200,"y":3400,"type":"mission","rfid":true},"N2":{"x":-1200,"y":1000,"type":"mission","rfid":true},"N3":{"x":-1200,"y":1800,"type":"mission","rfid":true},"N4":{"x":-1200,"y":2600,"type":"mission","rfid":true},"N11":{"x":1200,"y":1000,"type":"mission","rfid":true},"N10":{"x":1200,"y":1800,"type":"mission","rfid":true},"N9":{"x":1200,"y":2600,"type":"mission","rfid":true}},"edges":[{"node_a":"START","node_b":"J_START","distance_mm":200.0,"is_tunnel":false,"has_culvert":false,"speed_limit_ms":0.3},{"node_a":"J_START","node_b":"N1","distance_mm":400.0,"is_tunnel":false,"has_culvert":false,"speed_limit_ms":0.3},{"node_a":"J_START","node_b":"N12","distance_mm":400.0,"is_tunnel":false,"has_culvert":false,"speed_limit_ms":0.3},{"node_a":"N1","node_b":"N12","distance_mm":800.0,"is_tunnel":false,"has_culvert":false,"speed_limit_ms":0.3},{"node_a":"N1","node_b":"T1_L","distance_mm":800.0,"is_tunnel":false,"has_culvert":false,"speed_limit_ms":0.3},{"node_a":"T1_L","node_b":"T2_L","distance_mm":800.0,"is_tunnel":false,"has_culvert":false,"speed_limit_ms":0.3},{"node_a":"T2_L","node_b":"T3_L","distance_mm":800.0,"is_tunnel":false,"has_culvert":false,"speed_limit_ms":0.3},{"node_a":"T3_L","node_b":"N6","distance_mm":800.0,"is_tunnel":false,"has_culvert":false,"speed_limit_ms":0.3},{"node_a":"N12","node_b":"T1_R","distance_mm":800.0,"is_tunnel":false,"has_culvert":false,"speed_limit_ms":0.3},{"node_a":"T1_R","node_b":"T2_R","distance_mm":800.0,"is_tunnel":false,"has_culvert":false,"speed_limit_ms":0.3},{"node_a":"T2_R","node_b":"T3_R","distance_mm":800.0,"is_tunnel":false,"has_culvert":false,"speed_limit_ms":0.3},{"node_a":"T3_R","node_b":"N7","distance_mm":800.0,"is_tunnel":false,"has_culvert":false,"speed_limit_ms":0.3},{"node_a":"N2","node_b":"N3","distance_mm":800.0,"is_tunnel":false,"has_culvert":false,"speed_limit_ms":0.3},{"node_a":"N3","node_b":"N4","distance_mm":800.0,"is_tunnel":false,"has_culvert":false,"speed_limit_ms":0.3},{"node_a":"N4","node_b":"N5","distance_mm":800.0,"is_tunnel":false,"has_culvert":false,"speed_limit_ms":0.3},{"node_a":"N11","node_b":"N10","distance_mm":800.0,"is_tunnel":false,"has_culvert":false,"speed_limit_ms":0.3},{"node_a":"N10","node_b":"N9","distance_mm":800.0,"is_tunnel":false,"has_culvert":false,"speed_limit_ms":0.3},{"node_a":"N9","node_b":"N8","distance_mm":800.0,"is_tunnel":false,"has_culvert":false,"speed_limit_ms":0.3},{"node_a":"N2","node_b":"T1_L","distance_mm":800.0,"is_tunnel":false,"has_culvert":false,"speed_limit_ms":0.3},{"node_a":"N3","node_b":"T2_L","distance_mm":800.0,"is_tunnel":false,"has_culvert":false,"speed_limit_ms":0.3},{"node_a":"N4","node_b":"T3_L","distance_mm":800.0,"is_tunnel":false,"has_culvert":false,"speed_limit_ms":0.3},{"node_a":"T1_R","node_b":"N11","distance_mm":800.0,"is_tunnel":false,"has_culvert":false,"speed_limit_ms":0.3},{"node_a":"T2_R","node_b":"N10","distance_mm":800.0,"is_tunnel":false,"has_culvert":false,"speed_limit_ms":0.3},{"node_a":"T3_R","node_b":"N9","distance_mm":800.0,"is_tunnel":false,"has_culvert":false,"speed_limit_ms":0.3},{"node_a":"T1_L","node_b":"T1_R","distance_mm":800.0,"is_tunnel":true,"has_culvert":false,"speed_limit_ms":0.15},{"node_a":"T2_L","node_b":"T2_R","distance_mm":800.0,"is_tunnel":true,"has_culvert":false,"speed_limit_ms":0.15},{"node_a":"T3_L","node_b":"T3_R","distance_mm":800.0,"is_tunnel":true,"has_culvert":false,"speed_limit_ms":0.15},{"node_a":"N5","node_b":"N6","distance_mm":800.0,"is_tunnel":false,"has_culvert":false,"speed_limit_ms":0.3},{"node_a":"N6","node_b":"N7","distance_mm":800.0,"is_tunnel":true,"has_culvert":false,"speed_limit_ms":0.15},{"node_a":"N7","node_b":"N8","distance_mm":800.0,"is_tunnel":false,"has_culvert":false,"speed_limit_ms":0.3}],"patrol_path":["START","J_START","N1","N12","T1_R","N11","N10","N9","N8","N7","N6","N5","N4","N3","N2"],"patrol_dist_mm":9880.0,"all_paths":{"START->J_START":["START","J_START"],"J_START->START":["J_START","START"],"START->N1":["START","J_START","N1"],"N1->START":["N1","J_START","START"],"START->T1_L":["START","J_START","N1","T1_L"],"T1_L->START":["T1_L","N1","J_START","START"],"START->T2_L":["START","J_START","N1","T1_L","T2_L"],"T2_L->START":["T2_L","T1_L","N1","J_START","START"],"START->T3_L":["START","J_START","N1","T1_L","T2_L","T3_L"],"T3_L->START":["T3_L","T2_L","T1_L","N1","J_START","START"],"START->N6":["START","J_START","N1","T1_L","T2_L","T3_L","N6"],"N6->START":["N6","T3_L","T2_L","T1_L","N1","J_START","START"],"START->N5":["START","J_START","N1","T1_L","N2","N3","N4","N5"],"N5->START":["N5","N4","N3","N2","T1_L","N1","J_START","START"],"START->N12":["START","J_START","N12"],"N12->START":["N12","J_START","START"],"START->T1_R":["START","J_START","N12","T1_R"],"T1_R->START":["T1_R","N12","J_START","START"],"START->T2_R":["START","J_START","N12","T1_R","T2_R"],"T2_R->START":["T2_R","T1_R","N12","J_START","START"],"START->T3_R":["START","J_START","N12","T1_R","T2_R","T3_R"],"T3_R->START":["T3_R","T2_R","T1_R","N12","J_START","START"],"START->N7":["START","J_START","N12","T1_R","T2_R","T3_R","N7"],"N7->START":["N7","T3_R","T2_R","T1_R","N12","J_START","START"],"START->N8":["START","J_START","N12","T1_R","T2_R","T3_R","N7","N8"],"N8->START":["N8","N7","T3_R","T2_R","T1_R","N12","J_START","START"],"START->N2":["START","J_START","N1","T1_L","N2"],"N2->START":["N2","T1_L","N1","J_START","START"],"START->N3":["START","J_START","N1","T1_L","N2","N3"],"N3->START":["N3","N2","T1_L","N1","J_START","START"],"START->N4":["START","J_START","N1","T1_L","N2","N3","N4"],"N4->START":["N4","N3","N2","T1_L","N1","J_START","START"],"START->N11":["START","J_START","N12","T1_R","N11"],"N11->START":["N11","T1_R","N12","J_START","START"],"START->N10":["START","J_START","N12","T1_R","N11","N10"],"N10->START":["N10","N11","T1_R","N12","J_START","START"],"START->N9":["START","J_START","N12","T1_R","N11","N10","N9"],"N9->START":["N9","N10","N11","T1_R","N12","J_START","START"],"J_START->N1":["J_START","N1"],"N1->J_START":["N1","J_START"],"J_START->T1_L":["J_START","N1","T1_L"],"T1_L->J_START":["T1_L","N1","J_START"],"J_START->T2_L":["J_START","N1","T1_L","T2_L"],"T2_L->J_START":["T2_L","T1_L","N1","J_START"],"J_START->T3_L":["J_START","N1","T1_L","T2_L","T3_L"],"T3_L->J_START":["T3_L","T2_L","T1_L","N1","J_START"],"J_START->N6":["J_START","N1","T1_L","T2_L","T3_L","N6"],"N6->J_START":["N6","T3_L","T2_L","T1_L","N1","J_START"],"J_START->N5":["J_START","N1","T1_L","N2","N3","N4","N5"],"N5->J_START":["N5","N4","N3","N2","T1_L","N1","J_START"],"J_START->N12":["J_START","N12"],"N12->J_START":["N12","J_START"],"J_START->T1_R":["J_START","N12","T1_R"],"T1_R->J_START":["T1_R","N12","J_START"],"J_START->T2_R":["J_START","N12","T1_R","T2_R"],"T2_R->J_START":["T2_R","T1_R","N12","J_START"],"J_START->T3_R":["J_START","N12","T1_R","T2_R","T3_R"],"T3_R->J_START":["T3_R","T2_R","T1_R","N12","J_START"],"J_START->N7":["J_START","N12","T1_R","T2_R","T3_R","N7"],"N7->J_START":["N7","T3_R","T2_R","T1_R","N12","J_START"],"J_START->N8":["J_START","N12","T1_R","T2_R","T3_R","N7","N8"],"N8->J_START":["N8","N7","T3_R","T2_R","T1_R","N12","J_START"],"J_START->N2":["J_START","N1","T1_L","N2"],"N2->J_START":["N2","T1_L","N1","J_START"],"J_START->N3":["J_START","N1","T1_L","N2","N3"],"N3->J_START":["N3","N2","T1_L","N1","J_START"],"J_START->N4":["J_START","N1","T1_L","N2","N3","N4"],"N4->J_START":["N4","N3","N2","T1_L","N1","J_START"],"J_START->N11":["J_START","N12","T1_R","N11"],"N11->J_START":["N11","T1_R","N12","J_START"],"J_START->N10":["J_START","N12","T1_R","N11","N10"],"N10->J_START":["N10","N11","T1_R","N12","J_START"],"J_START->N9":["J_START","N12","T1_R","N11","N10","N9"],"N9->J_START":["N9","N10","N11","T1_R","N12","J_START"],"N1->T1_L":["N1","T1_L"],"T1_L->N1":["T1_L","N1"],"N1->T2_L":["N1","T1_L","T2_L"],"T2_L->N1":["T2_L","T1_L","N1"],"N1->T3_L":["N1","T1_L","T2_L","T3_L"],"T3_L->N1":["T3_L","T2_L","T1_L","N1"],"N1->N6":["N1","T1_L","T2_L","T3_L","N6"],"N6->N1":["N6","T3_L","T2_L","T1_L","N1"],"N1->N5":["N1","T1_L","N2","N3","N4","N5"],"N5->N1":["N5","N4","N3","N2","T1_L","N1"],"N1->N12":["N1","N12"],"N12->N1":["N12","N1"],"N1->T1_R":["N1","T1_L","T1_R"],"T1_R->N1":["T1_R","T1_L","N1"],"N1->T2_R":["N1","T1_L","T1_R","T2_R"],"T2_R->N1":["T2_R","T1_R","T1_L","N1"],"N1->T3_R":["N1","T1_L","T1_R","T2_R","T3_R"],"T3_R->N1":["T3_R","T2_R","T1_R","T1_L","N1"],"N1->N7":["N1","T1_L","T1_R","T2_R","T3_R","N7"],"N7->N1":["N7","T3_R","T2_R","T1_R","T1_L","N1"],"N1->N8":["N1","T1_L","T1_R","T2_R","T3_R","N7","N8"],"N8->N1":["N8","N7","T3_R","T2_R","T1_R","T1_L","N1"],"N1->N2":["N1","T1_L","N2"],"N2->N1":["N2","T1_L","N1"],"N1->N3":["N1","T1_L","N2","N3"],"N3->N1":["N3","N2","T1_L","N1"],"N1->N4":["N1","T1_L","N2","N3","N4"],"N4->N1":["N4","N3","N2","T1_L","N1"],"N1->N11":["N1","T1_L","T1_R","N11"],"N11->N1":["N11","T1_R","T1_L","N1"],"N1->N10":["N1","T1_L","T1_R","N11","N10"],"N10->N1":["N10","N11","T1_R","T1_L","N1"],"N1->N9":["N1","T1_L","T1_R","N11","N10","N9"],"N9->N1":["N9","N10","N11","T1_R","T1_L","N1"],"T1_L->T2_L":["T1_L","T2_L"],"T2_L->T1_L":["T2_L","T1_L"],"T1_L->T3_L":["T1_L","T2_L","T3_L"],"T3_L->T1_L":["T3_L","T2_L","T1_L"],"T1_L->N6":["T1_L","T2_L","T3_L","N6"],"N6->T1_L":["N6","T3_L","T2_L","T1_L"],"T1_L->N5":["T1_L","N2","N3","N4","N5"],"N5->T1_L":["N5","N4","N3","N2","T1_L"],"T1_L->N12":["T1_L","T1_R","N12"],"N12->T1_L":["N12","T1_R","T1_L"],"T1_L->T1_R":["T1_L","T1_R"],"T1_R->T1_L":["T1_R","T1_L"],"T1_L->T2_R":["T1_L","T1_R","T2_R"],"T2_R->T1_L":["T2_R","T1_R","T1_L"],"T1_L->T3_R":["T1_L","T1_R","T2_R","T3_R"],"T3_R->T1_L":["T3_R","T2_R","T1_R","T1_L"],"T1_L->N7":["T1_L","T1_R","T2_R","T3_R","N7"],"N7->T1_L":["N7","T3_R","T2_R","T1_R","T1_L"],"T1_L->N8":["T1_L","T1_R","T2_R","T3_R","N7","N8"],"N8->T1_L":["N8","N7","T3_R","T2_R","T1_R","T1_L"],"T1_L->N2":["T1_L","N2"],"N2->T1_L":["N2","T1_L"],"T1_L->N3":["T1_L","N2","N3"],"N3->T1_L":["N3","N2","T1_L"],"T1_L->N4":["T1_L","N2","N3","N4"],"N4->T1_L":["N4","N3","N2","T1_L"],"T1_L->N11":["T1_L","T1_R","N11"],"N11->T1_L":["N11","T1_R","T1_L"],"T1_L->N10":["T1_L","T1_R","N11","N10"],"N10->T1_L":["N10","N11","T1_R","T1_L"],"T1_L->N9":["T1_L","T1_R","N11","N10","N9"],"N9->T1_L":["N9","N10","N11","T1_R","T1_L"],"T2_L->T3_L":["T2_L","T3_L"],"T3_L->T2_L":["T3_L","T2_L"],"T2_L->N6":["T2_L","T3_L","N6"],"N6->T2_L":["N6","T3_L","T2_L"],"T2_L->N5":["T2_L","N3","N4","N5"],"N5->T2_L":["N5","N4","N3","T2_L"],"T2_L->N12":["T2_L","T2_R","T1_R","N12"],"N12->T2_L":["N12","T1_R","T2_R","T2_L"],"T2_L->T1_R":["T2_L","T2_R","T1_R"],"T1_R->T2_L":["T1_R","T2_R","T2_L"],"T2_L->T2_R":["T2_L","T2_R"],"T2_R->T2_L":["T2_R","T2_L"],"T2_L->T3_R":["T2_L","T2_R","T3_R"],"T3_R->T2_L":["T3_R","T2_R","T2_L"],"T2_L->N7":["T2_L","T2_R","T3_R","N7"],"N7->T2_L":["N7","T3_R","T2_R","T2_L"],"T2_L->N8":["T2_L","T2_R","T3_R","N7","N8"],"N8->T2_L":["N8","N7","T3_R","T2_R","T2_L"],"T2_L->N2":["T2_L","N3","N2"],"N2->T2_L":["N2","N3","T2_L"],"T2_L->N3":["T2_L","N3"],"N3->T2_L":["N3","T2_L"],"T2_L->N4":["T2_L","N3","N4"],"N4->T2_L":["N4","N3","T2_L"],"T2_L->N11":["T2_L","T2_R","N10","N11"],"N11->T2_L":["N11","N10","T2_R","T2_L"],"T2_L->N10":["T2_L","T2_R","N10"],"N10->T2_L":["N10","T2_R","T2_L"],"T2_L->N9":["T2_L","T2_R","N10","N9"],"N9->T2_L":["N9","N10","T2_R","T2_L"],"T3_L->N6":["T3_L","N6"],"N6->T3_L":["N6","T3_L"],"T3_L->N5":["T3_L","N4","N5"],"N5->T3_L":["N5","N4","T3_L"],"T3_L->N12":["T3_L","T3_R","T2_R","T1_R","N12"],"N12->T3_L":["N12","T1_R","T2_R","T3_R","T3_L"],"T3_L->T1_R":["T3_L","T3_R","T2_R","T1_R"],"T1_R->T3_L":["T1_R","T2_R","T3_R","T3_L"],"T3_L->T2_R":["T3_L","T3_R","T2_R"],"T2_R->T3_L":["T2_R","T3_R","T3_L"],"T3_L->T3_R":["T3_L","T3_R"],"T3_R->T3_L":["T3_R","T3_L"],"T3_L->N7":["T3_L","T3_R","N7"],"N7->T3_L":["N7","T3_R","T3_L"],"T3_L->N8":["T3_L","T3_R","N7","N8"],"N8->T3_L":["N8","N7","T3_R","T3_L"],"T3_L->N2":["T3_L","N4","N3","N2"],"N2->T3_L":["N2","N3","N4","T3_L"],"T3_L->N3":["T3_L","N4","N3"],"N3->T3_L":["N3","N4","T3_L"],"T3_L->N4":["T3_L","N4"],"N4->T3_L":["N4","T3_L"],"T3_L->N11":["T3_L","T3_R","N9","N10","N11"],"N11->T3_L":["N11","N10","N9","T3_R","T3_L"],"T3_L->N10":["T3_L","T3_R","N9","N10"],"N10->T3_L":["N10","N9","T3_R","T3_L"],"T3_L->N9":["T3_L","T3_R","N9"],"N9->T3_L":["N9","T3_R","T3_L"],"N6->N5":["N6","N5"],"N5->N6":["N5","N6"],"N6->N12":["N6","N7","T3_R","T2_R","T1_R","N12"],"N12->N6":["N12","T1_R","T2_R","T3_R","N7","N6"],"N6->T1_R":["N6","N7","T3_R","T2_R","T1_R"],"T1_R->N6":["T1_R","T2_R","T3_R","N7","N6"],"N6->T2_R":["N6","N7","T3_R","T2_R"],"T2_R->N6":["T2_R","T3_R","N7","N6"],"N6->T3_R":["N6","N7","T3_R"],"T3_R->N6":["T3_R","N7","N6"],"N6->N7":["N6","N7"],"N7->N6":["N7","N6"],"N6->N8":["N6","N7","N8"],"N8->N6":["N8","N7","N6"],"N6->N2":["N6","N5","N4","N3","N2"],"N2->N6":["N2","N3","N4","N5","N6"],"N6->N3":["N6","N5","N4","N3"],"N3->N6":["N3","N4","N5","N6"],"N6->N4":["N6","N5","N4"],"N4->N6":["N4","N5","N6"],"N6->N11":["N6","N7","N8","N9","N10","N11"],"N11->N6":["N11","N10","N9","N8","N7","N6"],"N6->N10":["N6","N7","N8","N9","N10"],"N10->N6":["N10","N9","N8","N7","N6"],"N6->N9":["N6","N7","N8","N9"],"N9->N6":["N9","N8","N7","N6"],"N5->N12":["N5","N6","N7","T3_R","T2_R","T1_R","N12"],"N12->N5":["N12","T1_R","T2_R","T3_R","N7","N6","N5"],"N5->T1_R":["N5","N6","N7","T3_R","T2_R","T1_R"],"T1_R->N5":["T1_R","T2_R","T3_R","N7","N6","N5"],"N5->T2_R":["N5","N6","N7","T3_R","T2_R"],"T2_R->N5":["T2_R","T3_R","N7","N6","N5"],"N5->T3_R":["N5","N6","N7","T3_R"],"T3_R->N5":["T3_R","N7","N6","N5"],"N5->N7":["N5","N6","N7"],"N7->N5":["N7","N6","N5"],"N5->N8":["N5","N6","N7","N8"],"N8->N5":["N8","N7","N6","N5"],"N5->N2":["N5","N4","N3","N2"],"N2->N5":["N2","N3","N4","N5"],"N5->N3":["N5","N4","N3"],"N3->N5":["N3","N4","N5"],"N5->N4":["N5","N4"],"N4->N5":["N4","N5"],"N5->N11":["N5","N6","N7","N8","N9","N10","N11"],"N11->N5":["N11","N10","N9","N8","N7","N6","N5"],"N5->N10":["N5","N6","N7","N8","N9","N10"],"N10->N5":["N10","N9","N8","N7","N6","N5"],"N5->N9":["N5","N6","N7","N8","N9"],"N9->N5":["N9","N8","N7","N6","N5"],"N12->T1_R":["N12","T1_R"],"T1_R->N12":["T1_R","N12"],"N12->T2_R":["N12","T1_R","T2_R"],"T2_R->N12":["T2_R","T1_R","N12"],"N12->T3_R":["N12","T1_R","T2_R","T3_R"],"T3_R->N12":["T3_R","T2_R","T1_R","N12"],"N12->N7":["N12","T1_R","T2_R","T3_R","N7"],"N7->N12":["N7","T3_R","T2_R","T1_R","N12"],"N12->N8":["N12","T1_R","T2_R","T3_R","N7","N8"],"N8->N12":["N8","N7","T3_R","T2_R","T1_R","N12"],"N12->N2":["N12","T1_R","T1_L","N2"],"N2->N12":["N2","T1_L","T1_R","N12"],"N12->N3":["N12","T1_R","T1_L","N2","N3"],"N3->N12":["N3","N2","T1_L","T1_R","N12"],"N12->N4":["N12","T1_R","T1_L","N2","N3","N4"],"N4->N12":["N4","N3","N2","T1_L","T1_R","N12"],"N12->N11":["N12","T1_R","N11"],"N11->N12":["N11","T1_R","N12"],"N12->N10":["N12","T1_R","N11","N10"],"N10->N12":["N10","N11","T1_R","N12"],"N12->N9":["N12","T1_R","N11","N10","N9"],"N9->N12":["N9","N10","N11","T1_R","N12"],"T1_R->T2_R":["T1_R","T2_R"],"T2_R->T1_R":["T2_R","T1_R"],"T1_R->T3_R":["T1_R","T2_R","T3_R"],"T3_R->T1_R":["T3_R","T2_R","T1_R"],"T1_R->N7":["T1_R","T2_R","T3_R","N7"],"N7->T1_R":["N7","T3_R","T2_R","T1_R"],"T1_R->N8":["T1_R","T2_R","T3_R","N7","N8"],"N8->T1_R":["N8","N7","T3_R","T2_R","T1_R"],"T1_R->N2":["T1_R","T1_L","N2"],"N2->T1_R":["N2","T1_L","T1_R"],"T1_R->N3":["T1_R","T1_L","N2","N3"],"N3->T1_R":["N3","N2","T1_L","T1_R"],"T1_R->N4":["T1_R","T1_L","N2","N3","N4"],"N4->T1_R":["N4","N3","N2","T1_L","T1_R"],"T1_R->N11":["T1_R","N11"],"N11->T1_R":["N11","T1_R"],"T1_R->N10":["T1_R","N11","N10"],"N10->T1_R":["N10","N11","T1_R"],"T1_R->N9":["T1_R","N11","N10","N9"],"N9->T1_R":["N9","N10","N11","T1_R"],"T2_R->T3_R":["T2_R","T3_R"],"T3_R->T2_R":["T3_R","T2_R"],"T2_R->N7":["T2_R","T3_R","N7"],"N7->T2_R":["N7","T3_R","T2_R"],"T2_R->N8":["T2_R","T3_R","N7","N8"],"N8->T2_R":["N8","N7","T3_R","T2_R"],"T2_R->N2":["T2_R","T2_L","N3","N2"],"N2->T2_R":["N2","N3","T2_L","T2_R"],"T2_R->N3":["T2_R","T2_L","N3"],"N3->T2_R":["N3","T2_L","T2_R"],"T2_R->N4":["T2_R","T2_L","N3","N4"],"N4->T2_R":["N4","N3","T2_L","T2_R"],"T2_R->N11":["T2_R","N10","N11"],"N11->T2_R":["N11","N10","T2_R"],"T2_R->N10":["T2_R","N10"],"N10->T2_R":["N10","T2_R"],"T2_R->N9":["T2_R","N10","N9"],"N9->T2_R":["N9","N10","T2_R"],"T3_R->N7":["T3_R","N7"],"N7->T3_R":["N7","T3_R"],"T3_R->N8":["T3_R","N7","N8"],"N8->T3_R":["N8","N7","T3_R"],"T3_R->N2":["T3_R","T3_L","N4","N3","N2"],"N2->T3_R":["N2","N3","N4","T3_L","T3_R"],"T3_R->N3":["T3_R","T3_L","N4","N3"],"N3->T3_R":["N3","N4","T3_L","T3_R"],"T3_R->N4":["T3_R","T3_L","N4"],"N4->T3_R":["N4","T3_L","T3_R"],"T3_R->N11":["T3_R","N9","N10","N11"],"N11->T3_R":["N11","N10","N9","T3_R"],"T3_R->N10":["T3_R","N9","N10"],"N10->T3_R":["N10","N9","T3_R"],"T3_R->N9":["T3_R","N9"],"N9->T3_R":["N9","T3_R"],"N7->N8":["N7","N8"],"N8->N7":["N8","N7"],"N7->N2":["N7","N6","N5","N4","N3","N2"],"N2->N7":["N2","N3","N4","N5","N6","N7"],"N7->N3":["N7","N6","N5","N4","N3"],"N3->N7":["N3","N4","N5","N6","N7"],"N7->N4":["N7","N6","N5","N4"],"N4->N7":["N4","N5","N6","N7"],"N7->N11":["N7","N8","N9","N10","N11"],"N11->N7":["N11","N10","N9","N8","N7"],"N7->N10":["N7","N8","N9","N10"],"N10->N7":["N10","N9","N8","N7"],"N7->N9":["N7","N8","N9"],"N9->N7":["N9","N8","N7"],"N8->N2":["N8","N7","N6","N5","N4","N3","N2"],"N2->N8":["N2","N3","N4","N5","N6","N7","N8"],"N8->N3":["N8","N7","N6","N5","N4","N3"],"N3->N8":["N3","N4","N5","N6","N7","N8"],"N8->N4":["N8","N7","N6","N5","N4"],"N4->N8":["N4","N5","N6","N7","N8"],"N8->N11":["N8","N9","N10","N11"],"N11->N8":["N11","N10","N9","N8"],"N8->N10":["N8","N9","N10"],"N10->N8":["N10","N9","N8"],"N8->N9":["N8","N9"],"N9->N8":["N9","N8"],"N2->N3":["N2","N3"],"N3->N2":["N3","N2"],"N2->N4":["N2","N3","N4"],"N4->N2":["N4","N3","N2"],"N2->N11":["N2","T1_L","T1_R","N11"],"N11->N2":["N11","T1_R","T1_L","N2"],"N2->N10":["N2","T1_L","T1_R","N11","N10"],"N10->N2":["N10","N11","T1_R","T1_L","N2"],"N2->N9":["N2","T1_L","T1_R","N11","N10","N9"],"N9->N2":["N9","N10","N11","T1_R","T1_L","N2"],"N3->N4":["N3","N4"],"N4->N3":["N4","N3"],"N3->N11":["N3","T2_L","T2_R","N10","N11"],"N11->N3":["N11","N10","T2_R","T2_L","N3"],"N3->N10":["N3","T2_L","T2_R","N10"],"N10->N3":["N10","T2_R","T2_L","N3"],"N3->N9":["N3","T2_L","T2_R","N10","N9"],"N9->N3":["N9","N10","T2_R","T2_L","N3"],"N4->N11":["N4","T3_L","T3_R","N9","N10","N11"],"N11->N4":["N11","N10","N9","T3_R","T3_L","N4"],"N4->N10":["N4","T3_L","T3_R","N9","N10"],"N10->N4":["N10","N9","T3_R","T3_L","N4"],"N4->N9":["N4","T3_L","T3_R","N9"],"N9->N4":["N9","T3_R","T3_L","N4"],"N11->N10":["N11","N10"],"N10->N11":["N10","N11"],"N11->N9":["N11","N10","N9"],"N9->N11":["N9","N10","N11"],"N10->N9":["N10","N9"],"N9->N10":["N9","N10"]},"all_dists":{"START->J_START":200.0,"J_START->START":200.0,"START->N1":600.0,"N1->START":600.0,"START->T1_L":1400.0,"T1_L->START":1400.0,"START->T2_L":2200.0,"T2_L->START":2200.0,"START->T3_L":3000.0,"T3_L->START":3000.0,"START->N6":3800.0,"N6->START":3800.0,"START->N5":4600.0,"N5->START":4600.0,"START->N12":600.0,"N12->START":600.0,"START->T1_R":1400.0,"T1_R->START":1400.0,"START->T2_R":2200.0,"T2_R->START":2200.0,"START->T3_R":3000.0,"T3_R->START":3000.0,"START->N7":3800.0,"N7->START":3800.0,"START->N8":4600.0,"N8->START":4600.0,"START->N2":2200.0,"N2->START":2200.0,"START->N3":3000.0,"N3->START":3000.0,"START->N4":3800.0,"N4->START":3800.0,"START->N11":2200.0,"N11->START":2200.0,"START->N10":3000.0,"N10->START":3000.0,"START->N9":3800.0,"N9->START":3800.0,"J_START->N1":400.0,"N1->J_START":400.0,"J_START->T1_L":1200.0,"T1_L->J_START":1200.0,"J_START->T2_L":2000.0,"T2_L->J_START":2000.0,"J_START->T3_L":2800.0,"T3_L->J_START":2800.0,"J_START->N6":3600.0,"N6->J_START":3600.0,"J_START->N5":4400.0,"N5->J_START":4400.0,"J_START->N12":400.0,"N12->J_START":400.0,"J_START->T1_R":1200.0,"T1_R->J_START":1200.0,"J_START->T2_R":2000.0,"T2_R->J_START":2000.0,"J_START->T3_R":2800.0,"T3_R->J_START":2800.0,"J_START->N7":3600.0,"N7->J_START":3600.0,"J_START->N8":4400.0,"N8->J_START":4400.0,"J_START->N2":2000.0,"N2->J_START":2000.0,"J_START->N3":2800.0,"N3->J_START":2800.0,"J_START->N4":3600.0,"N4->J_START":3600.0,"J_START->N11":2000.0,"N11->J_START":2000.0,"J_START->N10":2800.0,"N10->J_START":2800.0,"J_START->N9":3600.0,"N9->J_START":3600.0,"N1->T1_L":800.0,"T1_L->N1":800.0,"N1->T2_L":1600.0,"T2_L->N1":1600.0,"N1->T3_L":2400.0,"T3_L->N1":2400.0,"N1->N6":3200.0,"N6->N1":3200.0,"N1->N5":4000.0,"N5->N1":4000.0,"N1->N12":800.0,"N12->N1":800.0,"N1->T1_R":1280.0,"T1_R->N1":1280.0,"N1->T2_R":2080.0,"T2_R->N1":2080.0,"N1->T3_R":2880.0,"T3_R->N1":2880.0,"N1->N7":3680.0,"N7->N1":3680.0,"N1->N8":4480.0,"N8->N1":4480.0,"N1->N2":1600.0,"N2->N1":1600.0,"N1->N3":2400.0,"N3->N1":2400.0,"N1->N4":3200.0,"N4->N1":3200.0,"N1->N11":2080.0,"N11->N1":2080.0,"N1->N10":2880.0,"N10->N1":2880.0,"N1->N9":3680.0,"N9->N1":3680.0,"T1_L->T2_L":800.0,"T2_L->T1_L":800.0,"T1_L->T3_L":1600.0,"T3_L->T1_L":1600.0,"T1_L->N6":2400.0,"N6->T1_L":2400.0,"T1_L->N5":3200.0,"N5->T1_L":3200.0,"T1_L->N12":1280.0,"N12->T1_L":1280.0,"T1_L->T1_R":480.0,"T1_R->T1_L":480.0,"T1_L->T2_R":1280.0,"T2_R->T1_L":1280.0,"T1_L->T3_R":2080.0,"T3_R->T1_L":2080.0,"T1_L->N7":2880.0,"N7->T1_L":2880.0,"T1_L->N8":3680.0,"N8->T1_L":3680.0,"T1_L->N2":800.0,"N2->T1_L":800.0,"T1_L->N3":1600.0,"N3->T1_L":1600.0,"T1_L->N4":2400.0,"N4->T1_L":2400.0,"T1_L->N11":1280.0,"N11->T1_L":1280.0,"T1_L->N10":2080.0,"N10->T1_L":2080.0,"T1_L->N9":2880.0,"N9->T1_L":2880.0,"T2_L->T3_L":800.0,"T3_L->T2_L":800.0,"T2_L->N6":1600.0,"N6->T2_L":1600.0,"T2_L->N5":2400.0,"N5->T2_L":2400.0,"T2_L->N12":2080.0,"N12->T2_L":2080.0,"T2_L->T1_R":1280.0,"T1_R->T2_L":1280.0,"T2_L->T2_R":480.0,"T2_R->T2_L":480.0,"T2_L->T3_R":1280.0,"T3_R->T2_L":1280.0,"T2_L->N7":2080.0,"N7->T2_L":2080.0,"T2_L->N8":2880.0,"N8->T2_L":2880.0,"T2_L->N2":1600.0,"N2->T2_L":1600.0,"T2_L->N3":800.0,"N3->T2_L":800.0,"T2_L->N4":1600.0,"N4->T2_L":1600.0,"T2_L->N11":2080.0,"N11->T2_L":2080.0,"T2_L->N10":1280.0,"N10->T2_L":1280.0,"T2_L->N9":2080.0,"N9->T2_L":2080.0,"T3_L->N6":800.0,"N6->T3_L":800.0,"T3_L->N5":1600.0,"N5->T3_L":1600.0,"T3_L->N12":2880.0,"N12->T3_L":2880.0,"T3_L->T1_R":2080.0,"T1_R->T3_L":2080.0,"T3_L->T2_R":1280.0,"T2_R->T3_L":1280.0,"T3_L->T3_R":480.0,"T3_R->T3_L":480.0,"T3_L->N7":1280.0,"N7->T3_L":1280.0,"T3_L->N8":2080.0,"N8->T3_L":2080.0,"T3_L->N2":2400.0,"N2->T3_L":2400.0,"T3_L->N3":1600.0,"N3->T3_L":1600.0,"T3_L->N4":800.0,"N4->T3_L":800.0,"T3_L->N11":2880.0,"N11->T3_L":2880.0,"T3_L->N10":2080.0,"N10->T3_L":2080.0,"T3_L->N9":1280.0,"N9->T3_L":1280.0,"N6->N5":800.0,"N5->N6":800.0,"N6->N12":3680.0,"N12->N6":3680.0,"N6->T1_R":2880.0,"T1_R->N6":2880.0,"N6->T2_R":2080.0,"T2_R->N6":2080.0,"N6->T3_R":1280.0,"T3_R->N6":1280.0,"N6->N7":480.0,"N7->N6":480.0,"N6->N8":1280.0,"N8->N6":1280.0,"N6->N2":3200.0,"N2->N6":3200.0,"N6->N3":2400.0,"N3->N6":2400.0,"N6->N4":1600.0,"N4->N6":1600.0,"N6->N11":3680.0,"N11->N6":3680.0,"N6->N10":2880.0,"N10->N6":2880.0,"N6->N9":2080.0,"N9->N6":2080.0,"N5->N12":4480.0,"N12->N5":4480.0,"N5->T1_R":3680.0,"T1_R->N5":3680.0,"N5->T2_R":2880.0,"T2_R->N5":2880.0,"N5->T3_R":2080.0,"T3_R->N5":2080.0,"N5->N7":1280.0,"N7->N5":1280.0,"N5->N8":2080.0,"N8->N5":2080.0,"N5->N2":2400.0,"N2->N5":2400.0,"N5->N3":1600.0,"N3->N5":1600.0,"N5->N4":800.0,"N4->N5":800.0,"N5->N11":4480.0,"N11->N5":4480.0,"N5->N10":3680.0,"N10->N5":3680.0,"N5->N9":2880.0,"N9->N5":2880.0,"N12->T1_R":800.0,"T1_R->N12":800.0,"N12->T2_R":1600.0,"T2_R->N12":1600.0,"N12->T3_R":2400.0,"T3_R->N12":2400.0,"N12->N7":3200.0,"N7->N12":3200.0,"N12->N8":4000.0,"N8->N12":4000.0,"N12->N2":2080.0,"N2->N12":2080.0,"N12->N3":2880.0,"N3->N12":2880.0,"N12->N4":3680.0,"N4->N12":3680.0,"N12->N11":1600.0,"N11->N12":1600.0,"N12->N10":2400.0,"N10->N12":2400.0,"N12->N9":3200.0,"N9->N12":3200.0,"T1_R->T2_R":800.0,"T2_R->T1_R":800.0,"T1_R->T3_R":1600.0,"T3_R->T1_R":1600.0,"T1_R->N7":2400.0,"N7->T1_R":2400.0,"T1_R->N8":3200.0,"N8->T1_R":3200.0,"T1_R->N2":1280.0,"N2->T1_R":1280.0,"T1_R->N3":2080.0,"N3->T1_R":2080.0,"T1_R->N4":2880.0,"N4->T1_R":2880.0,"T1_R->N11":800.0,"N11->T1_R":800.0,"T1_R->N10":1600.0,"N10->T1_R":1600.0,"T1_R->N9":2400.0,"N9->T1_R":2400.0,"T2_R->T3_R":800.0,"T3_R->T2_R":800.0,"T2_R->N7":1600.0,"N7->T2_R":1600.0,"T2_R->N8":2400.0,"N8->T2_R":2400.0,"T2_R->N2":2080.0,"N2->T2_R":2080.0,"T2_R->N3":1280.0,"N3->T2_R":1280.0,"T2_R->N4":2080.0,"N4->T2_R":2080.0,"T2_R->N11":1600.0,"N11->T2_R":1600.0,"T2_R->N10":800.0,"N10->T2_R":800.0,"T2_R->N9":1600.0,"N9->T2_R":1600.0,"T3_R->N7":800.0,"N7->T3_R":800.0,"T3_R->N8":1600.0,"N8->T3_R":1600.0,"T3_R->N2":2880.0,"N2->T3_R":2880.0,"T3_R->N3":2080.0,"N3->T3_R":2080.0,"T3_R->N4":1280.0,"N4->T3_R":1280.0,"T3_R->N11":2400.0,"N11->T3_R":2400.0,"T3_R->N10":1600.0,"N10->T3_R":1600.0,"T3_R->N9":800.0,"N9->T3_R":800.0,"N7->N8":800.0,"N8->N7":800.0,"N7->N2":3680.0,"N2->N7":3680.0,"N7->N3":2880.0,"N3->N7":2880.0,"N7->N4":2080.0,"N4->N7":2080.0,"N7->N11":3200.0,"N11->N7":3200.0,"N7->N10":2400.0,"N10->N7":2400.0,"N7->N9":1600.0,"N9->N7":1600.0,"N8->N2":4480.0,"N2->N8":4480.0,"N8->N3":3680.0,"N3->N8":3680.0,"N8->N4":2880.0,"N4->N8":2880.0,"N8->N11":2400.0,"N11->N8":2400.0,"N8->N10":1600.0,"N10->N8":1600.0,"N8->N9":800.0,"N9->N8":800.0,"N2->N3":800.0,"N3->N2":800.0,"N2->N4":1600.0,"N4->N2":1600.0,"N2->N11":2080.0,"N11->N2":2080.0,"N2->N10":2880.0,"N10->N2":2880.0,"N2->N9":3680.0,"N9->N2":3680.0,"N3->N4":800.0,"N4->N3":800.0,"N3->N11":2880.0,"N11->N3":2880.0,"N3->N10":2080.0,"N10->N3":2080.0,"N3->N9":2880.0,"N9->N3":2880.0,"N4->N11":3680.0,"N11->N4":3680.0,"N4->N10":2880.0,"N10->N4":2880.0,"N4->N9":2080.0,"N9->N4":2080.0,"N11->N10":800.0,"N10->N11":800.0,"N11->N9":1600.0,"N9->N11":1600.0,"N10->N9":800.0,"N9->N10":800.0},"lane_width_mm":200.0,"expected_yaw":{"down":0.0,"right":90.0,"left":-90.0,"up":180.0},"mission_nodes":["N1","N2","N3","N4","N5","N6","N7","N8","N9","N10","N11","N12"],"junction_nodes":["J_START","T1_L","T1_R","T2_L","T2_R","T3_L","T3_R"],"field_size_mm":[3200,4400],"node_coords":{"START":{"x":0,"y":0},"J_START":{"x":0,"y":200},"N1":{"x":-400,"y":200},"T1_L":{"x":-400,"y":1000},"T2_L":{"x":-400,"y":1800},"T3_L":{"x":-400,"y":2600},"N6":{"x":-400,"y":3400},"N5":{"x":-1200,"y":3400},"N12":{"x":400,"y":200},"T1_R":{"x":400,"y":1000},"T2_R":{"x":400,"y":1800},"T3_R":{"x":400,"y":2600},"N7":{"x":400,"y":3400},"N8":{"x":1200,"y":3400},"N2":{"x":-1200,"y":1000},"N3":{"x":-1200,"y":1800},"N4":{"x":-1200,"y":2600},"N11":{"x":1200,"y":1000},"N10":{"x":1200,"y":1800},"N9":{"x":1200,"y":2600}}};
+</script>
+
+<!-- ===== JS 模块 (按加载顺序) ===== -->
+<script>
+// === main.js ===
+
+/**
+ * RoboCup Rescue Brain — 可视化调试面板 核心脚本
+ *
+ * 两种运行模式:
+ *   1. 线上模式: 连接 debug_server.py 提供的 WebSocket (/ws) 实时推送数据
+ *   2. 独立模式: 直接在浏览器打开 HTML 文件，内置模拟器驱动渲染
+ *
+ * 地图拓扑数据由 HTML 页面中的 <script> 标签注入 window.__MAP_DATA__。
+ */
+
+// 全局状态
+let currentMode = 'auto';
+let vxSpeed = 300;
+let wzSpeed = 100;
+let cmdHistory = [];
+
+// canvas 引用（拖拽用）
+let canvas = null;
+
+// 地图数据（由 HTML 注入）
+let gNodes = {};
+let gEdges = [];
+
+// 小车拖拽状态
+let carDragging = false;
+let carDragMode = null;
+let carDragStart = null;
+let carPosBeforeDrag = null;
+let lastMapTransform = null;  // 缓存当前帧的变换参数，供拖拽用
+
+// 模拟状态
+let simRunning = false;
+let simInterval = null;
+let sim = {
+    pos: { x: 0, y: 0, yaw: 0 },
+    odom: 0,
+    state: 'IDLE',
+    currentNode: 'START',
+    targetNode: null,
+    visited: [],
+    path: [],
+    pathIndex: 0,
+    trajectory: [],
+    events: [],
+    approachingUntil: 0,
+};
+
+// 初始化
+function initDashboard() {
+    // 加载地图拓扑数据
+    if (window.__MAP_DATA__) {
+        gNodes = window.__MAP_DATA__.nodes || {};
+        gEdges = window.__MAP_DATA__.edges || [];
+        sim.path = window.__MAP_DATA__.patrol_path || [];
+    }
+    updateStats();
+
+    // 启用小车拖拽
+    setupCarDrag();
+
+    // 填充起始位置下拉框
+    const startSelect = document.getElementById('simStartNode');
+    if (startSelect && Object.keys(gNodes).length > 0) {
+        const nodeNames = Object.keys(gNodes).sort((a, b) => {
+            // mission 排前面, junction 排后面
+            const ta = gNodes[a].type, tb = gNodes[b].type;
+            if (ta === 'base') return -1;
+            if (tb === 'base') return 1;
+            if (ta === 'mission' && tb !== 'mission') return -1;
+            if (ta !== 'mission' && tb === 'mission') return 1;
+            return a.localeCompare(b);
+        });
+        startSelect.innerHTML = nodeNames.map(n => {
+            const t = gNodes[n].type;
+            const label = t === 'start' ? '起点' : t === 'mission' ? '任务点' : '路口';
+            return `<option value="${n}">${n} (${label})</option>`;
+        }).join('');
+    }
+
+    // 先画一次地图（延迟确保 Canvas 已渲染）
+    setTimeout(() => {
+        if (Object.keys(gNodes).length > 0) {
+            drawMap(gNodes, gEdges, null, [], null, null, [], null);
+        }
+    }, 100);
+
+    // 检测是否在线（WebSocket 可用）
+    const isFileProtocol = window.location.protocol === 'file:';
+    if (isFileProtocol) {
+        // 独立模式 — 启用模拟器
+        document.getElementById('statusDot').classList.add('connected');
+        document.getElementById('fpsDisplay').textContent = '独立模式 | 模拟器就绪';
+        showSimControls(true);
+        setTimeout(() => {
+            updateTelemetryFromSim();
+            renderMapFromSim();
+        }, 150);
+    } else {
+        // 线上模式 — 连接 WebSocket, 同时先画静态地图
+        connectWebSocket();
+        showSimControls(false);
+        if (Object.keys(gNodes).length > 0) {
+            drawMap(gNodes, gEdges, null, [], null, null, [], null);
+        }
+    }
+}
+
+function showSimControls(visible) {
+    const el = document.getElementById('simControls');
+    if (el) el.style.display = visible ? 'block' : 'none';
+}
+
+// 页面加载完成后自动初始化
+window.addEventListener('DOMContentLoaded', initDashboard);
+
+</script>
+<script>
+// === websocket.js ===
+// WebSocket 连接（线上模式）
+let ws = null;
+let lastFrameTime = Date.now();
+let frameCount = 0;
+let fps = 0;
+
+function connectWebSocket() {
+    let fallbackTimer = null;
+    try {
+        ws = new WebSocket(`ws://${window.location.host}/ws`);
+        ws.onopen = () => {
+            if (fallbackTimer) clearTimeout(fallbackTimer);
+            console.log('WebSocket 已连接');
+            document.getElementById('statusDot').classList.add('connected');
+        };
+        ws.onclose = () => {
+            console.log('WebSocket 已断开');
+            document.getElementById('statusDot').classList.remove('connected');
+        };
+        ws.onerror = () => {
+            console.warn('WebSocket 连接错误');
+        };
+        ws.onmessage = onWsMessage;
+        // 2 秒内连不上就降级到模拟器模式
+        fallbackTimer = setTimeout(() => {
+            if (ws && ws.readyState !== WebSocket.OPEN) {
+                console.warn('WebSocket 超时，切换到独立模式');
+                ws.close();
+                ws = null;
+                switchToStandalone();
+            }
+        }, 2000);
+    } catch (e) {
+        console.warn('WebSocket 连接失败，切换到独立模式');
+        switchToStandalone();
+    }
+}
+
+function switchToStandalone() {
+    document.getElementById('statusDot').classList.add('connected');
+    document.getElementById('fpsDisplay').textContent = '独立模式 | 模拟器就绪';
+    showSimControls(true);
+    updateTelemetryFromSim();
+    renderMapFromSim();
+}
+
+function onWsMessage(event) {
+    const data = JSON.parse(event.data);
+    const receiveTime = Date.now();
+    const latency = receiveTime - data.timestamp;
+
+    frameCount++;
+    if (receiveTime - lastFrameTime >= 1000) {
+        fps = frameCount;
+        frameCount = 0;
+        lastFrameTime = receiveTime;
+    }
+    document.getElementById('fpsDisplay').textContent =
+        `FPS: ${fps} | 延迟: ${latency}ms`;
+
+    if (data.seg_image) {
+        document.getElementById('segImage').src = 'data:image/jpeg;base64,' + data.seg_image;
+    }
+
+    if (data.map_data) {
+        gNodes = data.map_data.nodes || {};
+        gEdges = data.map_data.edges || [];
+        renderMap(data);
+    }
+
+    updateTelemetry(data);
+
+    if (data.planned_path) {
+        updatePath(data);
+    }
+
+    if (data.events) {
+        updateEventLog(data.events);
+    }
+}
+
+</script>
+<script>
+// === simulator.js ===
+// 模拟器（独立模式）
+function toggleSimulation() {
+    if (simRunning) {
+        stopSimulation();
+    } else {
+        startSimulation();
+    }
+}
+
+function startSimulation() {
+    // 读取用户选择的起始节点
+    const startSelect = document.getElementById('simStartNode');
+    const startName = (startSelect && startSelect.value) || 'START';
+    const startNode = gNodes[startName];
+    if (!startNode) {
+        logCmd('错误: 起始节点不存在', 'error');
+        return;
+    }
+
+    sim.pos = { x: startNode.x, y: startNode.y, yaw: 0 };
+    sim.odom = 0;
+    sim.state = 'CRUISING';
+    sim.currentNode = startName;
+    sim.visited = [];
+    sim.pathIndex = 0;
+    sim.trajectory = [[startNode.x, startNode.y]];
+    sim.events = [];
+    sim.approachingUntil = 0;
+
+    // 重新计算从起始节点出发的巡逻路径
+    const missionNodes = Object.keys(gNodes).filter(
+        n => gNodes[n].type === 'mission'
+    );
+    // 简化: 用数据中预存的巡逻路径, 从 startName 开始截取
+    const fullPath = window.__MAP_DATA__?.patrol_path || [];
+    const startIdx = fullPath.indexOf(startName);
+    if (startIdx >= 0) {
+        sim.path = fullPath.slice(startIdx);
+    } else {
+        sim.path = fullPath;
+    }
+    sim.targetNode = sim.path.length > 1 ? sim.path[1] : null;
+
+    // 如果起始是 mission 节点，直接标记已访问
+    if (startNode.type === 'mission') {
+        sim.visited.push(startName);
+        addSimEvent('start', `从 ${startName} 出发 (已打卡)`);
+    } else {
+        addSimEvent('start', `从 ${startName} 出发`);
+    }
+
+    carDragging = false;  // 清除拖拽状态
+    simRunning = true;
+    updateSimButton();
+    simInterval = setInterval(simTick, 50);
+    logCmd(`模拟器已启动 (起点: ${startName})`);
+}
+
+function stopSimulation() {
+    simRunning = false;
+    if (simInterval) { clearInterval(simInterval); simInterval = null; }
+    updateSimButton();
+    logCmd('模拟器已停止');
+}
+
+function updateSimButton() {
+    const btn = document.getElementById('btnSim');
+    if (!btn) return;
+    if (simRunning) {
+        btn.textContent = '停止模拟';
+        btn.className = 'btn btn-stop';
+    } else {
+        btn.textContent = '启动模拟';
+        btn.className = 'btn btn-action';
+    }
+}
+
+function simTick() {
+    if (!simRunning) return;
+    if (!sim.targetNode || !gNodes[sim.targetNode]) return;
+
+    const tgt = gNodes[sim.targetNode];
+    const dt = 0.05;          // 50ms tick
+    const speed = 300;        // mm/s
+    const step = speed * dt;  // 15mm per tick
+
+    const dx = tgt.x - sim.pos.x;
+    const dy = tgt.y - sim.pos.y;
+    const dist = Math.hypot(dx, dy);
+
+    // 倒计时处理（模拟路口逼近）
+    if (sim.approachingUntil > 0) {
+        sim.approachingUntil -= dt;
+        if (sim.approachingUntil <= 0) {
+            sim.approachingUntil = 0;
+            sim.state = 'TURNING';
+            sim.odom += 30; // 模拟转弯距离
+            addSimEvent('state_change', `${sim.currentNode} → TURNING (${sim.targetNode})`);
+            // 模拟到达路口后推进
+            advanceToNextNode();
+            sim.state = 'PLANNING';
+            // 重新规划
+            const unvisited = Object.keys(gNodes).filter(
+                n => gNodes[n].type === 'mission' && !sim.visited.includes(n)
+            );
+            if (unvisited.length === 0) {
+                sim.state = 'FINISHED';
+                sim.targetNode = null;
+                stopSimulation();
+                addSimEvent('finished', '所有任务完成');
+            } else if (sim.pathIndex < sim.path.length) {
+                sim.targetNode = sim.path[sim.pathIndex];
+                sim.state = 'CRUISING';
+            }
+        }
+        updateTelemetryFromSim();
+        renderMapFromSim();
+        return;
+    }
+
+    // 接近目标时触发路口检测模拟
+    if (dist < 150 && sim.state === 'CRUISING') {
+        // 模拟视觉路口检测
+        if (tgt.type !== 'junction' || tgt.rfid) {
+            sim.state = 'APPROACHING';
+            sim.approachingUntil = 1.0; // 1 秒逼近
+            addSimEvent('crossing_detected', `检测到路口, 距离≈${dist.toFixed(0)}mm → APPROACHING`);
+            updateTelemetryFromSim();
+            renderMapFromSim();
+            return;
+        }
+    }
+
+    if (dist < 5) {
+        // 精确到达
+        sim.pos.x = tgt.x;
+        sim.pos.y = tgt.y;
+        handleNodeArrival();
+        updateTelemetryFromSim();
+        renderMapFromSim();
+        return;
+    }
+
+    // 移动：先横后纵（模拟车道约束）
+    const ax = Math.abs(dx), ay = Math.abs(dy);
+    let moveX = 0, moveY = 0;
+    if (ax > ay) {
+        moveX = Math.sign(dx) * Math.min(step, ax);
+        sim.pos.yaw = dx > 0 ? 90 : -90;
+    } else {
+        moveY = Math.sign(dy) * Math.min(step, ay);
+        sim.pos.yaw = dy > 0 ? 0 : 180;
+    }
+
+    sim.pos.x += moveX;
+    sim.pos.y += moveY;
+    sim.odom += Math.abs(moveX) + Math.abs(moveY);
+
+    // 保存轨迹
+    sim.trajectory.push([sim.pos.x, sim.pos.y]);
+    if (sim.trajectory.length > 2000) sim.trajectory = sim.trajectory.slice(-2000);
+
+    updateTelemetryFromSim();
+    renderMapFromSim();
+}
+
+function handleNodeArrival() {
+    const nodeName = sim.targetNode;
+    if (!nodeName || !gNodes[nodeName]) return;
+
+    // RFID 打卡
+    if (gNodes[nodeName].rfid && !sim.visited.includes(nodeName)) {
+        sim.visited.push(nodeName);
+        sim.currentNode = nodeName;
+        addSimEvent('rfid_scanned', `RFID: ${nodeName} → 坐标硬吸附 → (${sim.pos.x.toFixed(0)}, ${sim.pos.y.toFixed(0)})`);
+    }
+
+    // 推进路径
+    advanceToNextNode();
+}
+
+function advanceToNextNode() {
+    const path = sim.path;
+    if (!path || path.length === 0) {
+        sim.targetNode = null;
+        return;
+    }
+
+    const idx = path.indexOf(sim.targetNode);
+    if (idx < 0 || idx >= path.length - 1) {
+        // 路径走完，重新规划
+        const unvisited = Object.keys(gNodes).filter(
+            n => gNodes[n].type === 'mission' && !sim.visited.includes(n)
+        );
+        if (unvisited.length === 0) {
+            sim.state = 'FINISHED';
+            sim.targetNode = null;
+            addSimEvent('finished', '所有任务完成');
+            stopSimulation();
+            return;
+        }
+        // 简化 TSP：取第一个未访问的 mission 节点
+        sim.pathIndex = path.indexOf(unvisited[0]);
+        if (sim.pathIndex < 0) sim.pathIndex = 0;
+    } else {
+        sim.pathIndex = idx + 1;
+    }
+
+    if (sim.pathIndex < path.length) {
+        sim.targetNode = path[sim.pathIndex];
+        sim.currentNode = sim.targetNode;
+        sim.state = 'CRUISING';
+    }
+}
+
+function addSimEvent(type, message) {
+    sim.events.push({
+        timestamp: Date.now() / 1000,
+        type: type,
+        message: message,
+    });
+    if (sim.events.length > 200) sim.events = sim.events.slice(-200);
+    updateEventLog(sim.events);
+}
+
+</script>
+<script>
+// === telemetry.js ===
+// 遥测数据更新
+function updateTelemetry(data) {
+    document.getElementById('agentState').textContent = data.agent_state || '--';
+    document.getElementById('agentState').className = 'value ' +
+        (data.agent_state === 'FINISHED' ? 'ok' :
+         data.agent_state === 'TURNING' ? 'warn' : '');
+
+    if (data.position) {
+        const [x, y, yaw] = data.position;
+        document.getElementById('position').textContent = `${x.toFixed(0)}, ${y.toFixed(0)}`;
+        document.getElementById('yaw').textContent = `${yaw.toFixed(1)}°`;
+    }
+
+    document.getElementById('currentNode').textContent = data.current_node || '--';
+    document.getElementById('targetNode').textContent = data.target_node || '--';
+
+    const offsetEl = document.getElementById('offsetMm');
+    const off = data.offset_mm || 0;
+    offsetEl.textContent = data.offset_mm !== undefined ? `${off.toFixed(1)} mm` : '--';
+    offsetEl.className = 'value ' +
+        (Math.abs(off) > 100 ? 'alert' : Math.abs(off) > 50 ? 'warn' : 'ok');
+
+    const interEl = document.getElementById('intersection');
+    interEl.textContent = data.is_intersection ? '检测到路口 ⚠' : '正常';
+    interEl.className = 'value ' + (data.is_intersection ? 'warn' : 'ok');
+
+    document.getElementById('progress').textContent =
+        data.progress ? `${data.progress.visited}/${data.progress.total}` : '--';
+}
+
+function updateTelemetryFromSim() {
+    updateTelemetry({
+        agent_state: sim.state,
+        position: [sim.pos.x, sim.pos.y, sim.pos.yaw],
+        current_node: sim.currentNode,
+        target_node: sim.targetNode,
+        offset_mm: (Math.random() - 0.5) * 20,           // 模拟 ±10mm 小幅偏移
+        is_intersection: sim.state === 'APPROACHING',
+        progress: { visited: sim.visited.length, total: 12 },
+        planned_path: sim.path,
+        visited_nodes: sim.visited,
+    });
+}
+
+// 路径显示
+function updatePath(data) {
+    const container = document.getElementById('pathList');
+    if (!data.planned_path || data.planned_path.length === 0) {
+        container.textContent = '暂无规划路径';
+        return;
+    }
+
+    const visited = data.visited_nodes || [];
+    const current = data.current_node;
+    const target = data.target_node;
+
+    container.innerHTML = data.planned_path.map((node, i) => {
+        let cls = 'path-node';
+        if (node === current) cls += ' current';
+        else if (node === target) cls += ' target';
+        else if (visited.includes(node)) cls += ' visited';
+        else cls += ' planned';
+
+        const arrow = i < data.planned_path.length - 1 ? ' → ' : '';
+        return `<span class="${cls}">${node}</span>${arrow}`;
+    }).join('');
+}
+
+// 事件日志
+const MAX_EVENTS = 50;
+function updateEventLog(events) {
+    const container = document.getElementById('eventLog');
+    const title = container.querySelector('.panel-title');
+    container.innerHTML = '';
+    container.appendChild(title);
+
+    events.slice(-MAX_EVENTS).forEach(evt => {
+        const div = document.createElement('div');
+        div.className = 'event-item';
+        const time = new Date(evt.timestamp * 1000).toLocaleTimeString();
+        div.innerHTML = `<span class="event-time">${time}</span>` +
+            `<span class="event-type">[${evt.type}]</span>${evt.message}`;
+        container.appendChild(div);
+    });
+
+    container.scrollTop = container.scrollHeight;
+}
+
+</script>
+<script>
+// === map_renderer.js ===
+// 地图渲染
+let mapRenderNodes = {};
+let mapRenderEdges = [];
+
+function computeMapTransform(w, h, nodes) {
+    if (!nodes || Object.keys(nodes).length === 0) {
+        return { scale: 0.1, ox: w / 2, oy: 30 };
+    }
+    const nodeList = Object.values(nodes);
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    nodeList.forEach(n => {
+        minX = Math.min(minX, n.x);
+        maxX = Math.max(maxX, n.x);
+        minY = Math.min(minY, n.y);
+        maxY = Math.max(maxY, n.y);
+    });
+    const padding = 60;
+    const availW = w - padding * 2;
+    const availH = h - padding * 2;
+    const scaleX = availW / (maxX - minX || 1);
+    const scaleY = availH / (maxY - minY || 1);
+    const scale = Math.min(scaleX, scaleY);
+    const ox = w / 2 - (minX + maxX) / 2 * scale;
+    const oy = padding + (availH - (maxY - minY) * scale) / 2 - minY * scale;
+    return { scale, ox, oy };
+}
+
+function renderMap(data) {
+    mapRenderNodes = data.map_data ? data.map_data.nodes || {} : gNodes;
+    mapRenderEdges = data.map_data ? data.map_data.edges || [] : gEdges;
+
+    const position = data.position || null;
+    const visitedNodes = data.visited_nodes || [];
+    const currentNode = data.current_node;
+    const targetNode = data.target_node;
+    const plannedPath = data.planned_path || [];
+    const trajectory = data.trajectory || null;
+
+    drawMap(mapRenderNodes, mapRenderEdges, position, visitedNodes,
+            currentNode, targetNode, plannedPath, trajectory);
+}
+
+function renderMapFromSim() {
+    drawMap(
+        gNodes, gEdges,
+        [sim.pos.x, sim.pos.y, sim.pos.yaw],
+        sim.visited,
+        sim.currentNode,
+        sim.targetNode,
+        sim.path,
+        sim.trajectory
+    );
+}
+
+function drawMap(nodes, edges, position, visitedNodes, currentNode, targetNode, plannedPath, trajectory) {
+    const canvas = document.getElementById('mapCanvas');
+    const ctx = canvas.getContext('2d');
+    const dpr = window.devicePixelRatio || 1;
+    const rect = canvas.getBoundingClientRect();
+
+    canvas.width = rect.width * dpr;
+    canvas.height = rect.height * dpr;
+    ctx.scale(dpr, dpr);
+
+    const w = rect.width;
+    const h = rect.height;
+    const tf = computeMapTransform(w, h, nodes);
+    const s = tf.scale;
+    const ox = tf.ox;
+    const oy = tf.oy;
+
+    // 缓存变换参数供拖拽使用
+    lastMapTransform = { scale: s, ox, oy };
+
+    ctx.fillStyle = '#111';
+    ctx.fillRect(0, 0, w, h);
+
+    // 网格
+    ctx.strokeStyle = '#1a1a2e';
+    ctx.lineWidth = 1;
+    for (let x = 0; x < w; x += 50) {
+        ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke();
+    }
+    for (let y = 0; y < h; y += 50) {
+        ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
+    }
+
+    function toCanvas(x_mm, y_mm) {
+        return { x: ox + x_mm * s, y: oy + y_mm * s };
+    }
+
+    // 车道物理宽度对应的像素，默认 200mm
+    const laneWidthPx = (window.__MAP_DATA__?.lane_width_mm || 200) * s;
+    const wallWidthPx = Math.max(2, 30 * s);
+    const totalWidth = laneWidthPx + wallWidthPx * 2;
+    const junctionSize = totalWidth;
+
+    // 工具函数
+    function strokeRoad(a, b, width, color) {
+        const pa = toCanvas(a.x, a.y);
+        const pb = toCanvas(b.x, b.y);
+        ctx.beginPath();
+        ctx.moveTo(pa.x, pa.y);
+        ctx.lineTo(pb.x, pb.y);
+        ctx.strokeStyle = color;
+        ctx.lineWidth = width;
+        ctx.lineCap = 'butt';
+        ctx.stroke();
+    }
+
+    function fillJunction(node, size, color) {
+        const p = toCanvas(node.x, node.y);
+        ctx.fillStyle = color;
+        ctx.fillRect(p.x - size / 2, p.y - size / 2, size, size);
+    }
+
+    // === 第1层：围墙底板（所有道路外扩）===
+    edges.forEach(edge => {
+        const a = nodes[edge.node_a];
+        const b = nodes[edge.node_b];
+        if (a && b) strokeRoad(a, b, totalWidth, '#252a2d');
+    });
+
+    // === 第2层：路口围墙连接块（消除 N1/N12 缺角）===
+    Object.values(nodes).forEach(node => {
+        fillJunction(node, junctionSize, '#252a2d');
+    });
+
+    // === 第3层：路面 ===
+    edges.forEach(edge => {
+        const a = nodes[edge.node_a];
+        const b = nodes[edge.node_b];
+        if (a && b) {
+            strokeRoad(a, b, laneWidthPx, edge.is_tunnel ? '#8B3A3A' : '#5A5A5A');
+        }
+    });
+
+    // === 第4层：路口路面块 + 标线 + 隧道标记 ===
+    Object.values(nodes).forEach(node => {
+        fillJunction(node, laneWidthPx, '#5A5A5A');
+    });
+
+    // 标线 & 隧道文字（独立循环）
+    edges.forEach(edge => {
+        const a = nodes[edge.node_a];
+        const b = nodes[edge.node_b];
+        if (!a || !b) return;
+        const pa = toCanvas(a.x, a.y);
+        const pb = toCanvas(b.x, b.y);
+
+        // 道路中心虚线
+        ctx.beginPath();
+        ctx.moveTo(pa.x, pa.y);
+        ctx.lineTo(pb.x, pb.y);
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.15)';
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([8, 10]);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        // 隧道标记
+        if (edge.is_tunnel) {
+            const mx = (pa.x + pb.x) / 2;
+            const my = (pa.y + pb.y) / 2;
+            ctx.fillStyle = '#ff6b6b';
+            ctx.font = 'bold 11px sans-serif';
+            ctx.textAlign = 'center';
+            ctx.fillText('隧道', mx, my - laneWidthPx / 2 - 8);
+        }
+    });
+
+    // 节点圆盘半径：半透明小圆，不盖住车道
+    const nr = Math.max(4, Math.min(laneWidthPx * 0.3, 10));
+
+    Object.entries(nodes).forEach(([name, node]) => {
+        const p = toCanvas(node.x, node.y);
+        const isVisited = visitedNodes.includes(name);
+        const isCurrent = name === currentNode;
+        const isTarget = name === targetNode;
+        const isPlanned = plannedPath.includes(name);
+
+        // 半透明颜色
+        let color = 'rgba(149, 165, 166, 0.6)';          // 灰色默认
+        if (isCurrent) color = 'rgba(231, 76, 60, 0.7)';  // 红
+        else if (isTarget) color = 'rgba(243, 156, 18, 0.7)'; // 橙
+        else if (isVisited) color = 'rgba(39, 174, 96, 0.7)'; // 绿
+        else if (isPlanned) color = 'rgba(52, 152, 219, 0.7)'; // 蓝
+
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, nr, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
+        ctx.lineWidth = 1;
+        ctx.stroke();
+
+        // 统一字体大小
+        const isJunction = name.startsWith('T') || name === 'J_START';
+        ctx.fillStyle = '#fff';
+        ctx.font = 'bold 11px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'bottom';
+        if (!isJunction || s > 0.15) {
+            ctx.fillText(name, p.x, p.y - nr - 2);
+        }
+    });
+
+    // 小车位置
+    if (position) {
+        const [x, y, yaw] = position;
+        const p = toCanvas(x, y);
+        const yawRad = ((90 - yaw) * Math.PI) / 180;
+
+        // 小车物理尺寸: 宽 115mm × 长 170mm, 按 scale 换算
+        const carW = 115 * s;
+        const carL = 170 * s;
+        const minCarW = 6, minCarL = 10;
+        const halfW = Math.max(minCarW / 2, carW / 2);
+        const halfL = Math.max(minCarL / 2, carL / 2);
+
+        // 绘制车体 (圆角矩形, 朝向 yaw)
+        ctx.save();
+        ctx.translate(p.x, p.y);
+        ctx.rotate(yawRad);
+
+        // 车身
+        ctx.fillStyle = '#f39c12';
+        ctx.strokeStyle = '#fff';
+        ctx.lineWidth = 1;
+        const r = Math.min(halfW * 0.5, 4);
+        ctx.beginPath();
+        ctx.moveTo(-halfL + r, -halfW);
+        ctx.lineTo(halfL - r, -halfW);
+        ctx.arcTo(halfL, -halfW, halfL, -halfW + r, r);
+        ctx.lineTo(halfL, halfW - r);
+        ctx.arcTo(halfL, halfW, halfL - r, halfW, r);
+        ctx.lineTo(-halfL + r, halfW);
+        ctx.arcTo(-halfL, halfW, -halfL, halfW - r, r);
+        ctx.lineTo(-halfL, -halfW + r);
+        ctx.arcTo(-halfL, -halfW, -halfL + r, -halfW, r);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+
+        const handleDistance = halfL + 14;
+        ctx.beginPath();
+        ctx.moveTo(halfL, 0);
+        ctx.lineTo(handleDistance, 0);
+        ctx.strokeStyle = '#4fc3f7';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+        ctx.fillStyle = '#4fc3f7';
+        ctx.beginPath();
+        ctx.arc(handleDistance, 0, 5, 0, Math.PI * 2);
+        ctx.fill();
+
+        // 车头方向小三角
+        ctx.fillStyle = '#e74c3c';
+        ctx.beginPath();
+        ctx.moveTo(halfL + 2, 0);
+        ctx.lineTo(halfL - halfW * 0.4, -halfW * 0.6);
+        ctx.lineTo(halfL - halfW * 0.4, halfW * 0.6);
+        ctx.closePath();
+        ctx.fill();
+
+        ctx.restore();
+
+        // 航向角标注
+        ctx.fillStyle = '#f39c12';
+        ctx.font = `${Math.max(9, halfL * 0.4)}px sans-serif`;
+        ctx.fillText(`${yaw.toFixed(1)}°`, p.x + halfL + 6, p.y + 4);
+    }
+
+    // 轨迹
+    if (trajectory && trajectory.length > 1) {
+        ctx.strokeStyle = 'rgba(46, 204, 113, 0.5)';
+        ctx.lineWidth = 2;
+        ctx.setLineDash([5, 5]);
+        ctx.beginPath();
+        trajectory.forEach((pos, i) => {
+            const tp = toCanvas(pos[0], pos[1]);
+            if (i === 0) ctx.moveTo(tp.x, tp.y);
+            else ctx.lineTo(tp.x, tp.y);
+        });
+        ctx.stroke();
+        ctx.setLineDash([]);
+    }
+}
+
+// 统计
+function updateStats() {
+    // 纯数据初始化，不依赖 DOM 元素（独立 HTML 可能没有统计面板）
+    // 地图数据已在 initDashboard 中加载到 gNodes / gEdges
+    const nodeVals = Object.values(gNodes);
+    if (nodeVals.length > 0) {
+        console.log(`[dashboard] 地图加载: ${nodeVals.length} 节点, ${gEdges.length} 边`);
+    }
+}
+
+</script>
+<script>
+// === controls.js ===
+// 控制面板
+function setMode(mode) {
+    currentMode = mode;
+    document.getElementById('modeAuto').classList.toggle('active', mode === 'auto');
+    document.getElementById('modeManual').classList.toggle('active', mode === 'manual');
+    logCmd(`模式切换: ${mode === 'auto' ? '自动' : '手动'}`);
+    if (mode === 'manual' && !simRunning) {
+        logCmd('提示: 手动模式下可点击方向按钮控制小车', 'warn');
+    }
+    if (typeof sendApiCmd === 'function') {
+        sendApiCmd('set_mode', { mode: mode });
+    }
+}
+
+function updateSlider(name, value) {
+    if (name === 'vx') {
+        vxSpeed = parseInt(value);
+        document.getElementById('vxValue').textContent = vxSpeed;
+    } else if (name === 'wz') {
+        wzSpeed = parseInt(value);
+        document.getElementById('wzValue').textContent = wzSpeed;
+    }
+}
+
+function sendCmd(cmd) {
+    // 全手动模式，不区分自动/手动，直接发送
+    const cmdMap = {
+        'forward':     { type: 'move', vx: vxSpeed, wz: 0 },
+        'backward':    { type: 'move', vx: -vxSpeed, wz: 0 },
+        'left':        { type: 'move', vx: 0, wz: wzSpeed },
+        'right':       { type: 'move', vx: 0, wz: -wzSpeed },
+        'stop':        { type: 'action', action: 'stop' },
+        'reset_odom':  { type: 'action', action: 'reset_odom' },
+        'turn_left_90':  { type: 'turn', angle: 90 },
+        'turn_right_90': { type: 'turn', angle: -90 },
+    };
+
+    const payload = cmdMap[cmd];
+    if (payload) {
+        if (typeof sendApiCmd === 'function') {
+            sendApiCmd(cmd, payload);
+        }
+        logCmd(`发送: ${cmd}`);
+    }
+}
+
+async function sendApiCmd(cmd, payload) {
+    // 独立模式 (file:// 或无 WebSocket): 仅记录日志
+    if (window.location.protocol === 'file:' || !ws || ws.readyState !== WebSocket.OPEN) {
+        logCmd(`[模拟] ${cmd}: ${JSON.stringify(payload)}`);
+        return;
+    }
+    try {
+        const response = await fetch('/api/cmd', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ cmd, ...payload })
+        });
+        const result = await response.json();
+        if (!result.ok) {
+            logCmd(`错误: ${result.error}`, 'error');
+        }
+    } catch (e) {
+        logCmd(`网络错误: ${e.message}`, 'error');
+    }
+}
+
+function logCmd(msg, type = 'info') {
+    const time = new Date().toLocaleTimeString();
+    const color = type === 'error' ? '#e74c3c' : '#3498db';
+    cmdHistory.push({ time, msg, color });
+    if (cmdHistory.length > 50) cmdHistory.shift();
+
+    const container = document.getElementById('cmdLog');
+    container.innerHTML = cmdHistory.map(item =>
+        `<div class="cmd-log-item"><span class="cmd-log-time">${item.time}</span><span class="cmd-log-cmd" style="color:${item.color}">${item.msg}</span></div>`
+    ).join('');
+    container.scrollTop = container.scrollHeight;
+}
+
+// 入口
+window.addEventListener('resize', () => {
+    if (simRunning) {
+        renderMapFromSim();
+    }
+});
+
+// 小车拖拽
+function setupCarDrag() {
+    if (!canvas) canvas = document.getElementById('mapCanvas');
+    if (!canvas) return;
+
+    canvas.addEventListener('mousedown', onCarMouseDown);
+    canvas.addEventListener('mousemove', onCarMouseMove);
+    canvas.addEventListener('mouseup', onCarMouseUp);
+    canvas.addEventListener('mouseleave', onCarMouseUp);
+    canvas.addEventListener('touchstart', onCarTouchStart, { passive: false });
+    canvas.addEventListener('touchmove', onCarTouchMove, { passive: false });
+    canvas.addEventListener('touchend', onCarMouseUp);
+}
+
+function getCarRect() {
+    // 返回小车在 canvas 上的位置和尺寸
+    const tf = lastMapTransform;
+    if (!tf || !sim.pos) return null;
+
+    const carW = 115 * tf.scale;
+    const carL = 170 * tf.scale;
+    const halfW = Math.max(3, carW / 2);
+    const halfL = Math.max(5, carL / 2);
+    return {
+        cx: tf.ox + sim.pos.x * tf.scale,
+        cy: tf.oy + sim.pos.y * tf.scale,
+        halfW, halfL,
+        yawRad: (90 - sim.pos.yaw) * Math.PI / 180,
+    };
+}
+
+function getRotationHandle() {
+    const r = getCarRect();
+    if (!r) return null;
+    const distance = r.halfL + 14;
+    return {
+        x: r.cx + Math.cos(r.yawRad) * distance,
+        y: r.cy + Math.sin(r.yawRad) * distance,
+        radius: 10,
+    };
+}
+
+function hitTestCar(mx, my) {
+    const r = getCarRect();
+    if (!r) return false;
+    // 将鼠标坐标变换到车体坐标系
+    const dx = mx - r.cx;
+    const dy = my - r.cy;
+    const cos = Math.cos(-r.yawRad);
+    const sin = Math.sin(-r.yawRad);
+    const lx = dx * cos - dy * sin;  // 车体纵向
+    const ly = dx * sin + dy * cos;  // 车体横向
+    // 扩展一点命中区域方便手指操作
+    const margin = 4;
+    return Math.abs(lx) < (r.halfL + margin) && Math.abs(ly) < (r.halfW + margin);
+}
+
+function hitTestRotationHandle(mx, my) {
+    const handle = getRotationHandle();
+    return handle && Math.hypot(mx - handle.x, my - handle.y) <= handle.radius;
+}
+
+function updateCarYaw(mx, my) {
+    const r = getCarRect();
+    if (!r) return;
+    const canvasAngle = Math.atan2(my - r.cy, mx - r.cx) * 180 / Math.PI;
+    sim.pos.yaw = ((90 - canvasAngle + 540) % 360) - 180;
+}
+
+function canvasToWorld(mx, my) {
+    const tf = lastMapTransform;
+    if (!tf) return null;
+    return {
+        x: (mx - tf.ox) / tf.scale,
+        y: (my - tf.oy) / tf.scale,
+    };
+}
+
+function onCarMouseDown(e) {
+    if (simRunning) return;  // 运行中不允许拖拽
+    const rect = e.target.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    const my = e.clientY - rect.top;
+    if (hitTestRotationHandle(mx, my)) {
+        e.preventDefault();
+        carDragging = true;
+        carDragMode = 'rotate';
+        carPosBeforeDrag = { ...sim.pos };
+        carDragStart = { mx, my };
+        canvas.style.cursor = 'grabbing';
+    } else if (hitTestCar(mx, my)) {
+        e.preventDefault();
+        carDragging = true;
+        carDragMode = 'move';
+        carPosBeforeDrag = { ...sim.pos };
+        carDragStart = { mx, my };
+        canvas.style.cursor = 'grabbing';
+    }
+}
+
+function onCarMouseMove(e) {
+    const rect = e.target.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    const my = e.clientY - rect.top;
+
+    if (carDragging) {
+        if (carDragMode === 'rotate') {
+            updateCarYaw(mx, my);
+            updateTelemetryFromSim();
+            renderMapFromSim();
+        } else {
+            const world = canvasToWorld(mx, my);
+            if (!world) return;
+            sim.pos.x = world.x;
+            sim.pos.y = world.y;
+            snapToNearestNode();
+            updateTelemetryFromSim();
+            renderMapFromSim();
+        }
+        return;
+    }
+
+    // 悬停检测
+    if (!simRunning && (hitTestCar(mx, my) || hitTestRotationHandle(mx, my))) {
+        canvas.style.cursor = 'grab';
+    } else if (!carDragging) {
+        canvas.style.cursor = '';
+    }
+}
+
+function onCarMouseUp(e) {
+    if (!carDragging) return;
+    carDragging = false;
+    const wasRotating = carDragMode === 'rotate';
+    carDragMode = null;
+    canvas.style.cursor = '';
+    snapToNearestNode();
+    updateTelemetryFromSim();
+    renderMapFromSim();
+
+    if (!wasRotating && sim.currentNode) {
+        const sel = document.getElementById('simStartNode');
+        if (sel) sel.value = sim.currentNode;
+    }
+    logCmd(wasRotating
+        ? `小车航向已调整为 ${sim.pos.yaw.toFixed(1)}°`
+        : `小车已移至 ${sim.currentNode} (${sim.pos.x.toFixed(0)}, ${sim.pos.y.toFixed(0)})`);
+}
+
+function onCarTouchStart(e) {
+    if (simRunning || e.touches.length !== 1) return;
+    const rect = e.target.getBoundingClientRect();
+    const mx = e.touches[0].clientX - rect.left;
+    const my = e.touches[0].clientY - rect.top;
+    if (hitTestRotationHandle(mx, my)) {
+        e.preventDefault();
+        carDragging = true;
+        carDragMode = 'rotate';
+        carPosBeforeDrag = { ...sim.pos };
+    } else if (hitTestCar(mx, my)) {
+        e.preventDefault();
+        carDragging = true;
+        carDragMode = 'move';
+        carPosBeforeDrag = { ...sim.pos };
+    }
+}
+
+function onCarTouchMove(e) {
+    if (!carDragging || e.touches.length !== 1) return;
+    e.preventDefault();
+    const rect = e.target.getBoundingClientRect();
+    const mx = e.touches[0].clientX - rect.left;
+    const my = e.touches[0].clientY - rect.top;
+    if (carDragMode === 'rotate') {
+        updateCarYaw(mx, my);
+        updateTelemetryFromSim();
+        renderMapFromSim();
+    } else {
+        const world = canvasToWorld(mx, my);
+        if (!world) return;
+        sim.pos.x = world.x;
+        sim.pos.y = world.y;
+        snapToNearestNode();
+        updateTelemetryFromSim();
+        renderMapFromSim();
+    }
+}
+
+function snapToNearestNode() {
+    let bestDist = Infinity;
+    let bestNode = null;
+    for (const [name, node] of Object.entries(gNodes)) {
+        const d = Math.hypot(sim.pos.x - node.x, sim.pos.y - node.y);
+        if (d < bestDist) {
+            bestDist = d;
+            bestNode = name;
+        }
+    }
+    if (bestNode && bestDist < 400) {  // 400mm 内自动吸附
+        sim.pos.x = gNodes[bestNode].x;
+        sim.pos.y = gNodes[bestNode].y;
+        sim.currentNode = bestNode;
+    }
+}
+
+</script>
+
+</body>
+</html>

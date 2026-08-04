@@ -1,0 +1,282 @@
+/* ============================================================
+   RoboCup Rescue Brain — 可视化调试面板 样式
+   独立 CSS 文件，供 debug_server.py 引用和浏览器直接调试
+   ============================================================ */
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+    background: #0a0a0a;
+    color: #eee;
+    font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif;
+    height: 100vh;
+    overflow: hidden;
+}
+
+/* ---- 顶部状态栏 ---- */
+.header {
+    height: 40px;
+    background: #1a1a2e;
+    border-bottom: 2px solid #16213e;
+    display: flex;
+    align-items: center;
+    padding: 0 20px;
+    font-size: 16px;
+    font-weight: bold;
+}
+.header .status-dot {
+    width: 10px; height: 10px;
+    border-radius: 50%;
+    margin-right: 10px;
+    background: #e74c3c;
+    transition: background 0.3s;
+}
+.header .status-dot.connected { background: #2ecc71; }
+.header .fps { margin-left: auto; font-size: 12px; color: #888; }
+
+/* ---- 主布局：左右并排 ---- */
+.main-container {
+    display: flex;
+    height: calc(100vh - 40px);
+    gap: 0;
+}
+
+.left-panel {
+    width: 380px;
+    min-width: 380px;
+    display: flex;
+    flex-direction: column;
+    padding: 10px;
+    gap: 10px;
+    flex-shrink: 0;
+    border-right: 2px solid #16213e;
+}
+
+.right-panel {
+    width: 360px;
+    min-width: 360px;
+    display: flex;
+    flex-direction: column;
+    padding: 10px;
+    gap: 10px;
+    border-left: 2px solid #16213e;
+    flex-shrink: 0;
+    overflow-y: auto;
+    background: #0d0d0d;
+}
+
+/* ---- 通用面板 ---- */
+.panel-title {
+    font-size: 14px;
+    color: #3498db;
+    margin-bottom: 8px;
+    font-weight: bold;
+}
+
+/* ---- 视频/图像区 ---- */
+.video-container {
+    background: #111;
+    border: 1px solid #333;
+    border-radius: 4px;
+    overflow: hidden;
+    position: relative;
+    min-height: 200px;
+    max-height: 300px;
+}
+.video-container img {
+    width: 100%; height: 100%;
+    object-fit: contain;
+}
+.video-label {
+    position: absolute;
+    top: 5px; left: 5px;
+    background: rgba(0,0,0,0.7);
+    padding: 2px 8px;
+    border-radius: 3px;
+    font-size: 11px;
+    color: #aaa;
+}
+
+/* ---- 地图容器 ---- */
+.map-container {
+    flex: 1;
+    background: #111;
+    border: 1px solid #333;
+    border-radius: 4px;
+    position: relative;
+    overflow: hidden;
+    min-height: 0;
+}
+.map-container canvas {
+    width: 100%; height: 100%;
+}
+
+/* ---- 按钮 ---- */
+.btn {
+    padding: 8px 4px;
+    border: none;
+    border-radius: 4px;
+    font-size: 12px;
+    cursor: pointer;
+    transition: opacity 0.2s;
+    font-weight: bold;
+}
+.btn:hover { opacity: 0.8; }
+.btn:active { opacity: 0.6; }
+
+.btn-forward  { background: #27ae60; color: #fff; }
+.btn-backward { background: #7f8c8d; color: #fff; }
+.btn-left     { background: #f39c12; color: #fff; }
+.btn-right    { background: #e67e22; color: #fff; }
+.btn-stop     { background: #e74c3c; color: #fff; }
+.btn-action   { background: #3498db; color: #fff; }
+
+.btn-mode {
+    background: #2c3e50; color: #fff;
+    border: 1px solid #3498db;
+}
+.btn-mode.active { background: #3498db; }
+
+.control-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 6px;
+    margin-bottom: 10px;
+}
+
+/* ---- 滑块 ---- */
+.slider-group { margin: 8px 0; }
+.slider-group label {
+    display: block;
+    font-size: 11px; color: #888;
+    margin-bottom: 4px;
+}
+.slider-row {
+    display: flex; align-items: center; gap: 8px;
+}
+.slider-row input[type="range"] {
+    flex: 1; height: 6px;
+}
+.slider-row .value-display {
+    width: 50px; text-align: right;
+    font-size: 12px;
+    font-family: 'Consolas', monospace;
+    color: #3498db;
+}
+
+/* ---- 指令日志 ---- */
+.cmd-log {
+    background: #0a0a0a;
+    border: 1px solid #222;
+    border-radius: 3px;
+    padding: 6px;
+    font-family: 'Consolas', monospace;
+    font-size: 10px; line-height: 1.6;
+    max-height: 120px; overflow-y: auto;
+    margin-top: 8px;
+}
+.cmd-log-item {
+    padding: 1px 0;
+    border-bottom: 1px solid #1a1a1a;
+}
+.cmd-log-time { color: #666; margin-right: 6px; }
+.cmd-log-cmd  { color: #3498db; }
+
+.section-divider {
+    border-top: 1px solid #333;
+    margin: 10px 0;
+}
+
+/* ---- 遥测面板 ---- */
+.telemetry-panel {
+    background: #111;
+    border: 1px solid #333;
+    border-radius: 4px;
+    padding: 10px;
+    overflow-y: auto;
+    max-height: 280px;
+}
+.telemetry-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px 12px;
+}
+.metric { margin: 4px 0; font-size: 12px; }
+.metric .label { color: #888; font-size: 10px; margin-bottom: 1px; }
+.metric .value {
+    font-weight: bold; font-size: 13px;
+    font-family: 'Consolas', monospace;
+}
+.metric .value.ok    { color: #2ecc71; }
+.metric .value.warn  { color: #f39c12; }
+.metric .value.alert { color: #e74c3c; }
+
+/* ---- 路径信息 ---- */
+.path-info {
+    background: #111;
+    border: 1px solid #333;
+    border-radius: 4px;
+    padding: 10px;
+    flex: 1;
+    overflow-y: auto;
+    min-height: 100px; max-height: 160px;
+}
+.path-list {
+    font-family: 'Consolas', monospace;
+    font-size: 11px; line-height: 1.6;
+}
+.path-node {
+    display: inline-block;
+    padding: 1px 5px; margin: 1px;
+    border-radius: 3px;
+    background: #2c3e50; color: #ecf0f1;
+    font-size: 10px;
+}
+.path-node.current  { background: #e74c3c; color: #fff; }
+.path-node.visited  { background: #27ae60; color: #fff; }
+.path-node.target   { background: #f39c12; color: #fff; }
+.path-node.planned  { background: #3498db; color: #fff; }
+
+/* ---- 事件日志 ---- */
+.event-log {
+    background: #111;
+    border: 1px solid #333;
+    border-radius: 4px;
+    padding: 10px;
+    flex: 2;
+    overflow-y: auto;
+    font-family: 'Consolas', monospace;
+    font-size: 11px; line-height: 1.5;
+    min-height: 120px; max-height: 180px;
+}
+.event-item {
+    padding: 2px 0;
+    border-bottom: 1px solid #1a1a1a;
+}
+.event-time { color: #666; margin-right: 8px; }
+.event-type { color: #3498db; margin-right: 8px; }
+
+/* ---- 图例 ---- */
+.legend {
+    display: flex; gap: 12px;
+    padding: 4px 8px;
+    font-size: 10px;
+    background: rgba(26, 26, 46, 0.9);
+    position: absolute;
+    bottom: 0; left: 0; right: 0;
+}
+.legend-item { display: flex; align-items: center; gap: 5px; }
+.legend-dot {
+    width: 10px; height: 10px;
+    border-radius: 50%;
+}
+
+/* ---- 控制面板卡片 ---- */
+.debug-panel {
+    background: #111;
+    border: 1px solid #333;
+    border-radius: 4px;
+    padding: 12px;
+    margin-bottom: 10px;
+}
+

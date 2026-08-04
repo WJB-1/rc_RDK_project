@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RoboCup Rescue Brain — 可视化调试面板</title>
+<link rel="stylesheet" href="../static/css/dashboard.css">
+</head>
+<body>
+
+<!-- ===== 顶部状态栏 ===== -->
+<div class="header">
+    <div class="status-dot" id="statusDot"></div>
+    <span>RoboCup Rescue Brain — 可视化调试面板</span>
+    <span class="fps" id="fpsDisplay">初始化中...</span>
+</div>
+
+<!-- ===== 主布局：左右并排 ==== -->
+<div class="main-container">
+
+    <!-- 左侧：摄像头/分割图 + 路径 + 事件日志 -->
+    <div class="left-panel">
+        <div class="video-container">
+            <img id="segImage" src="" alt="车道分割">
+            <span class="video-label">BiSeNet 车道分割 (WebSocket 实时)</span>
+        </div>
+        <div class="path-info">
+            <div class="panel-title">路径规划</div>
+            <div class="path-list" id="pathList">等待数据...</div>
+        </div>
+        <div class="event-log" id="eventLog">
+            <div class="panel-title">事件日志</div>
+        </div>
+    </div>
+
+    <!-- 中间：地图 -->
+    <div class="map-container">
+        <canvas id="mapCanvas"></canvas>
+        <div class="legend">
+            <div class="legend-item"><div class="legend-dot" style="background:#e74c3c;"></div>当前位置</div>
+            <div class="legend-item"><div class="legend-dot" style="background:#27ae60;"></div>已打卡</div>
+            <div class="legend-item"><div class="legend-dot" style="background:#f39c12;"></div>下一目标</div>
+            <div class="legend-item"><div class="legend-dot" style="background:#3498db;"></div>规划路径</div>
+            <div class="legend-item"><div class="legend-dot" style="background:#95a5a6;"></div>未打卡</div>
+        </div>
+    </div>
+
+    <!-- 右侧：控制 + 遥测 + 路径 + 日志 -->
+    <div class="right-panel">
+
+        <!-- 模拟器控制 (独立模式) -->
+        <div class="debug-panel" id="simControls" style="display:none;">
+            <div class="panel-title">内置模拟器</div>
+            <div class="slider-group">
+                <label>起始位置</label>
+                <select id="simStartNode" style="width:100%;padding:4px;background:#0f3460;color:#eee;border:1px solid #1a4a8a;border-radius:3px;font-size:12px;">
+                    <option value="START">START (起点)</option>
+                </select>
+            </div>
+            <button class="btn btn-action" id="btnSim" onclick="toggleSimulation()" style="margin-top:6px;">启动模拟</button>
+            <div style="margin-top:6px; font-size:11px; color:#888;">
+                选择起始节点后点击启动，小车将从该位置出发沿巡逻路径行驶
+            </div>
+        </div>
+
+        <!-- 手动控制面板 -->
+        <div class="debug-panel">
+            <div class="panel-title">手动控制</div>
+            <div style="display: flex; gap: 6px; margin-bottom: 8px;">
+                <button class="btn btn-mode active" id="modeAuto" onclick="setMode('auto')">自动</button>
+                <button class="btn btn-mode" id="modeManual" onclick="setMode('manual')">手动</button>
+            </div>
+            <div class="control-grid">
+                <div></div>
+                <button class="btn btn-forward" id="btnForward"
+                    onmousedown="sendCmd('forward')" onmouseup="sendCmd('stop')"
+                    ontouchstart="sendCmd('forward')" ontouchend="sendCmd('stop')">前进</button>
+                <div></div>
+                <button class="btn btn-left" id="btnLeft"
+                    onmousedown="sendCmd('left')" onmouseup="sendCmd('stop')"
+                    ontouchstart="sendCmd('left')" ontouchend="sendCmd('stop')">左转</button>
+                <button class="btn btn-stop" id="btnStop" onclick="sendCmd('stop')">急停</button>
+                <button class="btn btn-right" id="btnRight"
+                    onmousedown="sendCmd('right')" onmouseup="sendCmd('stop')"
+                    ontouchstart="sendCmd('right')" ontouchend="sendCmd('stop')">右转</button>
+                <div></div>
+                <button class="btn btn-backward" id="btnBackward"
+                    onmousedown="sendCmd('backward')" onmouseup="sendCmd('stop')"
+                    ontouchstart="sendCmd('backward')" ontouchend="sendCmd('stop')">后退</button>
+                <div></div>
+            </div>
+            <div class="slider-group">
+                <label>线速度 vx (mm/s)</label>
+                <div class="slider-row">
+                    <input type="range" id="vxSlider" min="0" max="500" value="300" oninput="updateSlider('vx', this.value)">
+                    <span class="value-display" id="vxValue">300</span>
+                </div>
+            </div>
+            <div class="slider-group">
+                <label>角速度 wz (mrad/s)</label>
+                <div class="slider-row">
+                    <input type="range" id="wzSlider" min="0" max="500" value="100" oninput="updateSlider('wz', this.value)">
+                    <span class="value-display" id="wzValue">100</span>
+                </div>
+            </div>
+            <div class="section-divider"></div>
+            <div style="display: flex; gap: 6px; flex-wrap: wrap;">
+                <button class="btn btn-action" onclick="sendCmd('reset_odom')">清零里程</button>
+                <button class="btn btn-action" onclick="sendCmd('turn_left_90')">左转90°</button>
+                <button class="btn btn-action" onclick="sendCmd('turn_right_90')">右转90°</button>
+            </div>
+            <div class="cmd-log" id="cmdLog">
+                <div style="color:#666;font-size:10px;">指令发送日志...</div>
+            </div>
+        </div>
+
+        <!-- 实时状态 -->
+        <div class="telemetry-panel">
+            <div class="panel-title">实时状态</div>
+            <div class="telemetry-grid">
+                <div class="metric">
+                    <div class="label">Agent 状态</div>
+                    <div class="value" id="agentState">--</div>
+                </div>
+                <div class="metric">
+                    <div class="label">打卡进度</div>
+                    <div class="value" id="progress">--</div>
+                </div>
+                <div class="metric">
+                    <div class="label">当前位置 (mm)</div>
+                    <div class="value" id="position">--</div>
+                </div>
+                <div class="metric">
+                    <div class="label">航向角</div>
+                    <div class="value" id="yaw">--</div>
+                </div>
+                <div class="metric">
+                    <div class="label">当前节点</div>
+                    <div class="value" id="currentNode">--</div>
+                </div>
+                <div class="metric">
+                    <div class="label">目标节点</div>
+                    <div class="value" id="targetNode">--</div>
+                </div>
+                <div class="metric">
+                    <div class="label">横向偏移</div>
+                    <div class="value" id="offsetMm">--</div>
+                </div>
+                <div class="metric">
+                    <div class="label">路口检测</div>
+                    <div class="value" id="intersection">--</div>
+                </div>
+            </div>
+        </div>
+
+    </div>
+</div>
+
+<!-- ===== 地图拓扑数据 ===== -->
+{% if map_data %}
+<script>
+window.__MAP_DATA__ = {{ map_data | safe }};
+</script>
+{% endif %}
+
+<!-- ===== JS 模块 (按加载顺序) ===== -->
+<script src="../static/js/main.js"></script>
+<script src="../static/js/websocket.js"></script>
+<script src="../static/js/simulator.js"></script>
+<script src="../static/js/telemetry.js"></script>
+<script src="../static/js/map_renderer.js"></script>
+<script src="../static/js/controls.js"></script>
+
+</body>
+</html>

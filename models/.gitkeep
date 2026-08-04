@@ -1,0 +1,7 @@
+# 模型文件目录
+
+此目录存放BPU编译后的模型文件:
+- yolov5n_face_bpu.bin    # 人脸及地标检测模型
+- mobilefacenet_bpu.bin   # 人脸特征提取模型
+
+注意: 模型文件较大，不纳入Git版本控制
