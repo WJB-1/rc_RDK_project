@@ -117,8 +117,12 @@ class RobotBridge:
     """
 
     def __init__(self, agent=None, serial_send: Optional[Callable[[bytes], None]] = None):
-        from robocup_rescue_brain.navigation.state_machine import AgentStateMachine
-        from robocup_rescue_brain.perception.perception_adapter import PerceptionAdapter
+        try:
+            from ..navigation.state_machine import AgentStateMachine
+            from ..perception.perception_adapter import PerceptionAdapter
+        except ImportError:
+            from navigation.state_machine import AgentStateMachine
+            from perception.perception_adapter import PerceptionAdapter
 
         self.agent = agent or AgentStateMachine()
         self.adapter = PerceptionAdapter(self.agent) if agent else None
@@ -142,7 +146,10 @@ class RobotBridge:
         self._last_pos_sent = 0.0
 
     def set_agent(self, agent):
-        from robocup_rescue_brain.perception.perception_adapter import PerceptionAdapter
+        try:
+            from ..perception.perception_adapter import PerceptionAdapter
+        except ImportError:
+            from perception.perception_adapter import PerceptionAdapter
         self.agent = agent
         self.adapter = PerceptionAdapter(agent)
 

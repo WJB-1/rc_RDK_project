@@ -13,7 +13,10 @@ from typing import Optional
 
 from .contracts import EdgeTask, EdgeTaskStatus, CrossroadEvent
 from .contracts import CulvertEvent, ObstacleEvent
-from robocup_rescue_brain import config as _cfg
+try:
+    from .. import config as _cfg
+except ImportError:
+    import config as _cfg
 
 
 @dataclass

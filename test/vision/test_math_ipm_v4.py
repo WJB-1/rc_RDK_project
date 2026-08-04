@@ -17,17 +17,17 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from robocup_rescue_brain.vision.algorithms.ipm import MathematicalIPM
-from robocup_rescue_brain.vision.algorithms.lane_analyzer import (
+from vision.algorithms.ipm import MathematicalIPM
+from vision.algorithms.lane_analyzer import (
     analyze_bev_lane_state, get_last_valid_state,
     reset_drop_counter, _empty_lane_state,
 )
-from robocup_rescue_brain.vision.algorithms.quality_gate import validate_frame_quality as _validate_frame_quality
-from robocup_rescue_brain.vision.algorithms.crossroad_detect import (
+from vision.algorithms.quality_gate import validate_frame_quality as _validate_frame_quality
+from vision.algorithms.crossroad_detect import (
     detect_crossroad as _detect_crossroad_duty_cycle, reset_crossroad_counter
 )
-from robocup_rescue_brain.vision.algorithms.mask_utils import clean_mask_by_cc
-from robocup_rescue_brain.vision.ipm_pipeline import run_math_ipm_pipeline
+from vision.algorithms.mask_utils import clean_mask_by_cc
+from vision.ipm_pipeline import run_math_ipm_pipeline
 
 PASS = 0
 FAIL = 0

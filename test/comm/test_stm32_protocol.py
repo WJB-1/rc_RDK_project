@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 import unittest
 import struct
 
-from robocup_rescue_brain.communication.stm32_protocol import (
+from communication.stm32_protocol import (
     FRAME_HEAD_0, FRAME_HEAD_1,
     CmdID, ActionCode, TurnDirection, FbID, StmStatusCode,
     _build_frame, decode_frame,

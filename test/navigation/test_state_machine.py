@@ -8,9 +8,9 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 import time
 import unittest
-from robocup_rescue_brain.navigation.state_machine import AgentStateMachine, AgentState
-from robocup_rescue_brain.navigation.map_topology import RaceTrackTopology
-from robocup_rescue_brain.navigation.contracts import (
+from navigation.state_machine import AgentStateMachine, AgentState
+from navigation.map_topology import RaceTrackTopology
+from navigation.contracts import (
     OdomUpdate, RfidEvent, CrossroadEvent, TurnAction,
 )
 

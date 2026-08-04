@@ -7,8 +7,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 import unittest
-from robocup_rescue_brain.navigation.map_oracle import MapOracle
-from robocup_rescue_brain.navigation.map_topology import RaceTrackTopology, get_topology
+from navigation.map_oracle import MapOracle
+from navigation.map_topology import RaceTrackTopology, get_topology
 
 
 class TestMapOracle(unittest.TestCase):

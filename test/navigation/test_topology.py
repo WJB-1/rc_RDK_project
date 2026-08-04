@@ -7,8 +7,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 import unittest
-from robocup_rescue_brain.navigation.map_topology import RaceTrackTopology, MapNode, MapEdge, get_topology
-from robocup_rescue_brain.navigation.map_config import NODE_COORDS, MISSION_NODES, JUNCTION_NODES
+from navigation.map_topology import RaceTrackTopology, MapNode, MapEdge, get_topology
+from navigation.map_config import NODE_COORDS, MISSION_NODES, JUNCTION_NODES
 
 
 class TestTopology(unittest.TestCase):

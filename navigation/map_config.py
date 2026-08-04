@@ -78,10 +78,16 @@ ACTION_TYPES = ["TURN_LEFT", "TURN_RIGHT", "STRAIGHT", "STOP", "UTURN"]
 # ============================================================
 def _compat():
     """延迟导入，避免循环依赖"""
-    from robocup_rescue_brain.config import (
-        get_track_config, get_edge_defaults,
-        get_edge_tunnel, get_state_machine_config,
-    )
+    try:
+        from ..config import (
+            get_track_config, get_edge_defaults,
+            get_edge_tunnel, get_state_machine_config,
+        )
+    except ImportError:
+        from config import (
+            get_track_config, get_edge_defaults,
+            get_edge_tunnel, get_state_machine_config,
+        )
 
     g = globals()
     track = get_track_config()
