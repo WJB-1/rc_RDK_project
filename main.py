@@ -75,6 +75,10 @@ class RescueBrain:
         self.current_offset = 0.0
         self.is_intersection = False
 
+        # 串口节流：避免每帧都写串口造成堵塞
+        self._last_sent_offset = 0.0
+        self._last_offset_send_time = 0.0
+
         self.logger.info("=" * 50)
         self.logger.info("RoboCup Rescue Brain 初始化中...")
         self.logger.info("=" * 50)
@@ -153,14 +157,13 @@ class RescueBrain:
                 )
 
                 def serial_send(data: bytes):
-                    """串口发送并立即 flush"""
-                    written = self._serial.write(data)
-                    self._serial.flush()
-                    return written
+                    """串口发送，不做 flush（避免阻塞，由 OS 缓冲管理）"""
+                    return self._serial.write(data)
 
                 self.bridge.set_serial_send(serial_send)
-                self.bridge.start()
-                self.logger.info(f"串口已连接: {port} @ {baudrate}bps")
+                # 手动调试模式下不启动 bridge 的 50Hz 自动循环
+                # bridge.start() 会启动 agent.tick() 与下位机回传竞争串口
+                self.logger.info(f"串口已连接: {port} @ {baudrate}bps（手动模式，仅响应 Web 指令）")
             except Exception as e:
                 self.logger.warning(f"串口连接失败 ({port}): {e}")
                 self.logger.warning("将在模拟模式下运行 (无真实硬件)")
@@ -337,9 +340,15 @@ class RescueBrain:
                     self.current_offset = offset_mm
                     self.is_intersection = is_intersection
 
-                    # 发送车道偏移量到下位机
+                    # 发送车道偏移量到下位机（节流：变化>5mm 或 间隔>100ms 才发）
                     if self.bridge and self._serial is not None:
-                        self.bridge.send_lane_offset(offset_mm)
+                        now = time.time()
+                        delta_offset = abs(offset_mm - self._last_sent_offset)
+                        delta_time = now - self._last_offset_send_time
+                        if delta_offset > 5.0 or delta_time > 0.1:
+                            self.bridge.send_lane_offset(offset_mm)
+                            self._last_sent_offset = offset_mm
+                            self._last_offset_send_time = now
 
                     # 视觉偏转角微调 (Phase 4)
                     # 直接小幅修正 yaw，不在 Agent 中维护独立方法
