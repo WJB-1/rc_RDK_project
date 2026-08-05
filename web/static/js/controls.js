@@ -1,49 +1,71 @@
 // 控制面板
-function setMode(mode) {
-    currentMode = mode;
-    document.getElementById('modeAuto').classList.toggle('active', mode === 'auto');
-    document.getElementById('modeManual').classList.toggle('active', mode === 'manual');
-    logCmd(`模式切换: ${mode === 'auto' ? '自动' : '手动'}`);
-    if (mode === 'manual' && !simRunning) {
-        logCmd('提示: 手动模式下可点击方向按钮控制小车', 'warn');
-    }
-    if (typeof sendApiCmd === 'function') {
-        sendApiCmd('set_mode', { mode: mode });
-    }
-}
+let leadDistance = 80;  // 路口提前量 (mm)
 
 function updateSlider(name, value) {
     if (name === 'vx') {
         vxSpeed = parseInt(value);
         document.getElementById('vxValue').textContent = vxSpeed;
-    } else if (name === 'wz') {
-        wzSpeed = parseInt(value);
-        document.getElementById('wzValue').textContent = wzSpeed;
+    } else if (name === 'lead') {
+        leadDistance = parseInt(value);
+        document.getElementById('leadValue').textContent = leadDistance;
+    }
+}
+
+function toggleAutoMode() {
+    currentMode = 'auto';
+    document.getElementById('btnAutoMode').classList.add('active');
+    document.getElementById('btnManualMode').classList.remove('active');
+    logCmd('切换到自动模式：启动路径规划 + 50Hz tick');
+    sendModeCmd('auto');
+}
+
+function setManualMode() {
+    currentMode = 'manual';
+    document.getElementById('btnAutoMode').classList.remove('active');
+    document.getElementById('btnManualMode').classList.add('active');
+    logCmd('切换到手动模式：停止状态机 tick');
+    sendModeCmd('manual');
+}
+
+async function sendModeCmd(mode) {
+    if (window.location.protocol === 'file:' || !ws || ws.readyState !== WebSocket.OPEN) {
+        logCmd(`[模拟] 模式切换: ${mode}`);
+        return;
+    }
+    try {
+        const response = await fetch('/api/mode', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ mode: mode })
+        });
+        const result = await response.json();
+        if (!result.ok) {
+            logCmd(`模式切换错误: ${result.error}`, 'error');
+        }
+    } catch (e) {
+        logCmd(`网络错误: ${e.message}`, 'error');
     }
 }
 
 function sendCmd(cmd) {
+    // 全部离散指令，单击即执行
     const cmdMap = {
-        // 持续运动 (mousedown 按下 / mouseup 松开 → stop)
-        'forward':        { cmd: 'forward', vx: vxSpeed },
-        'backward':       { cmd: 'backward', vx: vxSpeed },
-        'left':           { cmd: 'left', angle: 90 },
-        'right':          { cmd: 'right', angle: 90 },
-        // 离散指令 (click 点击即执行)
-        'stop':           { cmd: 'stop' },
-        'reset_odom':     { cmd: 'reset_odom' },
-        'turn_left_90':   { cmd: 'turn_imu', angle: 90 },
-        'turn_right_90':  { cmd: 'turn_imu', angle: -90 },
-        'intersection_left_90':  { cmd: 'intersection_turn', direction: 'left' },
-        'intersection_right_90': { cmd: 'intersection_turn', direction: 'right' },
+        'forward':              { cmd: 'move', vx: vxSpeed, distance: 300 },
+        'backward':             { cmd: 'move', vx: -vxSpeed, distance: 300 },
+        'turn_left_90':         { cmd: 'turn_imu', angle: 90 },
+        'turn_right_90':        { cmd: 'turn_imu', angle: -90 },
+        'intersection_left':    { cmd: 'intersection_turn', direction: 'left', lead: leadDistance },
+        'intersection_right':   { cmd: 'intersection_turn', direction: 'right', lead: leadDistance },
+        'stop':                 { cmd: 'stop' },
+        'reset_odom':           { cmd: 'reset_odom' },
     };
 
     const payload = cmdMap[cmd];
     if (payload) {
+        logCmd(`发送: ${cmd} ${JSON.stringify(payload)}`);
         if (typeof sendApiCmd === 'function') {
             sendApiCmd(payload.cmd, payload);
         }
-        logCmd(`发送: ${cmd}`);
     }
 }
 
@@ -57,7 +79,7 @@ async function sendApiCmd(cmd, payload) {
         const response = await fetch('/api/cmd', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ cmd, ...payload })
+            body: JSON.stringify(payload)
         });
         const result = await response.json();
         if (!result.ok) {

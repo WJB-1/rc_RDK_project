@@ -9,6 +9,10 @@ perception/perception_adapter.py - 感知适配层 (Perception Adapter)
 - 视觉路口检测 (on_crossroad_detected)
 - RFID 打卡 (on_rfid_scanned)
 - 涵洞检测 (on_culvert_detected)
+- 障碍物检测 (on_obstacle_detected)
+
+此外提供 vision → navigation 数据结构转换工具，
+确保 event 创建逻辑不散落在 main.py 中。
 """
 
 import time
@@ -18,11 +22,44 @@ try:
     from ..navigation.state_machine import AgentStateMachine
     from ..navigation.contracts import (
         OdomUpdate, RfidEvent, CrossroadEvent,
+        CulvertEvent, ObstacleEvent, CulvertType,
     )
 except ImportError:
     from navigation.state_machine import AgentStateMachine
     from navigation.contracts import (
         OdomUpdate, RfidEvent, CrossroadEvent,
+        CulvertEvent, ObstacleEvent, CulvertType,
+    )
+
+
+# ============================================================
+# vision → navigation 数据结构转换 (集中管理)
+# ============================================================
+
+def culvert_detection_to_event(detection, culvert_type_str: str) -> CulvertEvent:
+    """
+    将 vision/contracts.CulvertDetection 转为 navigation/contracts.CulvertEvent.
+
+    Args:
+        detection: vision.CulvertDetection 实例 (需要 .local_x_mm, .local_y_mm, .confidence)
+        culvert_type_str: "front" 或 "side"
+    """
+    ct = CulvertType.FRONT if culvert_type_str == "front" else CulvertType.SIDE
+    return CulvertEvent(
+        culvert_type=ct,
+        local_x_mm=detection.local_x_mm,
+        local_y_mm=detection.local_y_mm,
+        confidence=detection.confidence,
+    )
+
+
+def obstacle_detection_to_event(detection) -> ObstacleEvent:
+    """
+    将 vision/contracts.ObstacleDetection 转为 navigation/contracts.ObstacleEvent.
+    """
+    return ObstacleEvent(
+        distance_mm=detection.distance_mm,
+        confidence=detection.confidence,
     )
 
 

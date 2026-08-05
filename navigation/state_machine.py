@@ -203,6 +203,38 @@ class AgentStateMachine:
             self.approach_deadline = time.time() + self.approach_duration
             self._log_event("crossroad", f"dist={dist:.0f} → APPROACHING")
 
+    def on_turn_done(self):
+        """下位机回传 TURN_DONE → 退出 TURNING 状态"""
+        if self.state == AgentState.TURNING:
+            self._log_event("turn_done", "下位机确认转弯完成")
+            self._transition_to(AgentState.NODE_ARRIVAL)
+
+    def on_culvert_detected(self, event: CulvertEvent):
+        """感知线程推送：检测到涵洞墙壁（标签3 + 非隧道边）"""
+        if self.state == AgentState.EDGE_EXECUTING:
+            task = self.executor.current_task
+            if task:
+                try:
+                    edge = self.topo.get_edge(task.from_node, task.to_node)
+                    edge.has_culvert = True
+                    self.found_culverts.add(edge.edge_id)
+                except KeyError:
+                    pass
+            self._log_event("culvert_wall", f"edge={task.edge_id if task else '?'}")
+
+    def on_culvert_entrance_detected(self, event: CulvertEvent):
+        """感知线程推送：检测到涵洞口（标签1）"""
+        if self.state == AgentState.EDGE_EXECUTING:
+            self._transition_to(AgentState.CULVERT_RECON)
+
+    def on_obstacle_detected(self, event: ObstacleEvent):
+        """感知线程推送：检测到障碍物在车道内"""
+        if self.state == AgentState.EDGE_EXECUTING:
+            task = self.executor.current_task
+            if task:
+                self._log_event("obstacle_in_lane", f"dist={event.distance_mm:.0f}mm")
+            self._transition_to(AgentState.OBSTACLE_STOP, obstacle_event=event)
+
     def on_rfid_scanned(self, event: RfidEvent):
         node_name = event.uid.upper()
         if node_name not in self.topo.nodes:
@@ -254,40 +286,17 @@ class AgentStateMachine:
     def _tick_edge_executing(self, now: float) -> Optional[TurnCommand]:
         progress, interrupts = self.executor.update(self._cumulative_odom, now)
 
-        # 主动调用 vision 工具检测（仅在有 vision 注入时）
-        if self._vision is not None:
-            # 涵洞检测（始终运行，传入隧道上下文）
-            culvert = self._vision.detect_culvert(
-                frame=None,  # 由外部传入，这里通过 interrupts 机制
-                is_tunnel=self.executor.current_task.is_tunnel
-                if self.executor.current_task else False
-            )
-            if culvert and culvert.detected:
-                self._transition_to(AgentState.CULVERT_RECON,
-                                    culvert_event=CulvertEvent(
-                                        culvert_type=CulvertType.FRONT,
-                                        local_x_mm=culvert.local_x_mm,
-                                        local_y_mm=culvert.local_y_mm,
-                                        confidence=culvert.confidence,
-                                    ))
-                return None
-
-            # 障碍物检测
-            obstacle_enable = _cfg.get("state_machine.edge_obstacle_enable_ratio", 0.3)
-            if progress.progress_ratio > obstacle_enable:
-                obstacle = self._vision.detect_obstacle(frame=None)
-                if obstacle and obstacle.detected:
-                    event = ObstacleEvent(
-                        distance_mm=obstacle.distance_mm,
-                        confidence=obstacle.confidence,
-                    )
-                    self._transition_to(AgentState.OBSTACLE_STOP,
-                                        obstacle_event=event)
-                    return None
+        # 里程计兜底：超过窗口比例仍未检测到路口 → 强制到达
+        window_ratio = _cfg.get("state_machine.crossroad_detection_window_ratio", 0.95)
+        if progress.progress_ratio >= window_ratio:
+            self._log_event("odom_force_arrive", f"ratio={progress.progress_ratio:.2f}")
+            self.executor.finish(EdgeTaskStatus.DONE)
+            self._transition_to(AgentState.NODE_ARRIVAL)
+            return None
 
         # 边完成判定
         if progress.timeout:
-            self._log_event("edge_timeout", f"超时, 强行到达")
+            self._log_event("edge_timeout", "超时, 强行到达")
             self.executor.finish(EdgeTaskStatus.DONE)
             self._transition_to(AgentState.NODE_ARRIVAL)
             return None
@@ -297,7 +306,7 @@ class AgentStateMachine:
             self._transition_to(AgentState.NODE_ARRIVAL)
             return None
 
-        return None  # 巡航中不下发动作
+        return None
 
     def _on_approach_done(self) -> TurnCommand:
         self._transition_to(AgentState.TURNING)
