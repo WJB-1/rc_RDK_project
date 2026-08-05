@@ -323,6 +323,69 @@ class WebPushServer:
             except Exception as e:
                 return self.jsonify({"ok": False, "error": str(e)})
 
+        @self.app.route("/api/sim_plan", methods=["POST"])
+        def api_sim_plan():
+            """模拟器路径规划 API — 复用 Python 端 PathPlanner"""
+            try:
+                data = self.request.get_json(force=True)
+                current_node = data.get("current_node", "START")
+                visited = data.get("visited", [])
+                blocked_edges = data.get("blocked_edges", [])
+
+                try:
+                    from ..navigation.map_topology import get_topology
+                    from ..navigation.map_oracle import MapOracle
+                    from ..navigation.path_planner import PathPlanner
+                except ImportError:
+                    from navigation.map_topology import get_topology
+                    from navigation.map_oracle import MapOracle
+                    from navigation.path_planner import PathPlanner
+
+                topo = get_topology()
+                # 同步模拟器的 visited 状态到拓扑
+                for name in visited:
+                    if name in topo.nodes:
+                        topo.nodes[name].is_visited = True
+
+                # 标记 blocked 边
+                for edge_id in blocked_edges:
+                    for edge in topo.edges:
+                        if edge.edge_id == edge_id:
+                            edge.is_blocked = True
+
+                oracle = MapOracle(topo)
+                planner = PathPlanner(oracle, topo)
+
+                unvisited = [n for n in topo.nodes
+                             if topo.nodes[n].node_type == "mission"
+                             and not topo.nodes[n].is_visited]
+
+                if not unvisited:
+                    return self.jsonify({"edge_tasks": [], "total_distance_mm": 0,
+                                         "node_sequence": [], "finished": True})
+
+                result = planner.replan(current_node, unvisited, blocked_edges=set(blocked_edges))
+                tasks = []
+                for t in result.edge_tasks:
+                    tasks.append({
+                        "edge_id": t.edge_id,
+                        "from_node": t.from_node,
+                        "to_node": t.to_node,
+                        "expected_yaw": t.expected_yaw,
+                        "distance_mm": t.distance_mm,
+                        "is_tunnel": t.is_tunnel,
+                        "speed_limit_ms": t.speed_limit_ms,
+                    })
+
+                return self.jsonify({
+                    "edge_tasks": tasks,
+                    "total_distance_mm": result.total_distance_mm,
+                    "node_sequence": result.node_sequence,
+                    "finished": False,
+                })
+            except Exception as e:
+                return self.jsonify({"ok": False, "error": str(e)})
+
         # WebSocket
         try:
             from flask_sock import Sock
