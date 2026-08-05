@@ -34,12 +34,20 @@ function updateTelemetryFromSim() {
         position: [sim.pos.x, sim.pos.y, sim.pos.yaw],
         current_node: sim.currentNode,
         target_node: sim.targetNode,
-        offset_mm: (Math.random() - 0.5) * 20,           // 模拟 ±10mm 小幅偏移
+        offset_mm: (Math.random() - 0.5) * 20,
         is_intersection: sim.state === 'APPROACHING',
         progress: { visited: sim.visited.length, total: 12 },
         planned_path: sim.path,
         visited_nodes: sim.visited,
     });
+    // 同步更新路径面板和事件日志
+    updatePath({
+        planned_path: sim.path,
+        visited_nodes: sim.visited,
+        current_node: sim.currentNode,
+        target_node: sim.targetNode,
+    });
+    updateEventLog(sim.events);
 }
 
 // 路径显示

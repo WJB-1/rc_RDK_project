@@ -24,7 +24,24 @@ from .algorithms.crossroad_seg import (
     confirm_crossroad_seg as _confirm_crossroad,
 )
 from .algorithms.obstacle_detect import detect_obstacle as _detect_obs
+from .algorithms.obstacle_detect import is_obstacle_in_lane as _is_obs_in_lane
 from .algorithms.culvert_detect import detect_culvert as _detect_culvert
+
+# ================================================================
+# YOLO 标签映射 — 定义模型输出的 class_id → 语义含义
+# ================================================================
+YOLO_CLASS_MAP = {
+    0: "obstacle",          # 亚克力砖
+    1: "culvert_entrance",  # 涵洞口
+    2: "tunnel_entrance",   # 隧道口
+    3: "wall",              # 涵洞壁/隧道壁
+    4: "obstacle",          # 交通锥
+    5: "obstacle",          # 水马
+    6: "obstacle",          # 警示牌
+    7: "obstacle",          # 防撞墩
+    8: "obstacle",          # 施工围栏
+    9: "obstacle",          # 警示柱
+}
 
 
 class VisionToolsImpl:
@@ -163,18 +180,39 @@ class VisionToolsImpl:
     # ================================================================
     # detect_obstacle
     # ================================================================
-    def detect_obstacle(self, frame) -> ObstacleDetection:
+    def detect_obstacle(self, frame, seg_mask=None) -> ObstacleDetection:
         """
-        前向障碍物检测 — YOLO + 简单几何判定。
+        前向障碍物检测 — YOLO + 车道线重叠校验。
+
+        Args:
+            frame: BGR 图像 (H,W,3)
+            seg_mask: 语义分割 mask (H,W) uint8, 255=车道线区域，可选
+
+        Returns:
+            ObstacleDetection with in_lane field set
         """
         if self._yolo is None or frame is None:
             return ObstacleDetection(detected=False)
 
         dets = self._yolo.inference(frame)
-        result = _detect_obs(dets, frame_shape=frame.shape[:2])
+
+        # Filter obstacle detections by class (0,4-9 per YOLO_CLASS_MAP)
+        obstacle_dets = [d for d in dets
+                         if YOLO_CLASS_MAP.get(d["class"]) == "obstacle"]
+
+        result = _detect_obs(obstacle_dets, frame_shape=frame.shape[:2])
+
+        in_lane = False
+        if result["detected"] and seg_mask is not None:
+            # Find the best detection and check lane overlap
+            for d in obstacle_dets:
+                if _is_obs_in_lane(d, seg_mask):
+                    in_lane = True
+                    break
 
         return ObstacleDetection(
             detected=result["detected"],
             confidence=result["confidence"],
             distance_mm=result["distance_mm"],
+            in_lane=in_lane,
         )

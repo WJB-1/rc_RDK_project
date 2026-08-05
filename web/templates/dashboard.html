@@ -66,49 +66,47 @@
         <!-- 手动控制面板 -->
         <div class="debug-panel">
             <div class="panel-title">手动控制</div>
-            <div style="display: flex; gap: 6px; margin-bottom: 8px;">
-                <button class="btn btn-mode active" id="modeAuto" onclick="setMode('auto')">自动</button>
-                <button class="btn btn-mode" id="modeManual" onclick="setMode('manual')">手动</button>
+
+            <!-- 主动控制（离散） -->
+            <div class="control-grid" style="grid-template-columns: repeat(2, 1fr);">
+                <button class="btn btn-forward" onclick="sendCmd('forward')">前进 300mm</button>
+                <button class="btn btn-backward" onclick="sendCmd('backward')">后退 300mm</button>
+                <button class="btn btn-left" onclick="sendCmd('turn_left_90')">左转 90°</button>
+                <button class="btn btn-right" onclick="sendCmd('turn_right_90')">右转 90°</button>
             </div>
-            <div class="control-grid">
-                <div></div>
-                <button class="btn btn-forward" id="btnForward"
-                    onmousedown="sendCmd('forward')" onmouseup="sendCmd('stop')"
-                    ontouchstart="sendCmd('forward')" ontouchend="sendCmd('stop')">前进</button>
-                <div></div>
-                <button class="btn btn-left" id="btnLeft"
-                    onmousedown="sendCmd('left')" onmouseup="sendCmd('stop')"
-                    ontouchstart="sendCmd('left')" ontouchend="sendCmd('stop')">左转</button>
-                <button class="btn btn-stop" id="btnStop" onclick="sendCmd('stop')">急停</button>
-                <button class="btn btn-right" id="btnRight"
-                    onmousedown="sendCmd('right')" onmouseup="sendCmd('stop')"
-                    ontouchstart="sendCmd('right')" ontouchend="sendCmd('stop')">右转</button>
-                <div></div>
-                <button class="btn btn-backward" id="btnBackward"
-                    onmousedown="sendCmd('backward')" onmouseup="sendCmd('stop')"
-                    ontouchstart="sendCmd('backward')" ontouchend="sendCmd('stop')">后退</button>
-                <div></div>
-            </div>
+
+            <div class="section-divider"></div>
+
+            <!-- 路口提前量转向 -->
+            <div class="panel-title" style="font-size:12px;">路口转向（带提前量）</div>
             <div class="slider-group">
-                <label>线速度 vx (mm/s)</label>
+                <label>提前量 (mm)</label>
                 <div class="slider-row">
-                    <input type="range" id="vxSlider" min="0" max="500" value="300" oninput="updateSlider('vx', this.value)">
+                    <input type="range" id="leadSlider" min="0" max="300" value="80" oninput="updateSlider('lead', this.value)">
+                    <span class="value-display" id="leadValue">80</span>
+                </div>
+            </div>
+            <div class="control-grid" style="grid-template-columns: repeat(2, 1fr);">
+                <button class="btn btn-action" onclick="sendCmd('intersection_left')">路口左转</button>
+                <button class="btn btn-action" onclick="sendCmd('intersection_right')">路口右转</button>
+            </div>
+
+            <div class="section-divider"></div>
+
+            <!-- 辅助 -->
+            <div style="display: flex; gap: 6px; flex-wrap: wrap;">
+                <button class="btn btn-stop" onclick="sendCmd('stop')">急停</button>
+                <button class="btn btn-action" onclick="sendCmd('reset_odom')">清零里程</button>
+            </div>
+
+            <div class="slider-group" style="margin-top: 8px;">
+                <label>速度 vx (mm/s)</label>
+                <div class="slider-row">
+                    <input type="range" id="vxSlider" min="100" max="500" value="300" oninput="updateSlider('vx', this.value)">
                     <span class="value-display" id="vxValue">300</span>
                 </div>
             </div>
-            <div class="slider-group">
-                <label>角速度 wz (mrad/s)</label>
-                <div class="slider-row">
-                    <input type="range" id="wzSlider" min="0" max="500" value="100" oninput="updateSlider('wz', this.value)">
-                    <span class="value-display" id="wzValue">100</span>
-                </div>
-            </div>
-            <div class="section-divider"></div>
-            <div style="display: flex; gap: 6px; flex-wrap: wrap;">
-                <button class="btn btn-action" onclick="sendCmd('reset_odom')">清零里程</button>
-                <button class="btn btn-action" onclick="sendCmd('turn_left_90')">左转90°</button>
-                <button class="btn btn-action" onclick="sendCmd('turn_right_90')">右转90°</button>
-            </div>
+
             <div class="cmd-log" id="cmdLog">
                 <div style="color:#666;font-size:10px;">指令发送日志...</div>
             </div>

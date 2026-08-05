@@ -88,51 +88,8 @@ function simTick() {
     const dy = tgt.y - sim.pos.y;
     const dist = Math.hypot(dx, dy);
 
-    // 倒计时处理（模拟路口逼近）
-    if (sim.approachingUntil > 0) {
-        sim.approachingUntil -= dt;
-        if (sim.approachingUntil <= 0) {
-            sim.approachingUntil = 0;
-            sim.state = 'TURNING';
-            sim.odom += 30; // 模拟转弯距离
-            addSimEvent('state_change', `${sim.currentNode} → TURNING (${sim.targetNode})`);
-            // 模拟到达路口后推进
-            advanceToNextNode();
-            sim.state = 'PLANNING';
-            // 重新规划
-            const unvisited = Object.keys(gNodes).filter(
-                n => gNodes[n].type === 'mission' && !sim.visited.includes(n)
-            );
-            if (unvisited.length === 0) {
-                sim.state = 'FINISHED';
-                sim.targetNode = null;
-                stopSimulation();
-                addSimEvent('finished', '所有任务完成');
-            } else if (sim.pathIndex < sim.path.length) {
-                sim.targetNode = sim.path[sim.pathIndex];
-                sim.state = 'CRUISING';
-            }
-        }
-        updateTelemetryFromSim();
-        renderMapFromSim();
-        return;
-    }
-
-    // 接近目标时触发路口检测模拟
-    if (dist < 150 && sim.state === 'CRUISING') {
-        // 模拟视觉路口检测
-        if (tgt.type !== 'junction' || tgt.rfid) {
-            sim.state = 'APPROACHING';
-            sim.approachingUntil = 1.0; // 1 秒逼近
-            addSimEvent('crossing_detected', `检测到路口, 距离≈${dist.toFixed(0)}mm → APPROACHING`);
-            updateTelemetryFromSim();
-            renderMapFromSim();
-            return;
-        }
-    }
-
     if (dist < 5) {
-        // 精确到达
+        // 精确到达目标节点
         sim.pos.x = tgt.x;
         sim.pos.y = tgt.y;
         handleNodeArrival();
@@ -141,7 +98,7 @@ function simTick() {
         return;
     }
 
-    // 移动：先横后纵（模拟车道约束）
+    // 移动：先横后纵（模拟车道约束走直角弯）
     const ax = Math.abs(dx), ay = Math.abs(dy);
     let moveX = 0, moveY = 0;
     if (ax > ay) {
@@ -155,6 +112,16 @@ function simTick() {
     sim.pos.x += moveX;
     sim.pos.y += moveY;
     sim.odom += Math.abs(moveX) + Math.abs(moveY);
+
+    // 边界碰撞检测
+    if (!checkBoundary(sim.pos, /* stopOnOut */ true)) {
+        stopSimulation();
+        addSimEvent('error', `小车超出场地边界，模拟已停止`);
+        logCmd('错误: 小车超出场地边界，模拟已停止', 'error');
+        updateTelemetryFromSim();
+        renderMapFromSim();
+        return;
+    }
 
     // 保存轨迹
     sim.trajectory.push([sim.pos.x, sim.pos.y]);

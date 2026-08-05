@@ -13,6 +13,7 @@ RoboCup Rescue Brain - 程序入口
 硬件平台: RDK X5 (上位机) + STM32 (下位机)
 """
 
+import os
 import sys
 import time
 import math
@@ -33,10 +34,12 @@ import yaml
 from utils.logger import get_logger
 from hardware.camera import CameraManager
 from perception.lane_tracker import LaneTracker
+from perception.perception_adapter import culvert_detection_to_event, obstacle_detection_to_event
 from web import WebPushServer
 from navigation.state_machine import AgentStateMachine
 from navigation.map_topology import get_topology
 from communication.robot_bridge import RobotBridge
+from vision.algorithms.crossroad_seg import detect_crossroad_from_seg, confirm_crossroad_seg, estimate_distance as seg_estimate_distance
 
 
 class RescueBrain:
@@ -64,6 +67,7 @@ class RescueBrain:
         self.agent: AgentStateMachine = None
         self.bridge: RobotBridge = None
         self._serial = None  # pyserial 串口对象
+        self._vision_tools = None  # VisionToolsImpl 实例，供感知线程使用
 
         # 运行状态
         self._running = False
@@ -120,16 +124,7 @@ class RescueBrain:
             # 注入 vision 工具（如果有 YOLO 模型则加载）
             self.logger.info("[1/5] 初始化导航状态机...")
             self.agent = AgentStateMachine()
-            try:
-                from vision.tools import VisionToolsImpl
-                yolo_path = str(PROJECT_ROOT / "models" / "yolov8_detection_x5.bin")
-                if Path(yolo_path).exists():
-                    self.agent.set_vision_tools(
-                        VisionToolsImpl(yolo_model_path=yolo_path)
-                    )
-                    self.logger.info("Vision tools 已注入")
-            except Exception as e:
-                self.logger.warning(f"Vision tools 注入失败: {e}")
+            self._init_vision_tools()
 
             # 3. 初始化摄像头管理器
             self.logger.info("[2/5] 初始化摄像头管理器...")
@@ -225,6 +220,42 @@ class RescueBrain:
             self.logger.exception(f"初始化失败: {e}")
             return False
 
+    def _init_vision_tools(self):
+        """
+        初始化 vision tools (YOLO 检测引擎)
+
+        模型路径读取顺序:
+        1. 环境变量 YOLO_MODEL_PATH
+        2. 配置文件 yolo.model_path
+        3. 默认路径 models/yolov8_detection_x5.bin
+
+        加载失败时优雅降级: 记录警告，_vision_tools 保持为 None。
+        """
+        yolo_path = os.environ.get("YOLO_MODEL_PATH", "")
+        if not yolo_path:
+            yolo_path = self.settings.get("yolo", {}).get("model_path", "")
+        if not yolo_path:
+            yolo_path = "models/yolov8_detection_x5.bin"
+
+        # 转为绝对路径
+        yolo_path_full = str(PROJECT_ROOT / yolo_path) if not os.path.isabs(yolo_path) else yolo_path
+
+        try:
+            from vision.tools import VisionToolsImpl
+
+            if not Path(yolo_path_full).exists():
+                self.logger.warning(f"YOLO 模型文件不存在: {yolo_path_full}，跳过 vision tools 加载")
+                return
+
+            vision = VisionToolsImpl(yolo_model_path=yolo_path_full)
+            self._vision_tools = vision
+            self.agent.set_vision_tools(vision)
+            self.logger.info(f"Vision tools 已注入 (模型: {yolo_path_full})")
+        except ImportError as e:
+            self.logger.warning(f"Vision tools 依赖缺失 (非 RDK X5 环境？): {e}")
+        except Exception as e:
+            self.logger.warning(f"Vision tools 加载失败: {e}")
+
     def _get_default_config(self) -> dict:
         """获取默认配置"""
         return {
@@ -249,14 +280,30 @@ class RescueBrain:
     def _on_debug_cmd(self, cmd: str, payload: dict):
         """
         处理调试面板发送的手动控制指令。
-        当前阶段: 全部手动模式，不区分自动/手动。
+        支持手动控制 + 自动模式切换。
         """
         self.logger.info(f"[调试面板] 收到指令: {cmd}, 参数: {payload}")
 
         if cmd == 'set_mode':
-            # 模式切换暂存，后续可恢复自动逻辑
             self._manual_mode = (payload.get('mode', 'manual') == 'manual')
             self.logger.info(f"模式: {'手动' if self._manual_mode else '自动'}")
+            return
+
+        # --- 自动模式 ---
+        if cmd == 'auto_mode_start':
+            self._manual_mode = False
+            self.logger.info("[自动模式] 启动状态机 + 路径规划")
+            if self.agent:
+                self.agent.start()
+            if self.bridge and self._serial is not None:
+                self.bridge.start()
+            return
+
+        if cmd == 'auto_mode_stop':
+            self._manual_mode = True
+            self.logger.info("[手动模式] 停止状态机 tick")
+            if self.bridge:
+                self.bridge.stop()
             return
 
         from communication import ActionCode, encode_action
@@ -352,10 +399,27 @@ class RescueBrain:
         if quality > 0.5 and abs(angle_rad) > 0.01:
             self.agent.yaw_deg += math.degrees(angle_rad) * 0.05
 
+    def _validate_wall_detection(self, detection):
+        """
+        YOLO 检测到"墙壁"(标签3) → 查地图校验
+        Returns: "tunnel" (隧道侧墙, 忽略) or "culvert" (新涵洞, 标记边) or "ignore"
+        """
+        if self.agent is None:
+            return "ignore"
+        current_edge = self.agent.executor.current_task
+        if current_edge is None:
+            return "ignore"
+        if current_edge.is_tunnel:
+            return "tunnel"  # 隧道侧墙，正常
+        return "culvert"
+
     def _perception_loop(self):
         """
         感知层处理循环
         运行在独立线程，持续处理视觉数据
+
+        异常隔离原则: 每个检测模块有独立的 try/except，
+        确保一个模块的异常不影响其他模块。
         """
         self.logger.info("感知层线程启动")
 
@@ -364,13 +428,17 @@ class RescueBrain:
                 frames = self.camera_manager.get_frames()
                 front_frame = frames.get("front")
 
-                if front_frame is not None:
+                if front_frame is None:
+                    time.sleep(0.001)
+                    continue
+
+                # ---- 1. 车道巡线 + 偏移发送 (独立异常块) ----
+                try:
                     offset_mm, is_intersection, debug_frame = self.lane_tracker.process(front_frame)
                     self.current_offset = offset_mm
                     self.is_intersection = is_intersection
 
                     # 发送车道偏移量到下位机（最低优先级，大幅节流）
-                    # 变化<10mm 且 间隔<200ms 时跳过，避免与用户控制指令抢串口
                     if self.bridge and self._serial is not None:
                         now = time.time()
                         delta_offset = abs(offset_mm - self._last_sent_offset)
@@ -380,29 +448,101 @@ class RescueBrain:
                             self._last_sent_offset = offset_mm
                             self._last_offset_send_time = now
 
-                    # 航向修正由下位机 IMU 闭环完成 (move_4.c:Move_CalcImuCorrection)
-                    # 视觉偏转角修正作为可选工具保留，调度层按需调用 _apply_vision_yaw()
-
+                    # 推送调试数据
                     self._push_debug_data(debug_frame, offset_mm, is_intersection)
+                except Exception as e:
+                    self.logger.exception(f"车道巡线/偏移发送异常: {e}")
 
-                    if is_intersection:
-                        # 使用 IPM 真实测距，替代硬编码 150mm
+                # ---- 2. 分割路口检测 (独立异常块) ----
+                try:
+                    seg_is_intersection = False
+                    seg_distance = 150
+                    if self.lane_tracker.last_seg_mask is not None:
+                        h, w = self.lane_tracker.last_seg_mask.shape[:2]
+                        roi_y1 = h * 2 // 3
+                        roi_y2 = h
+                        seg_is_cross, seg_dist, seg_duty = detect_crossroad_from_seg(
+                            self.lane_tracker.last_seg_mask,
+                            roi_y1=roi_y1, roi_y2=roi_y2
+                        )
+                        if seg_is_cross:
+                            confirmed, _counter = confirm_crossroad_seg(seg_is_cross)
+                            if confirmed:
+                                seg_is_intersection = True
+                                if seg_dist > 0:
+                                    seg_distance = seg_dist
+
+                    if is_intersection or seg_is_intersection:
                         lane_state = self.lane_tracker.last_lane_state
-                        if lane_state is not None:
+                        if seg_is_intersection:
+                            distance = seg_distance
+                        elif lane_state is not None:
                             distance = lane_state.get("distance_to_crossroad_mm", -1.0)
                             if distance <= 0 or distance > 2000:
-                                distance = 300  # 异常值兜底
+                                distance = 300
                         else:
                             distance = 300
                         from navigation.contracts import CrossroadEvent
                         self.agent.on_crossroad_detected(
                             CrossroadEvent(distance_mm=distance, duty_cycle=0.9))
+                except Exception as e:
+                    self.logger.exception(f"路口检测异常: {e}")
+
+                # ---- 3. YOLO 涵洞/墙壁/入口检测 (M2+M3, 独立异常块) ----
+                try:
+                    if self._vision_tools is not None:
+                        culvert_result = self._vision_tools.detect_culvert(
+                            front_frame,
+                            is_tunnel=self.agent.executor.current_task.is_tunnel
+                                      if self.agent and self.agent.executor.current_task else False
+                        )
+                        if culvert_result.detected:
+                            # 墙壁检测（标签3）→ 地图校验
+                            if culvert_result.is_wall_detection:
+                                wall_type = self._validate_wall_detection(culvert_result)
+                                if wall_type == "culvert":
+                                    culvert_event = culvert_detection_to_event(
+                                        culvert_result, "side")
+                                    self.agent.on_culvert_detected(culvert_event)
+                                elif wall_type == "tunnel":
+                                    self.logger.info("隧道侧墙检测，忽略")
+                            else:
+                                # M3: 涵洞口/隧道口入口检测
+                                entrance_boxes = [b for b in culvert_result.boxes
+                                                  if b.class_id in (1, 2)]
+                                culvert_boxes = [b for b in entrance_boxes
+                                                 if b.class_id == 1]
+                                tunnel_boxes = [b for b in entrance_boxes
+                                                if b.class_id == 2]
+                                if culvert_boxes:
+                                    best = max(culvert_boxes, key=lambda b: b.confidence)
+                                    culvert_event = culvert_detection_to_event(
+                                        culvert_result, "front")
+                                    culvert_event.confidence = best.confidence
+                                    self.agent.on_culvert_entrance_detected(culvert_event)
+                                if tunnel_boxes:
+                                    self.logger.info("隧道口检测（标签2），仅记录，不动作")
+                except Exception as e:
+                    self.logger.exception(f"YOLO 涵洞/墙壁/入口检测异常: {e}")
+
+                # ---- 4. 障碍物检测 (M4, 独立异常块) ----
+                try:
+                    if self._vision_tools is not None:
+                        seg_mask = self.lane_tracker.last_seg_mask
+                        obstacle_result = self._vision_tools.detect_obstacle(
+                            front_frame, seg_mask=seg_mask
+                        )
+                        if obstacle_result.detected and obstacle_result.in_lane:
+                            obs_event = obstacle_detection_to_event(obstacle_result)
+                            self.agent.on_obstacle_detected(obs_event)
+                except Exception as e:
+                    self.logger.exception(f"障碍物检测异常: {e}")
 
                 # 短暂休眠，避免CPU占用过高
                 time.sleep(0.001)
 
             except Exception as e:
-                self.logger.exception(f"感知层处理异常: {e}")
+                self.logger.exception(f"感知层主循环异常(获取帧等): {e}")
                 time.sleep(0.01)
 
         self.logger.info("感知层线程停止")

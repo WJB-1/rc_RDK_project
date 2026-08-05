@@ -192,6 +192,8 @@ class RobotBridge:
                     logger.info(f"STM32 status: {StmStatusCode(status).name}")
                 except ValueError:
                     logger.info(f"STM32 status: {status}")
+                if status == StmStatusCode.TURN_DONE and self.agent:
+                    self.agent.on_turn_done()
 
         elif fb_type == FbID.SENSOR:
             uid = decode_sensor_uid(payload)

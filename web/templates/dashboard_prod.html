@@ -350,45 +350,47 @@ body {
         <!-- 手动控制面板 -->
         <div class="debug-panel">
             <div class="panel-title">手动控制</div>
-            <div style="display: flex; gap: 6px; margin-bottom: 8px;">
-                <button class="btn btn-mode active" id="modeAuto" onclick="setMode('auto')">自动</button>
-                <button class="btn btn-mode" id="modeManual" onclick="setMode('manual')">手动</button>
+
+            <!-- 主动控制（离散） -->
+            <div class="control-grid" style="grid-template-columns: repeat(2, 1fr);">
+                <button class="btn btn-forward" onclick="sendCmd('forward')">前进 300mm</button>
+                <button class="btn btn-backward" onclick="sendCmd('backward')">后退 300mm</button>
+                <button class="btn btn-left" onclick="sendCmd('turn_left_90')">左转 90°</button>
+                <button class="btn btn-right" onclick="sendCmd('turn_right_90')">右转 90°</button>
             </div>
-            <div class="control-grid">
-                <div></div>
-                <button class="btn btn-forward" id="btnForward"
-                    onclick="sendCmd('forward')">前进</button>
-                <div></div>
-                <button class="btn btn-left" id="btnLeft"
-                    onclick="sendCmd('left')">左转</button>
-                <button class="btn btn-stop" id="btnStop" onclick="sendCmd('stop')">急停</button>
-                <button class="btn btn-right" id="btnRight"
-                    onclick="sendCmd('right')">右转</button>
-                <div></div>
-                <button class="btn btn-backward" id="btnBackward"
-                    onclick="sendCmd('backward')">后退</button>
-                <div></div>
-            </div>
+
+            <div class="section-divider"></div>
+
+            <!-- 路口提前量转向 -->
+            <div class="panel-title" style="font-size:12px;">路口转向（带提前量）</div>
             <div class="slider-group">
-                <label>线速度 vx (mm/s)</label>
+                <label>提前量 (mm)</label>
                 <div class="slider-row">
-                    <input type="range" id="vxSlider" min="0" max="500" value="300" oninput="updateSlider('vx', this.value)">
+                    <input type="range" id="leadSlider" min="0" max="300" value="80" oninput="updateSlider('lead', this.value)">
+                    <span class="value-display" id="leadValue">80</span>
+                </div>
+            </div>
+            <div class="control-grid" style="grid-template-columns: repeat(2, 1fr);">
+                <button class="btn btn-action" onclick="sendCmd('intersection_left')">路口左转</button>
+                <button class="btn btn-action" onclick="sendCmd('intersection_right')">路口右转</button>
+            </div>
+
+            <div class="section-divider"></div>
+
+            <!-- 辅助 -->
+            <div style="display: flex; gap: 6px; flex-wrap: wrap;">
+                <button class="btn btn-stop" onclick="sendCmd('stop')">急停</button>
+                <button class="btn btn-action" onclick="sendCmd('reset_odom')">清零里程</button>
+            </div>
+
+            <div class="slider-group" style="margin-top: 8px;">
+                <label>速度 vx (mm/s)</label>
+                <div class="slider-row">
+                    <input type="range" id="vxSlider" min="100" max="500" value="300" oninput="updateSlider('vx', this.value)">
                     <span class="value-display" id="vxValue">300</span>
                 </div>
             </div>
-            <div class="slider-group">
-                <label>角速度 wz (mrad/s)</label>
-                <div class="slider-row">
-                    <input type="range" id="wzSlider" min="0" max="500" value="100" oninput="updateSlider('wz', this.value)">
-                    <span class="value-display" id="wzValue">100</span>
-                </div>
-            </div>
-            <div class="section-divider"></div>
-            <div style="display: flex; gap: 6px; flex-wrap: wrap;">
-                <button class="btn btn-action" onclick="sendCmd('reset_odom')">清零里程</button>
-                <button class="btn btn-action" onclick="sendCmd('turn_left_90')">左转90°</button>
-                <button class="btn btn-action" onclick="sendCmd('turn_right_90')">右转90°</button>
-            </div>
+
             <div class="cmd-log" id="cmdLog">
                 <div style="color:#666;font-size:10px;">指令发送日志...</div>
             </div>
@@ -557,6 +559,22 @@ function showSimControls(visible) {
     if (el) el.style.display = visible ? 'block' : 'none';
 }
 
+// 场地边界检测（模拟器和线上模式共用）
+function checkBoundary(pos, stopOnOut = false) {
+    const mapData = window.__MAP_DATA__;
+    if (!mapData || !mapData.field_size_mm) return true;
+    const fieldW = mapData.field_size_mm[0];
+    const fieldH = mapData.field_size_mm[1];
+    const halfW = fieldW / 2;
+    const outOfBounds = Math.abs(pos.x) > halfW || pos.y < 0 || pos.y > fieldH;
+    if (outOfBounds) {
+        pos.x = Math.max(-halfW, Math.min(halfW, pos.x));
+        pos.y = Math.max(0, Math.min(fieldH, pos.y));
+        return false;
+    }
+    return true;
+}
+
 // 页面加载完成后自动初始化
 window.addEventListener('DOMContentLoaded', initDashboard);
 
@@ -627,22 +645,32 @@ function onWsMessage(event) {
         document.getElementById('segImage').src = 'data:image/jpeg;base64,' + data.seg_image;
     }
 
-    // 同步小车位置到 sim.pos（拖拽期间不覆盖，保留用户操作）
+    // 同步小车位置到 sim.pos（拖拽期间不覆盖）
     if (data.position && !carDragging) {
         sim.pos.x = data.position[0];
         sim.pos.y = data.position[1];
         sim.pos.yaw = data.position[2];
+
+        // 边界检测（线上模式）
+        if (!checkBoundary(sim.pos)) {
+            logCmd('⚠ 小车超出场地边界！请检查里程计/视觉定位', 'error');
+        }
     }
 
-    if (data.map_data) {
-        gNodes = data.map_data.nodes || {};
+    // 更新地图数据（首次或变化时）
+    if (data.map_data && data.map_data.nodes) {
+        gNodes = data.map_data.nodes;
         gEdges = data.map_data.edges || [];
+    }
+
+    // 只要有位置或地图数据就渲染（小车 + 轨迹不依赖 map_data）
+    if (data.position || data.map_data) {
         renderMap(data);
     }
 
     updateTelemetry(data);
 
-    if (data.planned_path) {
+    if (data.planned_path && data.planned_path.length > 0) {
         updatePath(data);
     }
 
@@ -744,51 +772,8 @@ function simTick() {
     const dy = tgt.y - sim.pos.y;
     const dist = Math.hypot(dx, dy);
 
-    // 倒计时处理（模拟路口逼近）
-    if (sim.approachingUntil > 0) {
-        sim.approachingUntil -= dt;
-        if (sim.approachingUntil <= 0) {
-            sim.approachingUntil = 0;
-            sim.state = 'TURNING';
-            sim.odom += 30; // 模拟转弯距离
-            addSimEvent('state_change', `${sim.currentNode} → TURNING (${sim.targetNode})`);
-            // 模拟到达路口后推进
-            advanceToNextNode();
-            sim.state = 'PLANNING';
-            // 重新规划
-            const unvisited = Object.keys(gNodes).filter(
-                n => gNodes[n].type === 'mission' && !sim.visited.includes(n)
-            );
-            if (unvisited.length === 0) {
-                sim.state = 'FINISHED';
-                sim.targetNode = null;
-                stopSimulation();
-                addSimEvent('finished', '所有任务完成');
-            } else if (sim.pathIndex < sim.path.length) {
-                sim.targetNode = sim.path[sim.pathIndex];
-                sim.state = 'CRUISING';
-            }
-        }
-        updateTelemetryFromSim();
-        renderMapFromSim();
-        return;
-    }
-
-    // 接近目标时触发路口检测模拟
-    if (dist < 150 && sim.state === 'CRUISING') {
-        // 模拟视觉路口检测
-        if (tgt.type !== 'junction' || tgt.rfid) {
-            sim.state = 'APPROACHING';
-            sim.approachingUntil = 1.0; // 1 秒逼近
-            addSimEvent('crossing_detected', `检测到路口, 距离≈${dist.toFixed(0)}mm → APPROACHING`);
-            updateTelemetryFromSim();
-            renderMapFromSim();
-            return;
-        }
-    }
-
     if (dist < 5) {
-        // 精确到达
+        // 精确到达目标节点
         sim.pos.x = tgt.x;
         sim.pos.y = tgt.y;
         handleNodeArrival();
@@ -797,7 +782,7 @@ function simTick() {
         return;
     }
 
-    // 移动：先横后纵（模拟车道约束）
+    // 移动：先横后纵（模拟车道约束走直角弯）
     const ax = Math.abs(dx), ay = Math.abs(dy);
     let moveX = 0, moveY = 0;
     if (ax > ay) {
@@ -811,6 +796,16 @@ function simTick() {
     sim.pos.x += moveX;
     sim.pos.y += moveY;
     sim.odom += Math.abs(moveX) + Math.abs(moveY);
+
+    // 边界碰撞检测
+    if (!checkBoundary(sim.pos, /* stopOnOut */ true)) {
+        stopSimulation();
+        addSimEvent('error', `小车超出场地边界，模拟已停止`);
+        logCmd('错误: 小车超出场地边界，模拟已停止', 'error');
+        updateTelemetryFromSim();
+        renderMapFromSim();
+        return;
+    }
 
     // 保存轨迹
     sim.trajectory.push([sim.pos.x, sim.pos.y]);
@@ -918,12 +913,20 @@ function updateTelemetryFromSim() {
         position: [sim.pos.x, sim.pos.y, sim.pos.yaw],
         current_node: sim.currentNode,
         target_node: sim.targetNode,
-        offset_mm: (Math.random() - 0.5) * 20,           // 模拟 ±10mm 小幅偏移
+        offset_mm: (Math.random() - 0.5) * 20,
         is_intersection: sim.state === 'APPROACHING',
         progress: { visited: sim.visited.length, total: 12 },
         planned_path: sim.path,
         visited_nodes: sim.visited,
     });
+    // 同步更新路径面板和事件日志
+    updatePath({
+        planned_path: sim.path,
+        visited_nodes: sim.visited,
+        current_node: sim.currentNode,
+        target_node: sim.targetNode,
+    });
+    updateEventLog(sim.events);
 }
 
 // 路径显示
@@ -1277,51 +1280,73 @@ function updateStats() {
 <script>
 // === controls.js ===
 // 控制面板
-function setMode(mode) {
-    currentMode = mode;
-    document.getElementById('modeAuto').classList.toggle('active', mode === 'auto');
-    document.getElementById('modeManual').classList.toggle('active', mode === 'manual');
-    logCmd(`模式切换: ${mode === 'auto' ? '自动' : '手动'}`);
-    if (mode === 'manual' && !simRunning) {
-        logCmd('提示: 手动模式下可点击方向按钮控制小车', 'warn');
-    }
-    if (typeof sendApiCmd === 'function') {
-        sendApiCmd('set_mode', { mode: mode });
-    }
-}
+let leadDistance = 80;  // 路口提前量 (mm)
 
 function updateSlider(name, value) {
     if (name === 'vx') {
         vxSpeed = parseInt(value);
         document.getElementById('vxValue').textContent = vxSpeed;
-    } else if (name === 'wz') {
-        wzSpeed = parseInt(value);
-        document.getElementById('wzValue').textContent = wzSpeed;
+    } else if (name === 'lead') {
+        leadDistance = parseInt(value);
+        document.getElementById('leadValue').textContent = leadDistance;
+    }
+}
+
+function toggleAutoMode() {
+    currentMode = 'auto';
+    document.getElementById('btnAutoMode').classList.add('active');
+    document.getElementById('btnManualMode').classList.remove('active');
+    logCmd('切换到自动模式：启动路径规划 + 50Hz tick');
+    sendModeCmd('auto');
+}
+
+function setManualMode() {
+    currentMode = 'manual';
+    document.getElementById('btnAutoMode').classList.remove('active');
+    document.getElementById('btnManualMode').classList.add('active');
+    logCmd('切换到手动模式：停止状态机 tick');
+    sendModeCmd('manual');
+}
+
+async function sendModeCmd(mode) {
+    if (window.location.protocol === 'file:' || !ws || ws.readyState !== WebSocket.OPEN) {
+        logCmd(`[模拟] 模式切换: ${mode}`);
+        return;
+    }
+    try {
+        const response = await fetch('/api/mode', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ mode: mode })
+        });
+        const result = await response.json();
+        if (!result.ok) {
+            logCmd(`模式切换错误: ${result.error}`, 'error');
+        }
+    } catch (e) {
+        logCmd(`网络错误: ${e.message}`, 'error');
     }
 }
 
 function sendCmd(cmd) {
+    // 全部离散指令，单击即执行
     const cmdMap = {
-        // 持续运动 (mousedown 按下 / mouseup 松开 → stop)
-        'forward':        { cmd: 'forward', vx: vxSpeed },
-        'backward':       { cmd: 'backward', vx: vxSpeed },
-        'left':           { cmd: 'left', angle: 90 },
-        'right':          { cmd: 'right', angle: 90 },
-        // 离散指令 (click 点击即执行)
-        'stop':           { cmd: 'stop' },
-        'reset_odom':     { cmd: 'reset_odom' },
-        'turn_left_90':   { cmd: 'turn_imu', angle: 90 },
-        'turn_right_90':  { cmd: 'turn_imu', angle: -90 },
-        'intersection_left_90':  { cmd: 'intersection_turn', direction: 'left' },
-        'intersection_right_90': { cmd: 'intersection_turn', direction: 'right' },
+        'forward':              { cmd: 'move', vx: vxSpeed, distance: 300 },
+        'backward':             { cmd: 'move', vx: -vxSpeed, distance: 300 },
+        'turn_left_90':         { cmd: 'turn_imu', angle: 90 },
+        'turn_right_90':        { cmd: 'turn_imu', angle: -90 },
+        'intersection_left':    { cmd: 'intersection_turn', direction: 'left', lead: leadDistance },
+        'intersection_right':   { cmd: 'intersection_turn', direction: 'right', lead: leadDistance },
+        'stop':                 { cmd: 'stop' },
+        'reset_odom':           { cmd: 'reset_odom' },
     };
 
     const payload = cmdMap[cmd];
     if (payload) {
+        logCmd(`发送: ${cmd} ${JSON.stringify(payload)}`);
         if (typeof sendApiCmd === 'function') {
             sendApiCmd(payload.cmd, payload);
         }
-        logCmd(`发送: ${cmd}`);
     }
 }
 
@@ -1335,7 +1360,7 @@ async function sendApiCmd(cmd, payload) {
         const response = await fetch('/api/cmd', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ cmd, ...payload })
+            body: JSON.stringify(payload)
         });
         const result = await response.json();
         if (!result.ok) {

@@ -111,5 +111,21 @@ function showSimControls(visible) {
     if (el) el.style.display = visible ? 'block' : 'none';
 }
 
+// 场地边界检测（模拟器和线上模式共用）
+function checkBoundary(pos, stopOnOut = false) {
+    const mapData = window.__MAP_DATA__;
+    if (!mapData || !mapData.field_size_mm) return true;
+    const fieldW = mapData.field_size_mm[0];
+    const fieldH = mapData.field_size_mm[1];
+    const halfW = fieldW / 2;
+    const outOfBounds = Math.abs(pos.x) > halfW || pos.y < 0 || pos.y > fieldH;
+    if (outOfBounds) {
+        pos.x = Math.max(-halfW, Math.min(halfW, pos.x));
+        pos.y = Math.max(0, Math.min(fieldH, pos.y));
+        return false;
+    }
+    return true;
+}
+
 // 页面加载完成后自动初始化
 window.addEventListener('DOMContentLoaded', initDashboard);

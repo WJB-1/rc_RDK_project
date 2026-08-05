@@ -73,6 +73,13 @@ web_debug:
   port: 5000
 
 # --------------------------------------------
+# YOLO 检测模型
+# --------------------------------------------
+yolo:
+  model_path: "models/yolov8_detection_x5.bin"
+  confidence_threshold: 0.5
+
+# --------------------------------------------
 # 赛道物理参数
 # --------------------------------------------
 track:
@@ -115,9 +122,14 @@ state_machine:
   # --- 视觉偏转角 ---
   yaw_correction_alpha: 0.05         # 微调权重
   yaw_correction_max_deg: 10.0       # 角度异常阈值
+  # M1: 路口检测完善
+  crossroad_detection_window_ratio: 0.95
+  crossroad_seg_confirm_frames: 2
   # --- 转向判定 ---
   turn_straight_deg: 15.0            # |diff| < 此值 → 直行
   turn_uturn_deg: 160.0              # |diff| > 此值 → 掉头
+  # --- 障碍物检测 ---
+  obstacle_min_overlap_ratio: 0.3
 
 # --------------------------------------------
 # 期望航向角常量

@@ -92,6 +92,7 @@ class LaneTracker:
         )
         self.physical_track_width_mm = ipm_cfg.get('physical_track_width_mm', 450.0)
         self.last_lane_state = None  # 供 main.py 读取最新一帧的完整状态
+        self.last_seg_mask = None     # 供 main.py 的最新分割mask，用于seg-based路口检测
         self.logger.info(
             f"MathematicalIPM 初始化完成 (三段式状态机): "
             f"pitch={self.ipm.pitch_deg}°, height={self.ipm.camera_height_mm}mm, "
@@ -151,6 +152,7 @@ class LaneTracker:
                 lane_state = get_last_valid_state()
 
             self.last_lane_state = lane_state
+            self.last_seg_mask = clean_mask
 
             offset_mm = lane_state['pid_error_mm']
             is_intersection = lane_state['crossroad_detected']

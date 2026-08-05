@@ -84,6 +84,7 @@ class ObstacleDetection:
     detected: bool
     confidence: float = 0.0
     distance_mm: float = 0.0          # 到障碍物距离 (mm)
+    in_lane: bool = False             # 障碍物是否在车道延长线上
     box: Optional[DetectionBox] = None
 
 

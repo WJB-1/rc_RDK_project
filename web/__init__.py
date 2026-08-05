@@ -126,6 +126,7 @@ class WebPushServer:
         self._base_map_data = {}
 
         self._cmd_log = []
+        self._auto_mode = False
         self._register_routes()
 
     # ------------------------------------------------------------------
@@ -298,6 +299,27 @@ class WebPushServer:
                 if self._cmd_callback:
                     self._cmd_callback(cmd, payload)
                 return self.jsonify({"ok": True, "cmd": cmd, "payload": payload})
+            except Exception as e:
+                return self.jsonify({"ok": False, "error": str(e)})
+
+        @self.app.route("/api/mode", methods=["POST"])
+        def api_mode():
+            """自动/手动模式切换"""
+            try:
+                data = self.request.get_json(force=True)
+                mode = data.get("mode", "manual") if data else "manual"
+                with self._lock:
+                    if mode == "auto":
+                        self._auto_mode = True
+                    else:
+                        self._auto_mode = False
+                    self._cmd_log.append({"timestamp": time.time(),
+                                          "cmd": "switch_mode",
+                                          "payload": {"mode": mode}})
+                if self._cmd_callback:
+                    self._cmd_callback("auto_mode_start" if mode == "auto" else "auto_mode_stop",
+                                       {"mode": mode})
+                return self.jsonify({"ok": True, "mode": mode})
             except Exception as e:
                 return self.jsonify({"ok": False, "error": str(e)})
 
