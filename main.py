@@ -334,6 +334,24 @@ class RescueBrain:
         if self.agent.event_log:
             self.web.update_navigation(event=self.agent.event_log[-1])
 
+    def apply_vision_yaw_correction(self):
+        """
+        视觉偏转角微调 — 可选工具，由调度层按需调用。
+
+        原理：摄像头检测到的车道线偏角 (lane_angle_rad) 反映车头方向偏差。
+        用 5% 低通滤波修正 agent.yaw_deg，避免单帧抖动。
+
+        适用场景：IMU 不可用或需要视觉冗余时。
+        注意：正常情况下航向修正由下位机 IMU 闭环完成 (move_4.c)。
+        """
+        lane_state = self.lane_tracker.last_lane_state
+        if lane_state is None or lane_state.get("frame_dropped", False):
+            return
+        angle_rad = lane_state.get("lane_angle_rad", 0.0)
+        quality = lane_state.get("quality_score", 0.0)
+        if quality > 0.5 and abs(angle_rad) > 0.01:
+            self.agent.yaw_deg += math.degrees(angle_rad) * 0.05
+
     def _perception_loop(self):
         """
         感知层处理循环
@@ -362,16 +380,8 @@ class RescueBrain:
                             self._last_sent_offset = offset_mm
                             self._last_offset_send_time = now
 
-                    # 视觉偏转角微调 (Phase 4)
-                    # 直接小幅修正 yaw，不在 Agent 中维护独立方法
-                    if not is_intersection:
-                        lane_state = self.lane_tracker.last_lane_state
-                        if lane_state is not None and not lane_state.get("frame_dropped", False):
-                            angle_rad = lane_state.get("lane_angle_rad", 0.0)
-                            quality = lane_state.get("quality_score", 0.0)
-                            if quality > 0.5 and abs(angle_rad) > 0.01:
-                                # 低通滤波: 只修正 5% 避免抖动
-                                self.agent.yaw_deg += math.degrees(angle_rad) * 0.05
+                    # 航向修正由下位机 IMU 闭环完成 (move_4.c:Move_CalcImuCorrection)
+                    # 视觉偏转角修正作为可选工具保留，调度层按需调用 _apply_vision_yaw()
 
                     self._push_debug_data(debug_frame, offset_mm, is_intersection)
 
