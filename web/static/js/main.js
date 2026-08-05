@@ -97,9 +97,9 @@ function initDashboard() {
             renderMapFromSim();
         }, 150);
     } else {
-        // 线上模式 — 连接 WebSocket, 同时先画静态地图
+        // 线上模式 — 连接 WebSocket, 同时先画静态地图, 模拟器始终可用
         connectWebSocket();
-        showSimControls(false);
+        showSimControls(true);
         if (Object.keys(gNodes).length > 0) {
             drawMap(gNodes, gEdges, null, [], null, null, [], null);
         }
