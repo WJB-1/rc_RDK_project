@@ -1,0 +1,460 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>路径规划模拟器</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #0a0a0a; color: #eee; font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif; height: 100vh; display: flex; flex-direction: column; }
+.header { height: 40px; background: #1a1a2e; border-bottom: 2px solid #16213e; display: flex; align-items: center; padding: 0 16px; font-size: 14px; font-weight: bold; gap: 12px; }
+.header a { color: #3498db; text-decoration: none; font-size: 12px; margin-left: auto; }
+.main { display: flex; flex: 1; overflow: hidden; }
+.left { width: 360px; min-width: 360px; padding: 10px; display: flex; flex-direction: column; gap: 10px; border-right: 2px solid #16213e; overflow-y: auto; }
+.right { flex: 1; position: relative; }
+canvas { width: 100%; height: 100%; display: block; }
+
+.panel { background: #111; border: 1px solid #333; border-radius: 4px; padding: 12px; }
+.panel-title { font-size: 13px; color: #3498db; font-weight: bold; margin-bottom: 8px; }
+
+.btn { padding: 8px 16px; border: none; border-radius: 4px; font-size: 13px; font-weight: bold; cursor: pointer; color: #fff; }
+.btn:hover { opacity: 0.8; }
+.btn-start { background: #27ae60; }
+.btn-stop  { background: #e74c3c; }
+.btn-reset { background: #3498db; }
+.btn-rows { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 6px; }
+
+select { width: 100%; padding: 6px; background: #0f3460; color: #eee; border: 1px solid #1a4a8a; border-radius: 3px; font-size: 12px; margin-top: 4px; }
+
+.progress-bar { height: 6px; background: #1a1a2e; border-radius: 3px; margin-top: 8px; overflow: hidden; }
+.progress-fill { height: 100%; background: #27ae60; transition: width 0.1s; }
+
+table { width: 100%; font-size: 12px; border-collapse: collapse; margin-top: 6px; }
+td { padding: 3px 4px; }
+td.label { color: #888; width: 70px; }
+td.value { font-family: Consolas, monospace; color: #3498db; }
+
+.event-log { background: #0a0a0a; border: 1px solid #222; border-radius: 3px; padding: 6px; font-family: Consolas, monospace; font-size: 10px; line-height: 1.6; max-height: 150px; overflow-y: auto; margin-top: 6px; }
+.event-item { border-bottom: 1px solid #1a1a1a; padding: 1px 0; }
+.event-time { color: #666; margin-right: 6px; }
+.event-msg  { color: #bbb; }
+
+.edge-list { max-height: 200px; overflow-y: auto; font-size: 11px; margin-top: 6px; }
+.edge-item { padding: 4px 6px; border-bottom: 1px solid #1a1a1a; display: flex; justify-content: space-between; }
+.edge-item.current { background: #1a3a1a; }
+.edge-item.tunnel { color: #f39c12; }
+</style>
+</head>
+<body>
+
+<div class="header">
+    <span>路径规划模拟器</span>
+    <span style="font-size:11px;color:#888;" id="statusLabel">就绪</span>
+    <a href="/">返回控制面板</a>
+</div>
+
+<div class="main">
+    <div class="left">
+        <div class="panel">
+            <div class="panel-title">模拟控制</div>
+            <div class="btn-rows">
+                <button class="btn btn-start" id="btnStart" onclick="toggleSim()">启动模拟</button>
+                <button class="btn btn-reset" onclick="resetSim()">重置</button>
+            </div>
+            <label style="font-size:11px;color:#888;">起始位置</label>
+            <select id="startNode"></select>
+            <div style="margin-top:8px;">
+                <span style="font-size:11px;color:#888;">仿真速度</span>
+                <input type="range" id="speedSlider" min="50" max="500" value="300" oninput="simSpeed=parseInt(this.value);document.getElementById('speedVal').textContent=simSpeed+'mm/s'" style="width:100%;">
+                <span id="speedVal" style="font-size:11px;color:#3498db;">300mm/s</span>
+            </div>
+            <div class="progress-bar"><div class="progress-fill" id="progressBar" style="width:0%"></div></div>
+        </div>
+
+        <div class="panel">
+            <div class="panel-title">当前状态</div>
+            <table>
+                <tr><td class="label">当前位置</td><td class="value" id="pos">--</td></tr>
+                <tr><td class="label">当前边</td><td class="value" id="edge">--</td></tr>
+                <tr><td class="label">累计里程</td><td class="value" id="odom">0 mm</td></tr>
+                <tr><td class="label">打卡进度</td><td class="value" id="mission">0/12</td></tr>
+                <tr><td class="label">边序列</td><td class="value" id="seqCount">--</td></tr>
+            </table>
+        </div>
+
+        <div class="panel">
+            <div class="panel-title">边序列</div>
+            <div class="edge-list" id="edgeList">点击启动模拟...</div>
+        </div>
+
+        <div class="panel">
+            <div class="panel-title">事件日志</div>
+            <div class="event-log" id="eventLog"></div>
+        </div>
+    </div>
+
+    <div class="right">
+        <canvas id="mapCanvas"></canvas>
+    </div>
+</div>
+
+<script>
+// ============ 全局地图数据 ============
+let gNodes = {}, gEdges = [];
+let sim = { pos: { x: 0, y: 0, yaw: 0 }, odom: 0, currentNode: '', targetNode: '', visited: [], edgeTasks: [], edgeIndex: 0, trajectory: [], events: [], running: false };
+let simSpeed = 300;
+let _interval = null;
+let _pendingPlan = false;
+let _lastEdgeIndex = -1;
+
+// ============ 初始化 ============
+window.addEventListener('DOMContentLoaded', async () => {
+    // 从 / 页面的 MAP_DATA 或直接请求
+    try {
+        const resp = await fetch('/snapshot');
+        const data = await resp.json();
+        if (data.map_data && data.map_data.nodes) {
+            gNodes = data.map_data.nodes;
+            gEdges = data.map_data.edges || [];
+        }
+    } catch (e) {
+        console.log('snapshot failed, trying inline data');
+    }
+    if (Object.keys(gNodes).length === 0) {
+        // fallback: 可能 HTML 已经注入了 __MAP_DATA__
+        if (window.__MAP_DATA__) {
+            gNodes = window.__MAP_DATA__.nodes || {};
+            gEdges = window.__MAP_DATA__.edges || [];
+        }
+    }
+
+    // 填充起始位置下拉框
+    const sel = document.getElementById('startNode');
+    const names = Object.keys(gNodes).sort();
+    sel.innerHTML = names.map(n => `<option value="${n}">${n} (${gNodes[n].type})</option>`).join('');
+    sel.value = 'START';
+
+    // 初始化小车位置
+    const sn = gNodes['START'];
+    if (sn) { sim.pos = { x: sn.x, y: sn.y, yaw: 0 }; sim.currentNode = 'START'; }
+
+    drawMap();
+    drawMap(); // 两次确保 canvas 尺寸正确
+});
+
+// ============ 模拟控制 ============
+async function toggleSim() {
+    if (sim.running) { stopSim(); return; }
+    await startSim();
+}
+
+async function startSim() {
+    const startName = document.getElementById('startNode').value;
+    const sn = gNodes[startName];
+    if (!sn) return;
+
+    // 重置状态
+    sim.pos = { x: sn.x, y: sn.y, yaw: 0 };
+    sim.odom = 0;
+    sim.currentNode = startName;
+    sim.visited = [];
+    sim.trajectory = [{ x: sn.x, y: sn.y }];
+    sim.events = [];
+    sim.edgeIndex = 0;
+    _lastEdgeIndex = -1;
+
+    // 请求路径规划
+    const plan = await fetchSimPlan(startName, sim.visited, []);
+    if (!plan || !plan.edge_tasks || plan.edge_tasks.length === 0) {
+        alert('路径规划失败');
+        return;
+    }
+
+    sim.edgeTasks = plan.edge_tasks;
+    sim.events.push({ time: now(), msg: `从 ${startName} 出发，${plan.edge_tasks.length} 段边，${plan.total_distance_mm.toFixed(0)}mm` });
+
+    if (sn.type === 'mission') sim.visited.push(startName);
+
+    _loadEdge(0);
+    sim.running = true;
+    _interval = setInterval(simTick, 50);
+    updateUI('start');
+    addEvent(`启动: 从 ${startName} 出发`);
+}
+
+function stopSim() {
+    sim.running = false;
+    if (_interval) { clearInterval(_interval); _interval = null; }
+    updateUI('stop');
+}
+
+function resetSim() {
+    stopSim();
+    const sn = gNodes[document.getElementById('startNode').value] || gNodes['START'];
+    sim.pos = { x: sn.x, y: sn.y, yaw: 0 };
+    sim.currentNode = document.getElementById('startNode').value;
+    sim.odom = 0;
+    sim.visited = [];
+    sim.trajectory = [{ x: sim.pos.x, y: sim.pos.y }];
+    sim.edgeTasks = [];
+    sim.events = [];
+    document.getElementById('edgeList').innerHTML = '点击启动模拟...';
+    document.getElementById('progressBar').style.width = '0%';
+    document.getElementById('eventLog').innerHTML = '';
+    drawMap();
+    updateUI('reset');
+}
+
+// ============ API ============
+async function fetchSimPlan(currentNode, visited, blockedEdges) {
+    try {
+        const resp = await fetch('/api/sim_plan', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ current_node: currentNode, visited, blocked_edges: blockedEdges || [] })
+        });
+        return await resp.json();
+    } catch (e) { return null; }
+}
+
+// ============ 边加载 ============
+function _loadEdge(index) {
+    if (index >= sim.edgeTasks.length) {
+        _requestReplan();
+        return;
+    }
+    sim.edgeIndex = index;
+    const task = sim.edgeTasks[index];
+    sim.targetNode = task.to_node;
+    sim.edgeOdomStart = sim.odom;
+
+    if (task.is_tunnel) {
+        simSpeed = 150;
+        document.getElementById('speedSlider').value = 150;
+        document.getElementById('speedVal').textContent = '150mm/s [隧道]';
+    } else {
+        simSpeed = parseInt(document.getElementById('speedSlider').value);
+        if (simSpeed <= 150) {
+            simSpeed = 300;
+            document.getElementById('speedSlider').value = 300;
+            document.getElementById('speedVal').textContent = '300mm/s';
+        }
+    }
+
+    if (_lastEdgeIndex !== index) {
+        _lastEdgeIndex = index;
+        addEvent(`${task.from_node}→${task.to_node} ${task.distance_mm.toFixed(0)}mm${task.is_tunnel ? ' [隧道]' : ''}`);
+    }
+
+    updateEdgeList();
+    updateUI('edge');
+}
+
+async function _requestReplan() {
+    if (_pendingPlan) return;
+    _pendingPlan = true;
+    const plan = await fetchSimPlan(sim.currentNode, sim.visited, []);
+    _pendingPlan = false;
+    if (!plan || !plan.edge_tasks || plan.edge_tasks.length === 0) {
+        sim.running = false;
+        if (_interval) { clearInterval(_interval); _interval = null; }
+        addEvent('所有任务完成!');
+        updateUI('finish');
+        return;
+    }
+    sim.edgeTasks = plan.edge_tasks;
+    sim.events.push({ time: now(), msg: `重规划: ${plan.edge_tasks.length} 段边` });
+    _loadEdge(0);
+}
+
+// ============ 每帧模拟 ============
+function simTick() {
+    if (!sim.running || !sim.targetNode || !gNodes[sim.targetNode]) return;
+
+    const tgt = gNodes[sim.targetNode];
+    const dt = 0.05;
+    const step = simSpeed * dt;
+    const dx = tgt.x - sim.pos.x;
+    const dy = tgt.y - sim.pos.y;
+    const dist = Math.hypot(dx, dy);
+
+    if (dist < 3) {
+        sim.pos.x = tgt.x;
+        sim.pos.y = tgt.y;
+        sim.trajectory.push({ x: sim.pos.x, y: sim.pos.y });
+        _handleArrival();
+        drawMap();
+        updateUI('arrival');
+        return;
+    }
+
+    const ax = Math.abs(dx), ay = Math.abs(dy);
+    if (ax > ay) {
+        sim.pos.x += Math.sign(dx) * Math.min(step, ax);
+        sim.pos.yaw = dx > 0 ? 90 : -90;
+    } else {
+        sim.pos.y += Math.sign(dy) * Math.min(step, ay);
+        sim.pos.yaw = dy > 0 ? 0 : 180;
+    }
+    sim.odom += Math.abs(Math.sign(dx) * Math.min(step, ax)) + Math.abs(Math.sign(dy) * Math.min(step, ay));
+    sim.trajectory.push({ x: sim.pos.x, y: sim.pos.y });
+    if (sim.trajectory.length > 3000) sim.trajectory = sim.trajectory.slice(-3000);
+
+    drawMap();
+    updateUI('tick');
+}
+
+function _handleArrival() {
+    const nodeName = sim.targetNode;
+    if (!nodeName || !gNodes[nodeName]) return;
+
+    sim.currentNode = nodeName;
+
+    if (gNodes[nodeName].rfid && !sim.visited.includes(nodeName)) {
+        sim.visited.push(nodeName);
+        addEvent(`打卡: ${nodeName}`);
+    }
+
+    _loadEdge(sim.edgeIndex + 1);
+}
+
+// ============ Canvas 绘制 ============
+function drawMap() {
+    const canvas = document.getElementById('mapCanvas');
+    const ctx = canvas.getContext('2d');
+    const dpr = window.devicePixelRatio || 1;
+    const rect = canvas.getBoundingClientRect();
+    if (rect.width === 0) return setTimeout(drawMap, 100);
+
+    const targetW = rect.width * dpr;
+    const targetH = rect.height * dpr;
+    if (canvas.width !== targetW || canvas.height !== targetH) {
+        canvas.width = targetW;
+        canvas.height = targetH;
+    }
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+    const w = rect.width, h = rect.height;
+    ctx.fillStyle = '#111';
+    ctx.fillRect(0, 0, w, h);
+
+    if (Object.keys(gNodes).length === 0) return;
+
+    // 计算变换
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    for (const n of Object.values(gNodes)) {
+        if (n.x < minX) minX = n.x; if (n.x > maxX) maxX = n.x;
+        if (n.y < minY) minY = n.y; if (n.y > maxY) maxY = n.y;
+    }
+    const pad = 200, fieldW = maxX - minX + pad * 2, fieldH = maxY - minY + pad * 2;
+    const scale = Math.min((w - 40) / fieldW, (h - 40) / fieldH);
+    const ox = (w - fieldW * scale) / 2, oy = (h - fieldH * scale) / 2;
+    function tx(x) { return ox + (x - minX + pad) * scale; }
+    function ty(y) { return oy + (y - minY + pad) * scale; }
+
+    // 边
+    for (const e of gEdges) {
+        const a = gNodes[e.node_a], b = gNodes[e.node_b];
+        if (!a || !b) continue;
+        ctx.strokeStyle = e.is_tunnel ? '#f39c12' : '#2c3e50';
+        ctx.lineWidth = e.is_tunnel ? 3 : 1.5;
+        ctx.beginPath(); ctx.moveTo(tx(a.x), ty(a.y)); ctx.lineTo(tx(b.x), ty(b.y)); ctx.stroke();
+    }
+
+    // 轨迹
+    if (sim.trajectory.length > 1) {
+        ctx.strokeStyle = '#27ae60';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        for (let i = 0; i < sim.trajectory.length; i += Math.max(1, Math.floor(sim.trajectory.length / 500))) {
+            const p = sim.trajectory[i];
+            i === 0 ? ctx.moveTo(tx(p.x), ty(p.y)) : ctx.lineTo(tx(p.x), ty(p.y));
+        }
+        ctx.stroke();
+    }
+
+    // 节点
+    for (const [name, n] of Object.entries(gNodes)) {
+        const x = tx(n.x), y = ty(n.y);
+        let color = '#555';
+        if (n.type === 'mission') color = sim.visited && sim.visited.includes(name) ? '#27ae60' : '#3498db';
+        if (name === sim.currentNode) color = '#e74c3c';
+        if (name === sim.targetNode) color = '#f39c12';
+
+        ctx.fillStyle = color;
+        ctx.beginPath(); ctx.arc(x, y, 5, 0, Math.PI * 2); ctx.fill();
+
+        ctx.fillStyle = '#aaa';
+        ctx.font = '9px Consolas';
+        ctx.fillText(name, x + 7, y + 3);
+    }
+
+    // 小车
+    const cx = tx(sim.pos.x), cy = ty(sim.pos.y);
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.rotate((90 - sim.pos.yaw) * Math.PI / 180);
+    ctx.fillStyle = '#e74c3c';
+    ctx.fillRect(-6, -10, 12, 20);
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(-2, -14, 4, 6);
+    ctx.restore();
+}
+
+// ============ UI 更新 ============
+function updateUI(reason) {
+    if (reason === 'tick') {
+        document.getElementById('pos').textContent = `${sim.pos.x.toFixed(0)}, ${sim.pos.y.toFixed(0)}`;
+        document.getElementById('odom').textContent = `${sim.odom.toFixed(0)} mm`;
+        document.getElementById('mission').textContent = `${sim.visited.length}/12`;
+        if (sim.edgeTasks.length > 0) {
+            const ce = sim.edgeTasks[sim.edgeIndex];
+            if (ce) {
+                const edgeDist = sim.odom - (sim.edgeOdomStart || 0);
+                document.getElementById('edge').textContent = `${ce.from_node}→${ce.to_node} (${edgeDist.toFixed(0)}/${ce.distance_mm.toFixed(0)}mm)`;
+                document.getElementById('progressBar').style.width = `${Math.min(100, (edgeDist/ce.distance_mm)*100)}%`;
+            }
+        }
+        return;
+    }
+
+    document.getElementById('pos').textContent = `${sim.pos.x.toFixed(0)}, ${sim.pos.y.toFixed(0)}`;
+    document.getElementById('odom').textContent = `${sim.odom.toFixed(0)} mm`;
+    document.getElementById('mission').textContent = `${sim.visited.length}/12`;
+    document.getElementById('seqCount').textContent = sim.edgeTasks.length ? `${sim.edgeIndex + 1}/${sim.edgeTasks.length}` : '--';
+    document.getElementById('statusLabel').textContent = sim.running ? '运行中' : (sim.visited.length >= 12 ? '已完成' : '就绪');
+
+    const btn = document.getElementById('btnStart');
+    btn.textContent = sim.running ? '停止' : '启动模拟';
+    btn.className = 'btn ' + (sim.running ? 'btn-stop' : 'btn-start');
+}
+
+function updateEdgeList() {
+    const el = document.getElementById('edgeList');
+    el.innerHTML = sim.edgeTasks.map((t, i) => {
+        let cls = 'edge-item';
+        if (i === sim.edgeIndex) cls += ' current';
+        if (t.is_tunnel) cls += ' tunnel';
+        const done = i < sim.edgeIndex ? ' ✅' : '';
+        return `<div class="${cls}"><span>${t.from_node}→${t.to_node}</span><span>${t.distance_mm.toFixed(0)}mm${t.is_tunnel?' 🔵':''}${done}</span></div>`;
+    }).join('');
+    el.scrollTop = el.querySelector('.current')?.offsetTop - 40 || 0;
+}
+
+function addEvent(msg) {
+    sim.events.push({ time: now(), msg });
+    const el = document.getElementById('eventLog');
+    const item = document.createElement('div');
+    item.className = 'event-item';
+    item.innerHTML = `<span class="event-time">${now()}</span><span class="event-msg">${msg}</span>`;
+    el.prepend(item);
+    if (el.children.length > 100) el.removeChild(el.lastChild);
+}
+
+function now() {
+    const d = new Date();
+    return `${d.getHours().toString().padStart(2,'0')}:${d.getMinutes().toString().padStart(2,'0')}:${d.getSeconds().toString().padStart(2,'0')}`;
+}
+</script>
+</body>
+</html>
