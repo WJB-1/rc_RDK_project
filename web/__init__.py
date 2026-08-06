@@ -246,6 +246,14 @@ class WebPushServer:
             # patrol_path 等由 set_base_map_data 注入
         })
 
+        @self.app.route("/simulator")
+        def simulator():
+            """独立模拟器页面"""
+            path = _TEMPLATES / "simulator.html"
+            if path.exists():
+                return path.read_text(encoding='utf-8')
+            return "<h1>simulator.html not found</h1>"
+
         @self.app.route("/")
         def index():
             """旧版兼容 — 同时注入静态地图数据"""
