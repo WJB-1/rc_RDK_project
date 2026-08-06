@@ -58,9 +58,14 @@ function drawMap(nodes, edges, position, visitedNodes, currentNode, targetNode, 
     const dpr = window.devicePixelRatio || 1;
     const rect = canvas.getBoundingClientRect();
 
-    canvas.width = rect.width * dpr;
-    canvas.height = rect.height * dpr;
-    ctx.scale(dpr, dpr);
+    // 只在尺寸变化时重置 canvas，避免每帧闪烁
+    const targetW = rect.width * dpr;
+    const targetH = rect.height * dpr;
+    if (canvas.width !== targetW || canvas.height !== targetH) {
+        canvas.width = targetW;
+        canvas.height = targetH;
+    }
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
     const w = rect.width;
     const h = rect.height;
