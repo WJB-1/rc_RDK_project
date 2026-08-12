@@ -56,10 +56,29 @@ math_ipm:
   physical_track_width_mm: 200.0
 
 # --------------------------------------------
-# 串口通讯 (STM32)
+# RDK X5 40pin 引脚定义
+# --------------------------------------------
+pinout:
+  # 语音模块: UART1, 9600bps
+  voice_uart: "/dev/ttyS1"            # pin 8(TX), pin 10(RX)
+  voice_baudrate: 9600
+  # 屏幕: UART7, 115200bps
+  display_uart: "/dev/ttyS7"          # pin 11(TX), pin 13(RX)
+  display_baudrate: 115200
+  # 读卡器: SPI1
+  rfid_spi: "/dev/spidev1.0"          # pin 19(MOSI), pin 21(MISO), pin 23(SCK)
+  rfid_cs_pin: 5                       # GPIO5, pin 29
+  rfid_reset_pin: 6                    # GPIO6, pin 31
+  rfid_irq_pin: 26                     # GPIO26, pin 37
+  # 上下位机通讯: UART3, 115200bps
+  stm32_uart: "/dev/ttyS3"            # pin 3(TX), pin 5(RX)
+  stm32_baudrate: 115200
+
+# --------------------------------------------
+# 串口通讯 (STM32) — 兼容旧配置
 # --------------------------------------------
 serial:
-  port: "/dev/ttyUSB0"
+  port: "/dev/ttyS3"                   # UART3, pin 3+5
   baudrate: 115200
   timeout: 0.01
   write_timeout: 0.01
