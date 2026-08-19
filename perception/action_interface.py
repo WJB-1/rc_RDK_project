@@ -17,7 +17,7 @@ try:
     from ..navigation.map_config import ACTION_TYPES
 except ImportError:
     from navigation.state_machine import AgentStateMachine, AgentState
-    from navigation.map_config import ACTION_TYPES
+    from navigation.domain.config import ACTION_TYPES
 
 
 class ActionInterface:

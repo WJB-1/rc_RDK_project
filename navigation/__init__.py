@@ -13,7 +13,7 @@
 3. 状态机以高频(50Hz)运转，不阻塞
 """
 
-from .map_config import (
+from .domain.config import (
     NODE_COORDS,
     NODE_TYPES,
     NODE_HAS_RFID,
@@ -25,9 +25,14 @@ from .map_config import (
     ACTION_TYPES,
     EXPECTED_YAW,
 )
-from .map_topology import MapNode, MapEdge, RaceTrackTopology, get_topology
-from .map_oracle import MapOracle
+from .domain.topology import MapNode, MapEdge, RaceTrackTopology, get_topology
+from .planning.map_oracle import MapOracle
+from .domain.line_graph import LineGraph, edge_heading, turn_cost, has_safe_exit
 from .state_machine import AgentState, AgentStateMachine
+from .perception.simulation.scene import SimScene, SceneGenerationError
+from .perception.simulation.scene_generator import generate_scene
+from .perception.simulation.vision_checker import VisionChecker
+from .sim_engine import SimEngine
 
 __all__ = [
     # 配置
@@ -48,7 +53,18 @@ __all__ = [
     "get_topology",
     # Oracle
     "MapOracle",
+    # 线图
+    "LineGraph",
+    "edge_heading",
+    "turn_cost",
+    "has_safe_exit",
     # 状态机
     "AgentState",
     "AgentStateMachine",
+    # 仿真
+    "SimScene",
+    "SceneGenerationError",
+    "generate_scene",
+    "VisionChecker",
+    "SimEngine",
 ]

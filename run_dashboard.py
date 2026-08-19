@@ -9,9 +9,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from web import WebPushServer
-from navigation.map_topology import get_topology
-from navigation.map_oracle import MapOracle
-from navigation.map_config import MISSION_NODES, NODE_COORDS, LANE_WIDTH_MM
+from navigation.domain.topology import get_topology
+from navigation.planning.map_oracle import MapOracle
+from navigation.domain.config import MISSION_NODES, NODE_COORDS, LANE_WIDTH_MM
 
 topo = get_topology()
 oracle = MapOracle(topo)

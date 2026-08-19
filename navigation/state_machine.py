@@ -20,16 +20,18 @@ import time
 from typing import Dict, List, Tuple, Optional
 
 from .contracts import (
-    AgentState, EdgeTask, EdgeTaskStatus, TurnAction, TurnCommand,
-    Pose, OdomUpdate, RoadCondition, CrossroadEvent, CulvertEvent,
-    ObstacleEvent, RfidEvent, NavigationState, CulvertReconResult,
-    MapEdgeDynamic, CulvertType,
+    AgentState, TurnAction, TurnCommand, Pose, NavigationState,
+    OdomUpdate, RoadCondition, CrossroadEvent, CulvertEvent,
+    ObstacleEvent, RfidEvent,
 )
-from .map_topology import RaceTrackTopology, get_topology
-from .map_oracle import MapOracle
-from .map_config import NODE_COORDS
-from .path_planner import PathPlanner
-from .edge_executor import EdgeExecutor
+from .domain.topology import RaceTrackTopology, get_topology
+from .planning.map_oracle import MapOracle
+from .domain.config import NODE_COORDS
+from .planning.path_planner import PathPlanner
+from .control.edge_executor import EdgeExecutor
+from .planning.deadend_recovery import DeadEndRecovery
+from .control.orchestrator import StateOrchestrator
+from .control.cruise_state_machine import CruiseStateMachine
 try:
     from .. import config as _cfg
 except ImportError:
@@ -53,6 +55,11 @@ class AgentStateMachine:
         self.planner = PathPlanner(self.oracle, self.topo)
         self.executor = EdgeExecutor()
 
+        # 门面硬拆：职责对象（做法 A）
+        self._recovery = DeadEndRecovery(self)      # 死胡同倒车恢复
+        self._orchestrator = StateOrchestrator(self)  # 宏观调度
+        self._cruise = CruiseStateMachine(self)      # 边级状态转移
+
         # vision 工具注入
         self._vision = None
 
@@ -66,6 +73,7 @@ class AgentStateMachine:
         self.odom_x: float = 0.0
         self.odom_y: float = 0.0
         self.odom_yaw: float = 0.0
+        self._backtrack_distance: float = 0.0  # 倒车累计距离（进入 BACKTRACK 后）
 
         # 状态机
         self.state = AgentState.IDLE
@@ -75,17 +83,18 @@ class AgentStateMachine:
         self.current_node: str = "START"
         self.visited_nodes: set = set()
         self.blocked_edges: set = set()
-        self.found_culverts: set = set()
+        self.discovered_culverts: set = set()  # 已「发现」涵洞（视觉/路口侧视）
+        self.recon_culverts: set = set()       # 已「侦查」涵洞（真正驶过/完成 CULVERT_RECON）
+        self._culvert_targets: set = set()  # 需要侦查的涵洞目标边（仿真注入）
 
         # APPROACHING / TURNING
         self.approach_deadline: float = 0.0
         self.approach_duration: float = (
-            _cfg.get("state_machine.turn_finish_threshold_mm", 50.0) / 1000.0
+            _cfg.get("state_machine.approach_duration_s", 0.3)
         )
         self.turn_start_time: float = 0.0
         self.turn_timeout: float = (
-            _cfg.get("state_machine.turn_finish_threshold_mm", 50.0) / 1000.0
-            + _cfg.get("state_machine.turn_timeout_s", 2.0)
+            _cfg.get("state_machine.turn_timeout_s", 2.0)
         )
 
         # 事件日志
@@ -99,283 +108,116 @@ class AgentStateMachine:
         """注入 vision 工具实例"""
         self._vision = tools
 
+    def set_culvert_targets(self, edge_ids: set):
+        """
+        注入需要侦查的涵洞目标边集合（仿真用）。
+
+        真实车不知道赛道有几个涵洞，此集合为空时不强制涵洞完成。
+        仿真注入 8 个涵洞边后，结束条件要求全部侦查完。
+        """
+        self._culvert_targets = set(edge_ids)
+
+    def all_culverts_reconed(self) -> bool:
+        """是否所有目标涵洞都已侦查完成（读 recon 集合，非 discovered）"""
+        if not self._culvert_targets:
+            return True  # 无目标时恒满足
+        return self._culvert_targets.issubset(self.recon_culverts)
+
     # ================================================================
     # 生命周期
     # ================================================================
 
     def start(self):
-        if self.state != AgentState.IDLE:
-            return
-        self._snap_to_node("START")
-        self._log_event("startup", "Agent 启动")
-        self._transition_to(AgentState.GLOBAL_PLANNING)
-        # immediate: execute planning + dequeue first edge
-        self._do_global_planning()
-        self._dequeue_next_edge()
+        """启动状态机（委托给 CruiseStateMachine）"""
+        self._cruise.start()
 
     def tick(self) -> Optional[TurnCommand]:
-        now = time.time()
-
-        if self.state == AgentState.IDLE:
-            return None
-
-        if self.state == AgentState.GLOBAL_PLANNING:
-            self._do_global_planning()
-            return None
-
-        if self.state == AgentState.EDGE_EXECUTING:
-            return self._tick_edge_executing(now)
-
-        if self.state == AgentState.APPROACHING:
-            if now >= self.approach_deadline:
-                return self._on_approach_done()
-            return None
-
-        if self.state == AgentState.TURNING:
-            if now - self.turn_start_time > self.turn_timeout:
-                self._log_event("turn_timeout", "转弯超时")
-                self._transition_to(AgentState.NODE_ARRIVAL)
-            return None
-
-        if self.state == AgentState.NODE_ARRIVAL:
-            self._on_node_arrival()
-            return None
-
-        if self.state == AgentState.CULVERT_RECON:
-            # 侦查子状态：占位，立即退出
-            self._handle_culvert_recon()
-            return None
-
-        if self.state == AgentState.OBSTACLE_STOP:
-            self._on_obstacle_stop()
-            return None
-
-        if self.state == AgentState.BACKTRACK:
-            self._tick_backtrack(now)
-            return None
-
-        if self.state == AgentState.FINISHED:
-            return TurnCommand(action=TurnAction.STOP,
-                               target_node=self.current_node,
-                               expected_yaw=self.yaw_deg)
-
-        return None
+        """主循环（委托给 CruiseStateMachine）"""
+        return self._cruise.tick()
 
     # ================================================================
     # 感知事件接口 (被动接收)
     # ================================================================
 
     def on_odom_update(self, odom: OdomUpdate):
-        yaw_rad = math.radians(self.yaw_deg)
-        world_dx = odom.dx_mm * math.cos(yaw_rad) - odom.dy_mm * math.sin(yaw_rad)
-        world_dy = odom.dx_mm * math.sin(yaw_rad) + odom.dy_mm * math.cos(yaw_rad)
-
-        self.x_mm += world_dx
-        self.y_mm += world_dy
-        self.yaw_deg = (self.yaw_deg + odom.dyaw_deg) % 360.0
-        if self.yaw_deg > 180.0:
-            self.yaw_deg -= 360.0
-
-        self._cumulative_odom += abs(odom.dy_mm) + abs(odom.dx_mm)
-        self.odom_x += world_dx
-        self.odom_y += world_dy
-        self.odom_yaw += odom.dyaw_deg
+        """里程计更新（委托给 CruiseStateMachine）"""
+        self._cruise.on_odom_update(odom)
 
     def on_road_condition(self, rc: RoadCondition):
-        """perception 每帧上报的道路状况"""
-        pass  # navigation 不每帧响应，仅记录
+        """道路状况上报（委托给 CruiseStateMachine）"""
+        self._cruise.on_road_condition(rc)
 
     def on_crossroad_detected(self, event: CrossroadEvent):
-        """
-        perception 中断上报：IPM 检测到路口。
-        仅 EDGE_EXECUTING 状态处理。
-        """
-        if self.state == AgentState.EDGE_EXECUTING:
-            # 距离兜底
-            dist = event.distance_mm
-            if dist <= 0 or dist > _cfg.get("state_machine.crossroad_max_valid_mm", 2000):
-                dist = _cfg.get("state_machine.crossroad_fallback_mm", 300)
-            if dist > _cfg.get("state_machine.crossroad_max_distance_mm", 800):
-                self._log_event("crossroad_far", f"dist={dist:.0f}")
-                return
-
-            self._transition_to(AgentState.APPROACHING)
-            self.approach_deadline = time.time() + self.approach_duration
-            self._log_event("crossroad", f"dist={dist:.0f} → APPROACHING")
+        """路口检测（委托给 CruiseStateMachine）"""
+        self._cruise.on_crossroad_detected(event)
 
     def on_turn_done(self):
-        """下位机回传 TURN_DONE → 退出 TURNING 状态"""
-        if self.state == AgentState.TURNING:
-            self._log_event("turn_done", "下位机确认转弯完成")
-            self._transition_to(AgentState.NODE_ARRIVAL)
+        """转弯完成确认（委托给 CruiseStateMachine）"""
+        self._cruise.on_turn_done()
 
     def on_culvert_detected(self, event: CulvertEvent):
-        """感知线程推送：检测到涵洞墙壁（标签3 + 非隧道边）"""
-        if self.state == AgentState.EDGE_EXECUTING:
-            task = self.executor.current_task
-            if task:
-                try:
-                    edge = self.topo.get_edge(task.from_node, task.to_node)
-                    edge.has_culvert = True
-                    self.found_culverts.add(edge.edge_id)
-                except KeyError:
-                    pass
-            self._log_event("culvert_wall", f"edge={task.edge_id if task else '?'}")
+        """涵洞墙壁检测（委托给 CruiseStateMachine）"""
+        self._cruise.on_culvert_detected(event)
+
+    def _mark_culvert_discovered(self, edge_id: int):
+        """涵洞发现标记（委托给 CruiseStateMachine）"""
+        self._cruise._mark_culvert_discovered(edge_id)
 
     def on_culvert_entrance_detected(self, event: CulvertEvent):
-        """感知线程推送：检测到涵洞口（标签1）"""
-        if self.state == AgentState.EDGE_EXECUTING:
-            self._transition_to(AgentState.CULVERT_RECON)
+        """涵洞口检测（委托给 CruiseStateMachine）"""
+        self._cruise.on_culvert_entrance_detected(event)
 
     def on_obstacle_detected(self, event: ObstacleEvent):
-        """感知线程推送：检测到障碍物在车道内"""
-        if self.state == AgentState.EDGE_EXECUTING:
-            task = self.executor.current_task
-            if task:
-                self._log_event("obstacle_in_lane", f"dist={event.distance_mm:.0f}mm")
-            self._transition_to(AgentState.OBSTACLE_STOP, obstacle_event=event)
+        """障碍物检测（委托给 CruiseStateMachine）"""
+        self._cruise.on_obstacle_detected(event)
 
     def on_rfid_scanned(self, event: RfidEvent):
-        node_name = event.uid.upper()
-        if node_name not in self.topo.nodes:
-            self._log_event("rfid_error", f"未知: {node_name}")
-            return
-
-        node = self.topo.get_node(node_name)
-        if not node.has_rfid:
-            return
-
-        self._snap_to_node(node_name)
-        node.is_visited = True
-        self.visited_nodes.add(node_name)
-        self._log_event("rfid", f"打卡: {node_name}")
-
-        if self.topo.all_missions_completed():
-            self._transition_to(AgentState.FINISHED)
-            return
-
-        self._transition_to(AgentState.NODE_ARRIVAL)
+        """RFID 打卡（委托给 CruiseStateMachine）"""
+        self._cruise.on_rfid_scanned(event)
 
     # ================================================================
     # 各状态内部逻辑
     # ================================================================
 
     def _do_global_planning(self):
-        unvisited = [n for n in self.topo.nodes
-                     if self.topo.nodes[n].node_type == "mission"
-                     and not self.topo.nodes[n].is_visited]
-
-        if not unvisited:
-            self._transition_to(AgentState.FINISHED)
-            return
-
-        self.planner.replan(self.current_node, unvisited,
-                            blocked_edges=self.blocked_edges)
-        self._dequeue_next_edge()
+        """全局规划（委托给 StateOrchestrator）"""
+        self._orchestrator.do_global_planning()
 
     def _dequeue_next_edge(self):
-        task = self.planner.next_task()
-        if task is None:
-            self._transition_to(AgentState.FINISHED)
-            return
-        self.executor.start(task, self._cumulative_odom)
-        self._transition_to(AgentState.EDGE_EXECUTING)
-        self._log_event("edge_start",
-                        f"{task.from_node}→{task.to_node} {task.distance_mm:.0f}mm")
+        """取下一段边任务（委托给 StateOrchestrator）"""
+        self._orchestrator.dequeue_next_edge()
+
+    def _next_is_reverse(self) -> bool:
+        """判断下一段是否反向段（委托给 StateOrchestrator）"""
+        return self._orchestrator.next_is_reverse()
 
     def _tick_edge_executing(self, now: float) -> Optional[TurnCommand]:
-        progress, interrupts = self.executor.update(self._cumulative_odom, now)
-
-        # 里程计兜底：超过窗口比例仍未检测到路口 → 强制到达
-        window_ratio = _cfg.get("state_machine.crossroad_detection_window_ratio", 0.95)
-        if progress.progress_ratio >= window_ratio:
-            self._log_event("odom_force_arrive", f"ratio={progress.progress_ratio:.2f}")
-            self.executor.finish(EdgeTaskStatus.DONE)
-            self._transition_to(AgentState.NODE_ARRIVAL)
-            return None
-
-        # 边完成判定
-        if progress.timeout:
-            self._log_event("edge_timeout", "超时, 强行到达")
-            self.executor.finish(EdgeTaskStatus.DONE)
-            self._transition_to(AgentState.NODE_ARRIVAL)
-            return None
-
-        if progress.progress_ratio >= 1.0 and progress.is_stalled:
-            self.executor.finish(EdgeTaskStatus.DONE)
-            self._transition_to(AgentState.NODE_ARRIVAL)
-            return None
-
-        return None
+        """边执行 tick（委托给 CruiseStateMachine）"""
+        return self._cruise._tick_edge_executing(now)
 
     def _on_approach_done(self) -> TurnCommand:
-        self._transition_to(AgentState.TURNING)
-        self.turn_start_time = time.time()
-
-        # 从 planner 缓存取下一任务来判转向
-        next_task = self.planner.peek_task()
-        if next_task is None:
-            return TurnCommand(action=TurnAction.STOP,
-                               target_node=self.current_node,
-                               expected_yaw=self.yaw_deg)
-
-        expected_yaw = self._calc_expected_yaw(
-            self.current_node, next_task.to_node
-        )
-        action = self._determine_turn(self.yaw_deg, expected_yaw)
-
-        self._log_event("turn", f"{action.value} → {next_task.to_node}")
-        return TurnCommand(action=action, target_node=next_task.to_node,
-                           expected_yaw=expected_yaw)
+        """逼近完成（委托给 CruiseStateMachine）"""
+        return self._cruise._on_approach_done()
 
     def _on_node_arrival(self):
-        """到达节点后：更新当前节点 → 判断是否需要重规划"""
-        next_task = self.planner.peek_task()
-        if next_task:
-            self.current_node = next_task.to_node
-            self._log_event("node_arrival", f"到达 {self.current_node}")
+        """到达节点（委托给 CruiseStateMachine）"""
+        self._cruise._on_node_arrival()
 
-        # 地图未变 → 直接用缓存的下一任务
-        if self.planner.should_replan(blocked_edges=self.blocked_edges):
-            self._transition_to(AgentState.GLOBAL_PLANNING)
-        else:
-            self._dequeue_next_edge()
+    def _mark_culvert_reconed(self, edge_id: int):
+        """涵洞侦查完成标记（委托给 CruiseStateMachine）"""
+        self._cruise._mark_culvert_reconed(edge_id)
 
-    def _handle_culvert_recon(self):
-        """涵洞侦查：标记 → 恢复执行"""
-        task = self.executor.current_task
-        if task:
-            try:
-                edge = self.topo.get_edge(task.from_node, task.to_node)
-                edge.has_culvert = True
-                self.found_culverts.add(edge.edge_id)
-            except KeyError:
-                pass
-
-        self._log_event("culvert_done", "侦查完成")
-        self._transition_to(AgentState.EDGE_EXECUTING)
+    def _handle_culvert_recon(self, now: float = None):
+        """涵洞侦查状态处理（委托给 CruiseStateMachine）"""
+        self._cruise._handle_culvert_recon(now)
 
     def _on_obstacle_stop(self):
-        task = self.executor.current_task
-        if task:
-            try:
-                edge = self.topo.get_edge(task.from_node, task.to_node)
-                edge.is_blocked = True
-                self.blocked_edges.add(edge.edge_id)
-            except KeyError:
-                pass
-        self.executor.finish(EdgeTaskStatus.FAILED)
-        self._log_event("obstacle", f"封锁边 → BACKTRACK")
-        self._transition_to(AgentState.BACKTRACK)
+        """障碍停车（委托给 CruiseStateMachine）"""
+        self._cruise._on_obstacle_stop()
 
     def _tick_backtrack(self, now: float):
-        """反向巡航回上一个安全节点"""
-        task = self.executor.current_task
-        if task:
-            reverse_dist = abs(self._cumulative_odom - self.executor._start_odom)
-            if reverse_dist >= task.distance_mm * _cfg.get("state_machine.edge_backtrack_ratio", 0.8):
-                self._snap_to_node(task.from_node)
-        self._transition_to(AgentState.GLOBAL_PLANNING)
+        """反向巡航回上一个安全节点（委托给 DeadEndRecovery）"""
+        self._recovery.tick_backtrack(now)
 
     # ================================================================
     # 内部工具方法
@@ -404,8 +246,14 @@ class AgentStateMachine:
         while diff < -180: diff += 360
         if abs(diff) < _cfg.get("state_machine.turn_straight_deg", 15.0):
             return TurnAction.STRAIGHT
+        # Task 12/14：正常规划禁止 180° 原地掉头。规划层已排除掉头路径，此处是防御兜底。
+        # 关键：不能把 180°「降级为 90°」——那会让 expected_yaw 仍是 180°，车头朝向与
+        # 下一条边不一致（日志说左转、画面实际掉头）。应返回 STOP，触发上层重规划/恢复，
+        # 绝不伪造一个方向不符的转向命令。
         if abs(diff) > _cfg.get("state_machine.turn_uturn_deg", 160.0):
-            return TurnAction.UTURN
+            self._log_event("turn_uturn_blocked",
+                            f"非法 180° 掉头 diff={diff:.1f} → STOP，禁止伪造 90° 转向")
+            return TurnAction.STOP
         return TurnAction.TURN_LEFT if diff > 0 else TurnAction.TURN_RIGHT
 
     def _transition_to(self, new_state: AgentState, **kwargs):
@@ -457,6 +305,8 @@ class AgentStateMachine:
                          if self.executor.current_task else ""),
             visited_nodes=list(self.visited_nodes),
             edge_sequence=self.planner.get_cached_sequence(),
+            discovered_culverts=list(self.discovered_culverts),
+            recon_culverts=list(self.recon_culverts),
         )
 
     def get_event_log(self) -> List[Dict]:

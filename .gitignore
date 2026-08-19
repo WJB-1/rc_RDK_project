@@ -21,6 +21,7 @@ logs/
 
 # Models (too large)
 models/*.bin
+models/*.bin.bak_*
 models/*.pt
 models/*.onnx
 

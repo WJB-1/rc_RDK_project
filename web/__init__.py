@@ -84,7 +84,17 @@ class WebPushServer:
     """
 
     def __init__(self, host: str = "0.0.0.0", port: int = 5000,
-                 cmd_callback: Optional[Callable[[str, Dict], None]] = None):
+                 cmd_callback: Optional[Callable[[str, Dict], None]] = None,
+                 mode: str = "sim"):
+        """
+        Args:
+            host: 监听地址
+            port: 监听端口
+            cmd_callback: 真机控制指令回调（仅实机模式需要）
+            mode: 运行模式
+                - "sim"  (默认): 仿真/调试模式，注册 /simulator 页与 /api/sim/* 仿真接口
+                - "real": 实机模式，不注册任何仿真接口，只保留真机控制 (/api/cmd、/api/mode)
+        """
         try:
             from flask import Flask, render_template, render_template_string, jsonify, request
         except ImportError as e:
@@ -98,6 +108,7 @@ class WebPushServer:
         self.request = request
         self.host = host
         self.port = port
+        self.mode = mode            # "sim" | "real"
         self._cmd_callback = cmd_callback
 
         # --- 数据缓存 ---
@@ -127,6 +138,14 @@ class WebPushServer:
 
         self._cmd_log = []
         self._auto_mode = False
+
+        # 仿真状态
+        self._sim_running = False
+        self._sim_seed = 0
+        self._sim_speed = 1.0
+        self._sim_engine = None
+        self._sim_scene = None
+
         self._register_routes()
 
     # ------------------------------------------------------------------
@@ -183,9 +202,79 @@ class WebPushServer:
     def set_cmd_callback(self, callback: Callable[[str, Dict], None]):
         self._cmd_callback = callback
 
+    def set_sim_state(self, running=False, seed=0, speed=1.0, scene=None):
+        """更新仿真状态（供 SimEngine 回调）"""
+        with self._lock:
+            self._sim_running = running
+            self._sim_seed = seed
+            self._sim_speed = speed
+            self._sim_scene = scene
+
+    def set_sim_engine(self, engine):
+        """注入仿真引擎引用（用于 API 控制）"""
+        self._sim_engine = engine
+
     # ------------------------------------------------------------------
     # 内部
     # ------------------------------------------------------------------
+    def _on_sim_update(self, snapshot: dict):
+        """SimEngine 状态更新回调 — 将仿真数据同步到 WebPushServer"""
+        with self._lock:
+            self._agent_state = snapshot.get("agent_state", "")
+            pos = snapshot.get("pose", {})
+            self._position = (
+                pos.get("x_mm", 0),
+                pos.get("y_mm", 0),
+                pos.get("yaw_deg", 0),
+            )
+            self._current_node = snapshot.get("current_node", "")
+            self._target_node = snapshot.get("target_node", "")
+            self._planned_path = snapshot.get("planned_path", [])
+            self._visited_nodes = snapshot.get("visited_nodes", [])
+            # 回写发现/侦查状态到 _sim_scene，使 _pack_data() 里 scene.to_dict()
+            # 携带实时 discovered/recon/obstacle（否则前端统计与标签永远停留在初始空态）
+            if self._sim_scene is not None:
+                disc = snapshot.get("discovered_culverts")
+                recon = snapshot.get("recon_culverts")
+                obs = snapshot.get("discovered_obstacles")
+                if disc is not None:
+                    self._sim_scene.discovered_culverts = set(disc)
+                if recon is not None:
+                    self._sim_scene.recon_culverts = set(recon)
+                if obs is not None:
+                    self._sim_scene.discovered_obstacles = set(obs)
+            mp = snapshot.get("mission_progress", {})
+            self._progress = {
+                "visited": mp.get("visited", 0),
+                "total": mp.get("total", 12),
+            }
+            # 同步节点的 is_visited（打卡状态），否则详情页「打卡」字段永远停在初始 False
+            if self._sim_engine:
+                for name, node_dict in self._map_nodes.items():
+                    try:
+                        topo_node = self._sim_engine.topo.nodes.get(name)
+                        if topo_node:
+                            node_dict["is_visited"] = topo_node.is_visited
+                    except Exception:
+                        pass
+            # 更新边状态（blocked/culvert → map_data.edges 的 has_culvert/is_blocked 字段）
+            # 从 topo 同步
+            if self._sim_engine:
+                for i, edge_dict in enumerate(self._map_edges):
+                    try:
+                        topo_edge = None
+                        for e in self._sim_engine.topo.edges:
+                            if e.edge_id == edge_dict.get("edge_id"):
+                                topo_edge = e
+                                break
+                        if topo_edge:
+                            self._map_edges[i]["is_blocked"] = topo_edge.is_blocked
+                            self._map_edges[i]["has_culvert"] = topo_edge.has_culvert
+                            self._map_edges[i]["is_reconned"] = topo_edge.is_reconned
+                            self._map_edges[i]["visit_count"] = topo_edge.visit_count
+                    except Exception:
+                        pass
+
     def _pack_data(self) -> Dict:
         with self._lock:
             data = {
@@ -234,6 +323,17 @@ class WebPushServer:
             else:
                 data["seg_image"] = None
 
+            # 仿真状态
+            if self._sim_scene is not None:
+                data["sim"] = {
+                    "running": self._sim_running,
+                    "seed": self._sim_seed,
+                    "speed": self._sim_speed,
+                    "scene": self._sim_scene.to_dict() if self._sim_scene else None,
+                }
+            else:
+                data["sim"] = None
+
         return data
 
     def _register_routes(self):
@@ -246,13 +346,14 @@ class WebPushServer:
             # patrol_path 等由 set_base_map_data 注入
         })
 
-        @self.app.route("/simulator")
-        def simulator():
-            """独立模拟器页面"""
-            path = _TEMPLATES / "simulator.html"
-            if path.exists():
-                return path.read_text(encoding='utf-8')
-            return "<h1>simulator.html not found</h1>"
+        if self.mode == "sim":
+            @self.app.route("/simulator")
+            def simulator():
+                """独立模拟器页面（仅仿真/调试模式）"""
+                path = _TEMPLATES / "simulator.html"
+                if path.exists():
+                    return path.read_text(encoding='utf-8')
+                return "<h1>simulator.html not found</h1>"
 
         @self.app.route("/")
         def index():
@@ -262,8 +363,23 @@ class WebPushServer:
                 if self._base_map_data:
                     md.update({k: v for k, v in self._base_map_data.items()
                                if k not in ("all_paths", "all_dists")})
+            html = get_dashboard_html()
+            if self.mode == "real":
+                # 实机首页剔除「内置模拟器」面板：从 <!-- 模拟器控制 --> 到
+                # <!-- 手动控制面板 --> 之间的整块移除（含起始锚点行，不含结束锚点行）。
+                lines = html.splitlines()
+                out, skipping = [], False
+                for ln in lines:
+                    if "模拟器控制" in ln:
+                        skipping = True
+                        continue
+                    if skipping and "手动控制面板" in ln:
+                        skipping = False
+                    if not skipping:
+                        out.append(ln)
+                html = "\n".join(out)
             return self.render_template_string(
-                get_dashboard_html().replace(
+                html.replace(
                     '{% if map_data %}\n<script>\nwindow.__MAP_DATA__ = {{ map_data | safe }};\n</script>\n{% endif %}',
                     f'<script>\nwindow.__MAP_DATA__ = {_json.dumps(md)};\n</script>'
                 )
@@ -341,15 +457,17 @@ class WebPushServer:
                 blocked_edges = data.get("blocked_edges", [])
 
                 try:
+                    from navigation.domain.topology import get_topology
+                    from navigation.planning.map_oracle import MapOracle
+                    from navigation.planning.path_planner import PathPlanner
+                except ImportError:
                     from ..navigation.map_topology import get_topology
                     from ..navigation.map_oracle import MapOracle
                     from ..navigation.path_planner import PathPlanner
-                except ImportError:
-                    from navigation.map_topology import get_topology
-                    from navigation.map_oracle import MapOracle
-                    from navigation.path_planner import PathPlanner
 
                 topo = get_topology()
+                # 每次请求重置访问状态，避免上次请求污染全局单例
+                topo.reset_visit_status()
                 # 同步模拟器的 visited 状态到拓扑
                 for name in visited:
                     if name in topo.nodes:
@@ -365,12 +483,8 @@ class WebPushServer:
                 planner = PathPlanner(oracle, topo)
 
                 unvisited = [n for n in topo.nodes
-                             if topo.nodes[n].node_type == "mission"
+                             if topo.nodes[n].has_rfid
                              and not topo.nodes[n].is_visited]
-
-                if not unvisited:
-                    return self.jsonify({"edge_tasks": [], "total_distance_mm": 0,
-                                         "node_sequence": [], "finished": True})
 
                 result = planner.replan(current_node, unvisited, blocked_edges=set(blocked_edges))
                 tasks = []
@@ -389,7 +503,167 @@ class WebPushServer:
                     "edge_tasks": tasks,
                     "total_distance_mm": result.total_distance_mm,
                     "node_sequence": result.node_sequence,
-                    "finished": False,
+                    "finished": (not tasks),  # 已在 START 且全部完成
+                    "returning_to_start": result.returning_to_start,
+                })
+            except Exception as e:
+                return self.jsonify({"ok": False, "error": str(e)})
+
+        @self.app.route("/api/sim/start", methods=["POST"])
+        def api_sim_start():
+            """启动仿真"""
+            try:
+                data = self.request.get_json(force=True) or {}
+                seed = data.get("seed", 42)
+                speed_multiplier = data.get("speed_multiplier", 1.0)
+                visible_range_mm = data.get("visible_range_mm", 400)
+
+                try:
+                    from navigation.perception.simulation.scene_generator import generate_scene
+                    from navigation.domain.topology import get_topology
+                    from navigation.sim_engine import SimEngine
+                except ImportError:
+                    import sys as _sys, os as _os
+                    _parent = str(_WEB_DIR.parent)
+                    if _parent not in _sys.path:
+                        _sys.path.insert(0, _parent)
+                    from navigation.perception.simulation.scene_generator import generate_scene
+                    from navigation.domain.topology import get_topology
+                    from navigation.sim_engine import SimEngine
+
+                topo = get_topology()
+                scene = generate_scene(seed=seed)
+
+                engine = SimEngine(scene, topo, on_state_update=self._on_sim_update)
+                engine._vision._visible_range_mm = visible_range_mm
+                self.set_sim_engine(engine)
+                self.set_sim_state(running=True, seed=seed, speed=speed_multiplier, scene=scene)
+
+                engine.run_async(speed_multiplier=speed_multiplier)
+
+                return self.jsonify({
+                    "ok": True,
+                    "seed": seed,
+                    "scene": scene.to_dict(),
+                })
+            except Exception as e:
+                import traceback as _tb
+                return self.jsonify({"ok": False, "error": str(e), "traceback": str(_tb.format_exc())})
+
+        @self.app.route("/api/sim/scene/generate", methods=["POST"])
+        def api_sim_scene_generate():
+            """仅生成场景（不启动仿真），返回地面真值供前端可视化"""
+            try:
+                data = self.request.get_json(force=True) or {}
+                seed = data.get("seed", None)
+                if seed is None:
+                    import random as _rnd
+                    seed = _rnd.randint(0, 100000)
+
+                try:
+                    from navigation.perception.simulation.scene_generator import generate_scene
+                    from navigation.domain.topology import get_topology
+                except ImportError:
+                    import sys as _sys
+                    _parent = str(_WEB_DIR.parent)
+                    if _parent not in _sys.path:
+                        _sys.path.insert(0, _parent)
+                    from navigation.perception.simulation.scene_generator import generate_scene
+                    from navigation.domain.topology import get_topology
+
+                topo = get_topology()
+                scene = generate_scene(seed=seed)
+                self.set_sim_state(running=False, seed=seed, speed=1.0, scene=scene)
+
+                # 构建前端需要的边信息（哪些是障碍边、哪些是涵洞边）
+                edges_info = []
+                for edge in topo.edges:
+                    edges_info.append({
+                        "edge_id": edge.edge_id,
+                        "node_a": edge.node_a,
+                        "node_b": edge.node_b,
+                        "is_tunnel": edge.is_tunnel,
+                        "is_obstacle": edge.edge_id in scene.obstacle_edge_ids,
+                        "is_culvert": edge.edge_id in scene.culvert_edge_ids,
+                        "obstacle_offset": scene.obstacle_offsets.get(edge.edge_id),
+                        "culvert_offset": scene.culvert_offsets.get(edge.edge_id),
+                    })
+
+                return self.jsonify({
+                    "ok": True,
+                    "seed": seed,
+                    "scene": scene.to_dict(),
+                    "scene_edges": edges_info,
+                })
+            except Exception as e:
+                import traceback as _tb
+                return self.jsonify({"ok": False, "error": str(e), "traceback": str(_tb.format_exc())})
+
+        @self.app.route("/api/sim/stop", methods=["POST"])
+        def api_sim_stop():
+            """停止仿真"""
+            try:
+                if self._sim_engine:
+                    self._sim_engine.stop()
+                self.set_sim_state(running=False)
+                return self.jsonify({"ok": True})
+            except Exception as e:
+                return self.jsonify({"ok": False, "error": str(e)})
+
+        @self.app.route("/api/sim/pause", methods=["POST"])
+        def api_sim_pause():
+            """暂停仿真"""
+            try:
+                if self._sim_engine:
+                    self._sim_engine.pause()
+                with self._lock:
+                    self._sim_running = True
+                return self.jsonify({"ok": True})
+            except Exception as e:
+                return self.jsonify({"ok": False, "error": str(e)})
+
+        @self.app.route("/api/sim/resume", methods=["POST"])
+        def api_sim_resume():
+            """恢复仿真"""
+            try:
+                if self._sim_engine:
+                    self._sim_engine.resume()
+                return self.jsonify({"ok": True})
+            except Exception as e:
+                return self.jsonify({"ok": False, "error": str(e)})
+
+        @self.app.route("/api/sim/step", methods=["POST"])
+        def api_sim_step():
+            """单步执行仿真"""
+            try:
+                if self._sim_engine is None:
+                    return self.jsonify({"ok": False, "error": "仿真未启动"})
+                if not self._sim_engine.is_running():
+                    self._sim_engine.start()
+                result = self._sim_engine.step()
+                snapshot = self._sim_engine.get_state_snapshot()
+                summary = self._sim_engine.get_summary()
+                return self.jsonify({
+                    "ok": True,
+                    "has_next": result,
+                    "state": summary["state"],
+                    "snapshot": snapshot,
+                    "summary": summary,
+                })
+            except Exception as e:
+                return self.jsonify({"ok": False, "error": str(e)})
+
+        @self.app.route("/api/sim/scene", methods=["GET"])
+        def api_sim_scene():
+            """获取当前场景真值"""
+            try:
+                if self._sim_scene is None:
+                    return self.jsonify({"ok": False, "error": "无仿真场景"})
+                summary = self._sim_engine.get_summary() if self._sim_engine else None
+                return self.jsonify({
+                    "ok": True,
+                    "scene": self._sim_scene.to_dict(),
+                    "summary": summary,
                 })
             except Exception as e:
                 return self.jsonify({"ok": False, "error": str(e)})
@@ -409,6 +683,15 @@ class WebPushServer:
                         break
         except ImportError:
             pass
+
+        # 实机模式：阻断一切仿真接口（路由隔离，与 run_dashboard.py 的模拟面板彻底区分）
+        if self.mode == "real":
+            @self.app.before_request
+            def _block_sim_endpoints():
+                from flask import request as _req, abort as _abort
+                p = _req.path
+                if p == "/simulator" or p.startswith("/api/sim"):
+                    _abort(404)
 
     # ------------------------------------------------------------------
     # 启动

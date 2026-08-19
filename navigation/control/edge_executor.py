@@ -11,10 +11,10 @@ import time
 from dataclasses import dataclass, field
 from typing import Optional
 
-from .contracts import EdgeTask, EdgeTaskStatus, CrossroadEvent
-from .contracts import CulvertEvent, ObstacleEvent
+from ..contracts import EdgeTask, EdgeTaskStatus, CrossroadEvent
+from ..contracts import CulvertEvent, ObstacleEvent
 try:
-    from .. import config as _cfg
+    from ... import config as _cfg
 except ImportError:
     import config as _cfg
 
