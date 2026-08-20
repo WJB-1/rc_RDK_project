@@ -14,6 +14,7 @@ from .config import (
 )
 from .topology import MapNode, MapEdge, RaceTrackTopology, get_topology
 from .line_graph import LineGraph, edge_heading, turn_cost, has_safe_exit
+from .runtime_map import RuntimeMap, END_MIDDLE
 
 __all__ = [
     "NODE_COORDS", "NODE_TYPES", "NODE_HAS_RFID", "MISSION_NODES",
@@ -21,4 +22,5 @@ __all__ = [
     "STATE_MACHINE_CONFIG", "ACTION_TYPES", "EXPECTED_YAW",
     "MapNode", "MapEdge", "RaceTrackTopology", "get_topology",
     "LineGraph", "edge_heading", "turn_cost", "has_safe_exit",
+    "RuntimeMap", "END_MIDDLE",
 ]

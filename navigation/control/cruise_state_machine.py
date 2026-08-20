@@ -181,7 +181,7 @@ class CruiseStateMachine:
         except KeyError:
             return
         edge.has_culvert = True
-        agent.discovered_culverts.add(edge_id)
+        agent.runtime_map.mark_culvert_discovered(edge_id)
 
     def on_culvert_entrance_detected(self, event: CulvertEvent):
         """感知线程推送：检测到涵洞口（标签1）"""
@@ -211,7 +211,7 @@ class CruiseStateMachine:
 
         agent._snap_to_node(node_name)
         node.is_visited = True
-        agent.visited_nodes.add(node_name)
+        agent.runtime_map.mark_rfid_visited(node_name)
         agent._log_event("rfid", f"打卡: {node_name}")
 
         # 无论是否完成所有任务点，都进入 NODE_ARRIVAL
@@ -316,8 +316,7 @@ class CruiseStateMachine:
             return
         edge.has_culvert = True
         edge.is_reconned = True
-        agent.discovered_culverts.add(edge_id)
-        agent.recon_culverts.add(edge_id)
+        agent.runtime_map.mark_culvert_reconed(edge_id)
 
     def _handle_culvert_recon(self, now: float = None):
         """涵洞侦查：延迟标记 → 恢复执行"""
@@ -342,7 +341,7 @@ class CruiseStateMachine:
             try:
                 edge = agent.topo.get_edge(task.from_node, task.to_node)
                 edge.is_blocked = True
-                agent.blocked_edges.add(edge.edge_id)
+                agent.runtime_map.block_edge(edge.edge_id)
             except KeyError:
                 pass
         agent.executor.finish(EdgeTaskStatus.FAILED)

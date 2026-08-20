@@ -25,6 +25,7 @@ from .contracts import (
     ObstacleEvent, RfidEvent,
 )
 from .domain.topology import RaceTrackTopology, get_topology
+from .domain.runtime_map import RuntimeMap
 from .planning.map_oracle import MapOracle
 from .domain.config import NODE_COORDS
 from .planning.path_planner import PathPlanner
@@ -79,13 +80,11 @@ class AgentStateMachine:
         self.state = AgentState.IDLE
         self._state_enter_time: float = 0.0
 
+        # 运行时地图事实（收敛进 RuntimeMap，单一写入者）
+        self.runtime_map = RuntimeMap()
+
         # 目标与路径
         self.current_node: str = "START"
-        self.visited_nodes: set = set()
-        self.blocked_edges: set = set()
-        self.discovered_culverts: set = set()  # 已「发现」涵洞（视觉/路口侧视）
-        self.recon_culverts: set = set()       # 已「侦查」涵洞（真正驶过/完成 CULVERT_RECON）
-        self._culvert_targets: set = set()  # 需要侦查的涵洞目标边（仿真注入）
 
         # APPROACHING / TURNING
         self.approach_deadline: float = 0.0
@@ -104,6 +103,47 @@ class AgentStateMachine:
     # 依赖注入
     # ================================================================
 
+    # ---- 运行时状态 property 兼容（实际数据在 runtime_map，对外透明）----
+    @property
+    def visited_nodes(self) -> set:
+        return self.runtime_map.visited_nodes
+
+    @visited_nodes.setter
+    def visited_nodes(self, value: set):
+        self.runtime_map.visited_nodes = value
+
+    @property
+    def blocked_edges(self) -> set:
+        return self.runtime_map.blocked_edges
+
+    @blocked_edges.setter
+    def blocked_edges(self, value: set):
+        self.runtime_map.blocked_edges = value
+
+    @property
+    def discovered_culverts(self) -> set:
+        return self.runtime_map.discovered_culverts
+
+    @discovered_culverts.setter
+    def discovered_culverts(self, value: set):
+        self.runtime_map.discovered_culverts = value
+
+    @property
+    def recon_culverts(self) -> set:
+        return self.runtime_map.recon_culverts
+
+    @recon_culverts.setter
+    def recon_culverts(self, value: set):
+        self.runtime_map.recon_culverts = value
+
+    @property
+    def _culvert_targets(self) -> set:
+        return self.runtime_map.culvert_targets
+
+    @_culvert_targets.setter
+    def _culvert_targets(self, value: set):
+        self.runtime_map.culvert_targets = value
+
     def set_vision_tools(self, tools):
         """注入 vision 工具实例"""
         self._vision = tools
@@ -115,13 +155,11 @@ class AgentStateMachine:
         真实车不知道赛道有几个涵洞，此集合为空时不强制涵洞完成。
         仿真注入 8 个涵洞边后，结束条件要求全部侦查完。
         """
-        self._culvert_targets = set(edge_ids)
+        self.runtime_map.culvert_targets = set(edge_ids)
 
     def all_culverts_reconed(self) -> bool:
         """是否所有目标涵洞都已侦查完成（读 recon 集合，非 discovered）"""
-        if not self._culvert_targets:
-            return True  # 无目标时恒满足
-        return self._culvert_targets.issubset(self.recon_culverts)
+        return self.runtime_map.all_culverts_reconed()
 
     # ================================================================
     # 生命周期
