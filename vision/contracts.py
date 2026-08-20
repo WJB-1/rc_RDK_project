@@ -7,6 +7,7 @@ vision 模块是无状态的工具函数集合。
 
 from dataclasses import dataclass
 from typing import Optional, List, Protocol
+from enum import Enum
 
 
 # ================================================================
@@ -98,6 +99,30 @@ class CulvertReconResult:
     confidence: float = 0.0
     ocr_text: str = ""               # OCR 文本
     image_saved: bool = False         # 是否保存了截图
+
+
+class RelativeLane(Enum):
+    """识别目标在前方路口周围哪条相对支路（外层形态学推测，纯相对无地图知识）"""
+    BEFORE_JUNCTION = "before_junction"   # 路口前（当前边）
+    AFTER_JUNCTION  = "after_junction"    # 路口后（直行延展边）
+    LEFT_BRANCH     = "left_branch"       # 左支道
+    RIGHT_BRANCH    = "right_branch"      # 右支道
+
+
+@dataclass
+class VisualObservation:
+    """
+    外层视觉建模产出的事实（相对小车的观察结果，无地图知识）。
+
+    由外层（形态学推测哪条支路 + 差错控制）构造，由 navigation 感知适配层消费。
+    本类型定义在 vision 侧，保证外层不反向依赖 navigation。
+    """
+    object_type: str                 # "obstacle" / "culvert" / "wall"
+    relative_lane: RelativeLane
+    distance_mm: float = 0.0         # 相对距离（沿该支路方向）
+    lateral_mm: float = 0.0          # 横向偏移（相对车道中线）
+    confidence: float = 0.0          # 差错控制后的置信度
+    timestamp: float = 0.0
 
 
 # ================================================================

@@ -71,9 +71,19 @@ class RuntimeMap:
     # 单一写入入口（P0 收口的最终形态）
     # ================================================================
 
-    def mark_culvert_discovered(self, edge_id: int):
-        """标记某条边「发现涵洞」（未侦查）。仅写发现态，不写侦查态。"""
+    def mark_culvert_discovered(self, edge_id: int) -> bool:
+        """
+        标记某条边「发现涵洞」（未侦查）。仅写发现态，不写侦查态。
+
+        幂等 + 双向冲突保护：已标过返回 True（幂等忽略）；若已标障碍边返回
+        False（冲突：障碍边与涵洞边永久互斥）。返回 False 让上游知悉。
+        """
+        if edge_id in self._discovered_culverts:
+            return True                       # 幂等：已标过
+        if edge_id in self._blocked_edges:
+            return False                      # 冲突：障碍边禁标涵洞
         self._discovered_culverts.add(edge_id)
+        return True
 
     def mark_culvert_reconed(self, edge_id: int):
         """标记某条边「涵洞侦查完成」（recon ⊆ discovered）。"""
@@ -91,9 +101,19 @@ class RuntimeMap:
         """注入需侦查的涵洞目标集合（仿真装配用）。"""
         self._culvert_targets = set(targets)
 
-    def block_edge(self, edge_id: int):
-        """标记某条边被障碍封锁（硬约束）。"""
+    def block_edge(self, edge_id: int) -> bool:
+        """
+        标记某条边被障碍封锁（硬约束）。
+
+        幂等 + 双向冲突保护：已标过返回 True（幂等忽略）；若已标涵洞边返回
+        False（冲突：涵洞边禁标障碍，硬规则）。障碍永久不可清除。
+        """
+        if edge_id in self._blocked_edges:
+            return True                       # 幂等：已标过
+        if edge_id in self._discovered_culverts:
+            return False                      # 冲突：涵洞边禁标障碍（硬规则）
         self._blocked_edges.add(edge_id)
+        return True
 
     def mark_rfid_visited(self, node_name: str):
         """标记某 RFID 节点已打卡。"""
