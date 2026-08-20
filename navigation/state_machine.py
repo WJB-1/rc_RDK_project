@@ -233,20 +233,13 @@ class AgentStateMachine:
         返回 JunctionDecision（action + target_node + next_node + score）。
         """
         junction = self.current_node
-        # 兜底：若 current_node 尚未更新到路口，取刚完成边的终点
-        if self.executor.current_task:
-            junction = self.executor.current_task.to_node
 
         blocked = set(self.blocked_edges)   # 障碍封锁边（持久集）
 
-        # 死规则注入：巡逻期 ban 出发区 + 颈通道；收尾期放行
+        # 死规则注入：巡逻期 ban 出发区/颈通道（START→J_START.P_N）；收尾期放行
         if not self._mission_complete_for_return():
             try:
                 blocked.add(self.topo.get_edge("START", "J_START.P_N").edge_id)
-            except KeyError:
-                pass
-            try:
-                blocked.add(self.topo.get_edge("N6.P_E", "N7.P_W").edge_id)
             except KeyError:
                 pass
 
