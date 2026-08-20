@@ -103,46 +103,26 @@ class AgentStateMachine:
     # 依赖注入
     # ================================================================
 
-    # ---- 运行时状态 property 兼容（实际数据在 runtime_map，对外透明）----
+    # ---- 运行时状态只读视图（实际数据在 runtime_map，写走 runtime_map 方法）----
     @property
-    def visited_nodes(self) -> set:
+    def visited_nodes(self) -> frozenset:
         return self.runtime_map.visited_nodes
 
-    @visited_nodes.setter
-    def visited_nodes(self, value: set):
-        self.runtime_map.visited_nodes = value
-
     @property
-    def blocked_edges(self) -> set:
+    def blocked_edges(self) -> frozenset:
         return self.runtime_map.blocked_edges
 
-    @blocked_edges.setter
-    def blocked_edges(self, value: set):
-        self.runtime_map.blocked_edges = value
-
     @property
-    def discovered_culverts(self) -> set:
+    def discovered_culverts(self) -> frozenset:
         return self.runtime_map.discovered_culverts
 
-    @discovered_culverts.setter
-    def discovered_culverts(self, value: set):
-        self.runtime_map.discovered_culverts = value
-
     @property
-    def recon_culverts(self) -> set:
+    def recon_culverts(self) -> frozenset:
         return self.runtime_map.recon_culverts
 
-    @recon_culverts.setter
-    def recon_culverts(self, value: set):
-        self.runtime_map.recon_culverts = value
-
     @property
-    def _culvert_targets(self) -> set:
+    def _culvert_targets(self) -> frozenset:
         return self.runtime_map.culvert_targets
-
-    @_culvert_targets.setter
-    def _culvert_targets(self, value: set):
-        self.runtime_map.culvert_targets = value
 
     def set_vision_tools(self, tools):
         """注入 vision 工具实例"""
@@ -155,7 +135,7 @@ class AgentStateMachine:
         真实车不知道赛道有几个涵洞，此集合为空时不强制涵洞完成。
         仿真注入 8 个涵洞边后，结束条件要求全部侦查完。
         """
-        self.runtime_map.culvert_targets = set(edge_ids)
+        self.runtime_map.set_culvert_targets(edge_ids)
 
     def all_culverts_reconed(self) -> bool:
         """是否所有目标涵洞都已侦查完成（读 recon 集合，非 discovered）"""
