@@ -13,8 +13,8 @@ navigation/vision_checker.py — 视觉模拟器
 
 from typing import List, Union
 
-from ...contracts import CulvertEvent, ObstacleEvent, CulvertType
-from .scene import SimScene
+from ...contracts import CulvertEvent, ObstacleEvent, CulvertType, CrossroadEvent
+from ..scene.scene import SimScene
 from ...domain.topology import RaceTrackTopology
 
 
@@ -109,6 +109,25 @@ class VisionChecker:
                         confidence=1.0,
                     )
                 )
+
+        # 路口检测：车距前方路口端点 ≤ 500mm 时，产 CrossroadEvent（到路口的距离）
+        # 前方端点 = edge.other(from_node)（车正朝它开）
+        to_node = edge.other(from_node)
+        if from_node_b:
+            # 从 node_b 进，前方是 node_a，车距 node_a = pos_from_a
+            dist_to_junction = pos_from_a
+        else:
+            # 从 node_a 进，前方是 node_b，车距 node_b = edge_len - pos_from_a
+            dist_to_junction = edge.distance_mm - pos_from_a
+
+        if 0 <= dist_to_junction <= 500.0:
+            events.append(
+                CrossroadEvent(
+                    distance_mm=dist_to_junction,
+                    duty_cycle=1.0,
+                    confidence=1.0,
+                )
+            )
 
         return events
 

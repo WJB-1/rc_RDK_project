@@ -29,10 +29,10 @@ from .domain.topology import MapNode, MapEdge, RaceTrackTopology, get_topology
 from .planning.map_oracle import MapOracle
 from .domain.line_graph import LineGraph, edge_heading, turn_cost, has_safe_exit
 from .state_machine import AgentState, AgentStateMachine
-from .perception.simulation.scene import SimScene, SceneGenerationError
-from .perception.simulation.scene_generator import generate_scene
-from .perception.simulation.vision_checker import VisionChecker
-from .sim_engine import SimEngine
+from .simulation.scene.scene import SimScene, SceneGenerationError
+from .simulation.scene.scene_generator import generate_scene
+from .simulation.virtual_perception.vision_checker import VisionChecker
+from .simulation.sim_engine import SimEngine
 
 __all__ = [
     # 配置

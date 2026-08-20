@@ -519,7 +519,7 @@ class WebPushServer:
                 visible_range_mm = data.get("visible_range_mm", 400)
 
                 try:
-                    from navigation.perception.simulation.scene_generator import generate_scene
+                    from navigation.simulation.scene.scene_generator import generate_scene
                     from navigation.domain.topology import get_topology
                     from navigation.sim_engine import SimEngine
                 except ImportError:
@@ -527,7 +527,7 @@ class WebPushServer:
                     _parent = str(_WEB_DIR.parent)
                     if _parent not in _sys.path:
                         _sys.path.insert(0, _parent)
-                    from navigation.perception.simulation.scene_generator import generate_scene
+                    from navigation.simulation.scene.scene_generator import generate_scene
                     from navigation.domain.topology import get_topology
                     from navigation.sim_engine import SimEngine
 
@@ -561,14 +561,14 @@ class WebPushServer:
                     seed = _rnd.randint(0, 100000)
 
                 try:
-                    from navigation.perception.simulation.scene_generator import generate_scene
+                    from navigation.simulation.scene.scene_generator import generate_scene
                     from navigation.domain.topology import get_topology
                 except ImportError:
                     import sys as _sys
                     _parent = str(_WEB_DIR.parent)
                     if _parent not in _sys.path:
                         _sys.path.insert(0, _parent)
-                    from navigation.perception.simulation.scene_generator import generate_scene
+                    from navigation.simulation.scene.scene_generator import generate_scene
                     from navigation.domain.topology import get_topology
 
                 topo = get_topology()

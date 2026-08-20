@@ -31,6 +31,8 @@ from .domain.config import NODE_COORDS
 from .planning.path_planner import PathPlanner
 from .control.edge_executor import EdgeExecutor
 from .planning.deadend_recovery import DeadEndRecovery
+from .planning.junction_decider import JunctionDecider
+from .planning.task_queue_adapter import TaskQueueAdapter
 from .control.orchestrator import StateOrchestrator
 from .control.cruise_state_machine import CruiseStateMachine
 try:
@@ -56,10 +58,17 @@ class AgentStateMachine:
         self.planner = PathPlanner(self.oracle, self.topo)
         self.executor = EdgeExecutor()
 
+        # 时钟（统一计时）：默认真实墙钟；仿真注入 sim_time（见 set_clock）
+        self._clock = time.time
+
         # 门面硬拆：职责对象（做法 A）
         self._recovery = DeadEndRecovery(self)      # 死胡同倒车恢复
         self._orchestrator = StateOrchestrator(self)  # 宏观调度
         self._cruise = CruiseStateMachine(self)      # 边级状态转移
+
+        # 路口决策器（D-03）+ 任务队列适配
+        self._task_queue = TaskQueueAdapter(self)
+        self._junction_decider = JunctionDecider(self.oracle, self.topo)
 
         # vision 工具注入
         self._vision = None
@@ -102,6 +111,14 @@ class AgentStateMachine:
     # ================================================================
     # 依赖注入
     # ================================================================
+
+    def set_clock(self, clock):
+        """注入时钟（统一计时）。实机默认 time.time，仿真注入返回 sim_time 的 callable。"""
+        self._clock = clock
+
+    def _now(self) -> float:
+        """当前时间（统一走注入的时钟）。"""
+        return self._clock()
 
     # ---- 运行时状态只读视图（实际数据在 runtime_map，写走 runtime_map 方法）----
     @property
@@ -205,6 +222,46 @@ class AgentStateMachine:
         """取下一段边任务（委托给 StateOrchestrator）"""
         self._orchestrator.dequeue_next_edge()
 
+    def decide_at_junction(self):
+        """
+        路口决策（D-03）：在路口现场选目标 + 规划下一跳。
+
+        死规则（由控制层调度，非路径规划职责）：
+          - 巡逻期 ban 出发区桥（START→J_START.P_N）+ 颈通道（N6.P_E→N7.P_W）。
+          - 任务全部完成（RFID + 涵洞）时，解除 ban，允许回 START 触发 FINISHED。
+
+        返回 JunctionDecision（action + target_node + next_node + score）。
+        """
+        junction = self.current_node
+        # 兜底：若 current_node 尚未更新到路口，取刚完成边的终点
+        if self.executor.current_task:
+            junction = self.executor.current_task.to_node
+
+        blocked = set(self.blocked_edges)   # 障碍封锁边（持久集）
+
+        # 死规则注入：巡逻期 ban 出发区 + 颈通道；收尾期放行
+        if not self._mission_complete_for_return():
+            try:
+                blocked.add(self.topo.get_edge("START", "J_START.P_N").edge_id)
+            except KeyError:
+                pass
+            try:
+                blocked.add(self.topo.get_edge("N6.P_E", "N7.P_W").edge_id)
+            except KeyError:
+                pass
+
+        return self._junction_decider.decide(
+            junction=junction,
+            incoming=self.yaw_deg,
+            task_queue=self._task_queue,
+            blocked_edges=blocked,
+        )
+
+    def _mission_complete_for_return(self) -> bool:
+        """任务全部完成（应放行回 START 触发 FINISHED）。"""
+        return (self.topo.all_missions_completed()
+                and self.all_culverts_reconed())
+
     def _next_is_reverse(self) -> bool:
         """判断下一段是否反向段（委托给 StateOrchestrator）"""
         return self._orchestrator.next_is_reverse()
@@ -277,14 +334,14 @@ class AgentStateMachine:
     def _transition_to(self, new_state: AgentState, **kwargs):
         old = self.state
         self.state = new_state
-        self._state_enter_time = time.time()
+        self._state_enter_time = self._now()
         if new_state == AgentState.TURNING:
-            self.turn_start_time = time.time()
+            self.turn_start_time = self._now()
         self._log_event("transition", f"{old.name} → {new_state.name}")
 
     def _log_event(self, event_type: str, message: str):
         self.event_log.append({
-            "timestamp": time.time(),
+            "timestamp": self._now(),
             "type": event_type,
             "state": self.state.name,
             "message": message,

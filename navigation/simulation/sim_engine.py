@@ -1,28 +1,30 @@
 """
-navigation/sim_engine.py — 仿真引擎
+navigation/simulation/sim_engine.py — 仿真引擎（纯入口，编排调度）
 
-驱动真实 AgentStateMachine 的仿真主循环:
-1. 虚拟里程计注入（沿边方向移动）
-2. 视觉发现检查（VisionChecker）
-3. RFID 打卡模拟（到达 mission 节点）
-4. 转向完成模拟（TURNING 状态处理）
-5. 状态推送（WebPushServer）
+仿真主循环入口，串起各虚拟 I/O 替身：
+- virtual_robot_bridge 底盘运动（前进/倒车/转弯）
+- virtual_perception 视觉模拟
+- virtual_task_process 任务响应（后续）
+
+本入口不做具体业务，只编排 tick 顺序。虚拟下位机的真正调用方将来是
+控制层（债务 P-23），当前暂由本入口代调。
 """
 
-import math
 import time
 import threading
 from typing import Optional, Callable, Dict, Any, List
 
-from .contracts import (
-    AgentState, OdomUpdate, RfidEvent, TurnAction, TurnCommand,
-    CulvertEvent, ObstacleEvent, CulvertType, EdgeTask,
+from ..contracts import (
+    AgentState, TurnAction,
+    CulvertEvent, ObstacleEvent, CulvertType, CrossroadEvent, EdgeTask,
 )
-from .domain.topology import RaceTrackTopology, get_topology
-from .domain.config import NODE_COORDS
-from .state_machine import AgentStateMachine
-from .perception.simulation.scene import SimScene
-from .perception.simulation.vision_checker import VisionChecker
+from ..domain.topology import RaceTrackTopology, get_topology
+from ..domain.config import NODE_COORDS
+from ..state_machine import AgentStateMachine
+from .scene.scene import SimScene
+from .virtual_perception.vision_checker import VisionChecker
+from .virtual_robot_bridge.virtual_robot_bridge import VirtualRobotBridge
+from .virtual_task_process.task_process import VirtualTaskProcess
 
 
 class SimEngine:
@@ -62,9 +64,15 @@ class SimEngine:
             edge.visit_count = 0
 
         self._agent = AgentStateMachine(self._topo)
+        # 统一计时：状态机的时钟用仿真时间 sim_time（而非墙钟）
+        self._agent.set_clock(lambda: self._sim_time)
         # 注入涵洞目标，使结束条件要求 8 涵洞全部侦查完
         self._agent.set_culvert_targets(set(scene.culvert_edge_ids))
         self._vision = VisionChecker(self._topo, scene, visible_range_mm=400.0)
+        # 虚拟下位机（底盘运动替身，签名对齐 communication，暂由 sim_engine 代调）
+        self._robot_bridge = VirtualRobotBridge(self._agent, self._topo)
+        # 虚拟任务处理（RFID打卡 / 涵洞探索响应，暂由 sim_engine 代调）
+        self._task_process = VirtualTaskProcess(self._agent, self._topo, scene)
         self._on_state_update = on_state_update
 
         # 仿真控制
@@ -89,7 +97,6 @@ class SimEngine:
 
         # 统计
         self._sim_time: float = 0.0
-        self._total_distance: float = 0.0
         self._tick_count: int = 0
 
         # 后台线程
@@ -257,7 +264,7 @@ class SimEngine:
             "state": self._agent.state.name,
             "sim_time_s": round(self._sim_time, 2),
             "tick_count": self._tick_count,
-            "total_distance_mm": round(self._total_distance, 1),
+            "total_distance_mm": round(self._robot_bridge.total_distance, 1),
             "current_node": self._agent.current_node,
             "mission_progress": f"{mission_progress[0]}/{mission_progress[1]}",
             "blocked_edges": sorted(self._agent.blocked_edges),
@@ -309,7 +316,7 @@ class SimEngine:
             # 仿真信息
             "sim_time_s": round(self._sim_time, 2),
             "tick_count": self._tick_count,
-            "total_distance_mm": round(self._total_distance, 1),
+            "total_distance_mm": round(self._robot_bridge.total_distance, 1),
             "current_edge_id": self._current_edge_id,
             # 事件日志（最近 20 条）
             "event_log": [
@@ -339,11 +346,11 @@ class SimEngine:
         """
         self._tick_count += 1
 
-        # 1. 注入里程计：EDGE_EXECUTING（前进）+ BACKTRACK（倒车动画）
+        # 1. 底盘运动（虚拟下位机）：EDGE_EXECUTING(前进) + BACKTRACK(倒车)
         if self._agent.state == AgentState.EDGE_EXECUTING:
-            self._inject_odometry(speed_mms, dt)
+            self._robot_bridge.advance(speed_mms, dt)
         elif self._agent.state == AgentState.BACKTRACK:
-            self._inject_backtrack_odometry(speed_mms, dt)
+            self._robot_bridge.backtrack(speed_mms, dt)
 
         # 2. 同边视觉检查（仅在 EDGE_EXECUTING 状态）
         if self._agent.state == AgentState.EDGE_EXECUTING:
@@ -352,10 +359,10 @@ class SimEngine:
         # 3. Tick 状态机（主要逻辑推进）
         cmd = self._agent.tick()
 
-        # 4. 处理转弯指令（TURNING → 自动完成转弯）
+        # 4. 处理转弯指令（TURNING → 虚拟下位机理想化转弯）
         if cmd is not None and cmd.action != TurnAction.STOP:
             if self._agent.state == AgentState.TURNING:
-                self._handle_turn_command(cmd)
+                self._robot_bridge.execute_turn(cmd)
                 self._agent.on_turn_done()
 
         # 5. 处理节点到达
@@ -372,114 +379,6 @@ class SimEngine:
         if self._agent.state != self._prev_state:
             self._prev_state = self._agent.state
 
-    def _inject_odometry(self, speed_mms: float, dt: float):
-        """
-        注入虚拟里程计数据，并沿当前边做位置插值（替代 yaw 积分，杜绝漂移）。
-
-        关键：不再靠 yaw 旋转累积位置（那样会有累积误差导致穿模/飘出地图），
-        而是直接用"当前边的 from_node→to_node"做线性插值定位小车。
-        """
-        step_mm = speed_mms * dt
-        self._total_distance += step_mm
-
-        # 创建里程计更新（累计里程计仍用 dy_mm，供 executor 进度跟踪）
-        odom = OdomUpdate(
-            dx_mm=0.0,
-            dy_mm=step_mm,
-            dyaw_deg=0.0,
-            timestamp=self._sim_time,
-        )
-        self._agent.on_odom_update(odom)
-
-        # 沿边插值定位：用当前边任务计算精确位置（不漂移）
-        self._interpolate_position_along_edge()
-
-    def _inject_backtrack_odometry(self, speed_mms: float, dt: float):
-        """
-        BACKTRACK 倒车动画：车沿当前边反向移动（车头方向不变，指向原 to_node）。
-
-        与 _inject_odometry 的区别：
-        - 里程为负（dy_mm 为负），让 _backtrack_distance 累积、位置后退。
-        - 位置沿边反向插值：从 to_node 往 from_node 退，车头 yaw 保持朝 to_node。
-        """
-        step_mm = speed_mms * dt
-        self._total_distance += step_mm
-
-        odom = OdomUpdate(
-            dx_mm=0.0,
-            dy_mm=-step_mm,   # 负向 = 倒车
-            dyaw_deg=0.0,
-            timestamp=self._sim_time,
-        )
-        self._agent.on_odom_update(odom)
-        self._interpolate_position_backwards()
-
-    def _interpolate_position_along_edge(self):
-        """
-        沿当前边做线性插值，覆盖 agent 位置为边上的精确点。
-        消除 yaw 积分累积误差，确保小车始终在赛道边线上，不穿模、不飘出地图。
-        """
-        task = self._agent.executor.current_task
-        if task is None:
-            return
-        try:
-            a = self._topo.get_node(task.from_node)
-            b = self._topo.get_node(task.to_node)
-        except KeyError:
-            return
-        # 已走距离（相对该边起点）。
-        # 关键：必须与 EdgeExecutor 用同一个「边起点里程」基准 —— executor._start_odom
-        # 是在 _dequeue_next_edge 里、里程注入之前设置的，基准正确。
-        # 若用独立的 _edge_start_odom（在里程注入之后才更新）会错位一个步长，
-        # 导致每条边结束前车被提前拉回起点，产生「向后瞬移一帧」。
-        car_pos = self._agent._cumulative_odom - self._agent.executor._start_odom
-        edge_len = task.distance_mm
-        if edge_len <= 0:
-            return
-        ratio = max(0.0, min(1.0, car_pos / edge_len))
-        self._agent.x_mm = a.x_mm + (b.x_mm - a.x_mm) * ratio
-        self._agent.y_mm = a.y_mm + (b.y_mm - a.y_mm) * ratio
-        # yaw 对齐边方向
-        dx = b.x_mm - a.x_mm
-        dy = b.y_mm - a.y_mm
-        self._agent.yaw_deg = math.degrees(math.atan2(dx, dy))
-        while self._agent.yaw_deg > 180:
-            self._agent.yaw_deg -= 360
-        while self._agent.yaw_deg < -180:
-            self._agent.yaw_deg += 360
-
-    def _interpolate_position_backwards(self):
-        """
-        倒车动画：车沿当前边反向插值，位置从 to_node 往 from_node 退，
-        车头 yaw 保持朝向 to_node（倒车不转向）。
-
-        用 _backtrack_distance（已倒回的距离）计算位置：
-        已倒回比例 = _backtrack_distance / edge_len；位置 = to_node - 方向 * 已倒回。
-        """
-        task = self._agent.executor.current_task
-        if task is None:
-            return
-        try:
-            a = self._topo.get_node(task.from_node)   # 安全节点（起点）
-            b = self._topo.get_node(task.to_node)     # 障碍/支路末端
-        except KeyError:
-            return
-        edge_len = task.distance_mm
-        if edge_len <= 0:
-            return
-        # 已倒回比例：0=在 to_node（末端），1=回到 from_node（安全节点）
-        ratio = max(0.0, min(1.0, self._agent._backtrack_distance / edge_len))
-        # 从 to_node 往 from_node 退
-        self._agent.x_mm = b.x_mm + (a.x_mm - b.x_mm) * ratio
-        self._agent.y_mm = b.y_mm + (a.y_mm - b.y_mm) * ratio
-        # 车头保持朝 to_node（原前进方向），倒车不改变朝向
-        dx = b.x_mm - a.x_mm
-        dy = b.y_mm - a.y_mm
-        self._agent.yaw_deg = math.degrees(math.atan2(dx, dy))
-        while self._agent.yaw_deg > 180:
-            self._agent.yaw_deg -= 360
-        while self._agent.yaw_deg < -180:
-            self._agent.yaw_deg += 360
 
     def _check_vision_on_edge(self):
         """
@@ -516,6 +415,8 @@ class SimEngine:
                     self._agent.on_culvert_entrance_detected(event)
                 else:
                     self._agent.on_culvert_detected(event)
+            elif isinstance(event, CrossroadEvent):
+                self._agent.on_crossroad_detected(event)
 
         # 探索检测：小车经过已发现的涵洞位置 → 标记为"已探索"
         self._check_culvert_recon(task, car_pos_mm)
@@ -567,18 +468,6 @@ class SimEngine:
                 f"涵洞已侦查 (edge={eid}, pos={car_pos_mm:.0f}mm)"
             )
 
-    def _handle_turn_command(self, cmd: TurnCommand):
-        """
-        处理转弯指令：更新 agent 的航向角。
-        仿真中转弯是瞬时的（实际硬件上由下位机执行）。
-        """
-        self._agent.yaw_deg = cmd.expected_yaw
-        self._agent.odom_yaw = cmd.expected_yaw
-        self._agent._log_event(
-            "turn_execute",
-            f"转向 {cmd.action.value} → yaw={cmd.expected_yaw:.1f}",
-        )
-
     def _handle_node_arrival(self):
         """
         处理节点到达事件：
@@ -599,16 +488,8 @@ class SimEngine:
             self._agent._snap_to_node(arrival_node)
             self._agent.current_node = arrival_node
 
-        # 1. RFID 打卡模拟
-        if arrival_node in self._topo.nodes:
-            topo_node = self._topo.get_node(arrival_node)
-            if topo_node.has_rfid:
-                rfid_event = RfidEvent(
-                    uid=arrival_node,
-                    node_name=arrival_node,
-                    timestamp=self._sim_time,
-                )
-                self._agent.on_rfid_scanned(rfid_event)
+        # 1. RFID 打卡响应（虚拟任务处理）
+        self._task_process.respond_rfid(arrival_node, self._sim_time)
 
         # 2. 路口侧视检查：检查相邻边上的涵洞
         try:
@@ -756,7 +637,7 @@ class SimEngine:
     @property
     def total_distance(self) -> float:
         """累计行驶距离 (mm)"""
-        return self._total_distance
+        return self._robot_bridge.total_distance
 
     @property
     def current_edge_id(self) -> int:

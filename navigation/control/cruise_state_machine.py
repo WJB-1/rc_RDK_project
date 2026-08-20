@@ -52,7 +52,7 @@ class CruiseStateMachine:
 
     def tick(self) -> Optional[TurnCommand]:
         agent = self._agent
-        now = time.time()
+        now = agent._now()
 
         if agent.state == AgentState.IDLE:
             return None
@@ -149,7 +149,7 @@ class CruiseStateMachine:
                 return
 
             agent._transition_to(AgentState.APPROACHING)
-            agent.approach_deadline = time.time() + agent.approach_duration
+            agent.approach_deadline = agent._now() + agent.approach_duration
             agent._log_event("crossroad", f"dist={dist:.0f} → APPROACHING")
 
     def on_turn_done(self):
@@ -250,23 +250,28 @@ class CruiseStateMachine:
 
     def _on_approach_done(self) -> TurnCommand:
         agent = self._agent
-        agent._transition_to(AgentState.TURNING)
-        agent.turn_start_time = time.time()
 
-        # 从 planner 缓存取下一任务来判转向
-        next_task = agent.planner.peek_task()
-        if next_task is None:
+        # 路口决策（D-03）：现场选目标 + 规划下一跳
+        decision = agent.decide_at_junction()
+        next_node = decision.next_node
+
+        agent._transition_to(AgentState.TURNING)
+        agent.turn_start_time = agent._now()
+
+        if not next_node or decision.action == "stop":
             return TurnCommand(action=TurnAction.STOP,
                                target_node=agent.current_node,
                                expected_yaw=agent.yaw_deg)
 
-        expected_yaw = agent._calc_expected_yaw(
-            agent.current_node, next_task.to_node
-        )
+        expected_yaw = agent._calc_expected_yaw(agent.current_node, next_node)
+        # 仍经 _determine_turn 兜底（防 180° 掉头），不直接用 decision.action
         action = agent._determine_turn(agent.yaw_deg, expected_yaw)
 
-        agent._log_event("turn", f"{action.value} → {next_task.to_node}")
-        return TurnCommand(action=action, target_node=next_task.to_node,
+        agent._log_event(
+            "turn", f"{action.value} → {next_node} "
+                    f"(target={decision.target_node}, score={decision.score:.1f})"
+        )
+        return TurnCommand(action=action, target_node=next_node,
                            expected_yaw=expected_yaw)
 
     def _on_node_arrival(self):
@@ -322,7 +327,7 @@ class CruiseStateMachine:
         """涵洞侦查：延迟标记 → 恢复执行"""
         agent = self._agent
         if now is None:
-            now = time.time()
+            now = agent._now()
         recon_duration = _cfg.get("state_machine.culvert_recon_duration_s", 2.0)
         if now - agent._state_enter_time < recon_duration:
             return  # 模拟侦查耗时
