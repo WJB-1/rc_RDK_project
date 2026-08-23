@@ -361,6 +361,19 @@ class AgentStateMachine:
     def get_state_name(self) -> str:
         return self.state.name
 
+    def current_state(self) -> AgentState:
+        """
+        当前状态的只读投影。
+
+        语义：只「告诉外部现在是什么状态」，单向、只读，**永远不得**成为任何
+        内部逻辑的分支依据（禁止内部 `if current_state() == X` 的反读）。
+
+        Task 28 第 2 步：暂返回旧的 `self.state`，与本步 `agent.state` 等价；
+        第 3 步换任务队列后，此方法改为从队列队首 `Task.kind` 单向投影
+        （`self.state` 退化为队列→状态的只读投影）。
+        """
+        return self.state
+
     def get_position(self) -> Tuple[float, float, float]:
         return self.x_mm, self.y_mm, self.yaw_deg
 
