@@ -1,19 +1,29 @@
 """
-control/task_queue_controller.py — 任务队列控制器（纯函数摸底版）
+control/task_queue_controller.py — 任务队列控制器（纯函数 边级闭环版）
 
-这是「任务队列驱动、废除状态机」架构的第一步摸底：
-把状态机背后的「语义」显式化为一个纯函数队列控制器，验证——
-「倒车动画」「障碍中断」「涵洞注入」「终点判断」这四类状态语义，
-能否脱离 agent 的物理字段（yaw_deg/_backtrack_distance）纯粹表达。
+这是「任务队列驱动、废除状态机」架构的核心，显式化状态机背后的语义为
+一个纯函数队列控制器。四类边级任务都能 step + trigger 推进：
 
-纯函数式：同样的 (queue, cursor, 事件) 输入，产出同样结果。无副作用。
-不 import agent / sim_engine。可独立单测。
+  drive        —— 里程推进（executor.update 的 progress_ratio/timeout/stalled）
+  turn         —— 产出 TurnCommand，靠 on_turn_done 回执推进
+  reverse      —— 里程回退（单条 reverse 的 distance_reached，非跨 tick 累积）
+  culvert_probe —— 走单点写入，靠 on_data_acked 回执推进
 
-关键试验点：倒车用 Task(kind="reverse", trigger="distance_reached", params={distance_mm})
-表达，而非跨 tick 累积 _backtrack_distance。本文件要证明这样是否可行。
+纯函数式：同样的 (queue, cursor, 里程/进度, 事件) 输入，产出同样结果。无副作用。
+不 import agent / sim_engine / runtime_map。可独立单测。
+
+关键设计（为何里程/进度作为显式参数传入）：
+  drive/reverse 的推进依赖「当前里程」，而纯函数控制器不能持有 agent 引用。
+  因此 step() 从外部接收进度快照（EdgeProgress 的鸭子类型），驱动所需的
+  里程随参数流入而非由控制器持有，保持纯函数、可独立单测。
 """
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
+
+try:
+    from ..contracts import TurnAction, TurnCommand
+except ImportError:  # 独立单测直接运行时无相对包上下文
+    from navigation.contracts import TurnAction, TurnCommand
 
 
 @dataclass
@@ -28,10 +38,10 @@ class TaskQueueController:
     """
     纯函数式队列控制器。
 
-    输入：队列 + 游标 + 一个事件
+    输入：队列 + 游标 + 里程/进度快照（step）+ 事件（trigger）
     输出：修改自身 queue/cursor（但所有逻辑是确定性的纯变换）
 
-    摸底目标：验证四类状态语义能否纯表达。不碰 agent 物理字段。
+    闭环目标：四类边级任务都能 step + trigger 推进，脱离 agent 物理字段。
     """
 
     def __init__(self):
@@ -114,3 +124,125 @@ class TaskQueueController:
         """作废当前队列 + 替换为新规划（重规划语义）。"""
         self.queue = list(new_tasks)
         self.cursor = 0
+
+    # ================================================================
+    # 边级闭环：step + trigger
+    # ================================================================
+
+    def step(self, progress, now: Optional[float] = None) -> Optional[TurnCommand]:
+        """
+        每 tick 驱动队首任务，按 kind 分派推进。
+
+        里程/进度作为显式参数传入（progress 为 EdgeProgress 的鸭子类型），
+        控制器不持有 agent 引用，保持纯函数。
+
+        :param progress: EdgeProgress 快照（drive 用 progress_ratio/timeout/is_stalled；
+                         reverse 用 distance_mm 作为回退距离）
+        :return: turn 类任务产出 TurnCommand；其余返回 None。
+        """
+        t = self.peek()
+        if t is None or self.is_exhausted():
+            return None
+
+        if t.kind == "drive":
+            self._step_drive(t, progress)
+            return None
+
+        if t.kind == "turn":
+            # turn 的推进不靠 tick，靠 on_turn_done 回执；但每 tick 都产出指令
+            # 供下位机执行（幂等，直到回执推进游标）。
+            return self.produce_turn_command()
+
+        if t.kind == "reverse":
+            self._step_reverse(t, progress)
+            return None
+
+        # culvert_probe / checkpoint 不靠 tick 推进，靠 on_data_acked
+        return None
+
+    def produce_turn_command(self) -> Optional[TurnCommand]:
+        """
+        turn 类任务 → 产出 TurnCommand(action, target_node, expected_yaw)。
+
+        纯函数式 _determine_turn：由当前 yaw（params.current_yaw）与 target 期望
+        yaw（params.expected_yaw）比较得到 TurnAction，防御 180° 掉头 → STOP。
+        """
+        t = self.peek()
+        if t is None or t.kind != "turn":
+            return None
+
+        target_node = t.params.get("target_node", "")
+        expected_yaw = float(t.params.get("expected_yaw", 0.0))
+        current_yaw = float(t.params.get("current_yaw", 0.0))
+
+        action = self._determine_turn(current_yaw, expected_yaw)
+        return TurnCommand(action=action, target_node=target_node,
+                           expected_yaw=expected_yaw)
+
+    @staticmethod
+    def _determine_turn(current_yaw: float, expected_yaw: float) -> TurnAction:
+        """
+        与旧内核 _determine_turn 语义等价（阈值仍走缺省，可被上层覆写）。
+        防御 180° 掉头：abs(diff) > 160° → STOP，绝不伪造一个方向不符的转向。
+        """
+        import config as _cfg
+
+        diff = expected_yaw - current_yaw
+        while diff > 180:
+            diff -= 360
+        while diff < -180:
+            diff += 360
+        if abs(diff) < _cfg.get("state_machine.turn_straight_deg", 15.0):
+            return TurnAction.STRAIGHT
+        if abs(diff) > _cfg.get("state_machine.turn_uturn_deg", 160.0):
+            return TurnAction.STOP
+        return TurnAction.TURN_LEFT if diff > 0 else TurnAction.TURN_RIGHT
+
+    def on_turn_done(self):
+        """
+        turn 回执：下位机确认转弯完成 → 推进游标。
+        与旧 _on_approach_done + on_turn_done + _on_node_arrival 的「转向结束」等价。
+        """
+        t = self.peek()
+        if t is not None and t.kind == "turn":
+            self.advance()
+
+    def on_data_acked(self):
+        """
+        culvert_probe / checkpoint 回执：单点写入完成（data_acked）→ 推进。
+        与旧 _handle_culvert_recon 的「侦查完成」等价，触发推进而非切状态。
+        """
+        t = self.peek()
+        if t is not None and t.trigger == "data_acked":
+            self.advance()
+
+    # ----------------------------------------------------------------
+    # 各 kind 的 tick 推进
+    # ----------------------------------------------------------------
+
+    def _step_drive(self, task: Task, progress) -> None:
+        """
+        drive 里程推进：跟进旧 _tick_edge_executing。
+
+        达到检测窗口比例 / 超时 / 完成且停滞 → 推进（等价于旧「强行到达」）。
+        """
+        import config as _cfg
+
+        ratio = getattr(progress, "progress_ratio", 1.0)
+        timeout = getattr(progress, "timeout", False)
+        is_stalled = getattr(progress, "is_stalled", False)
+
+        window_ratio = _cfg.get("state_machine.crossroad_detection_window_ratio", 0.95)
+        if ratio >= window_ratio or timeout or (ratio >= 1.0 and is_stalled):
+            self.advance()
+
+    def _step_reverse(self, task: Task, progress) -> None:
+        """
+        reverse 里程回退：用 distance_reached 触发（非跨 tick 累积）。
+
+        progress.distance_mm 是「已回退距离」，达到 params.distance_mm → 推进。
+        """
+        required = task.params.get("distance_mm", 0.0)
+        reached = getattr(progress, "distance_mm", 0.0)
+        if reached >= required:
+            self.advance()
