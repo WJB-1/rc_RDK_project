@@ -346,22 +346,25 @@ class SimEngine:
         """
         self._tick_count += 1
 
-        # 1. 底盘运动（虚拟下位机）：EDGE_EXECUTING(前进) + BACKTRACK(倒车)
-        if self._agent.state == AgentState.EDGE_EXECUTING:
+        # 0. 队首类型（Task 28 第3步：5 处推进分支改读队首 kind）
+        _head_kind = self._agent.current_head_kind()
+
+        # 1. 底盘运动（虚拟下位机）：drive(前进) + reverse(倒车)
+        if _head_kind == "drive":
             self._robot_bridge.advance(speed_mms, dt)
-        elif self._agent.state == AgentState.BACKTRACK:
+        elif _head_kind == "reverse":
             self._robot_bridge.backtrack(speed_mms, dt)
 
-        # 2. 同边视觉检查（仅在 EDGE_EXECUTING 状态）
-        if self._agent.state == AgentState.EDGE_EXECUTING:
+        # 2. 同边视觉检查（仅 drive 阶段）
+        if _head_kind == "drive":
             self._check_vision_on_edge()
 
         # 3. Tick 状态机（主要逻辑推进）
         cmd = self._agent.tick()
 
-        # 4. 处理转弯指令（TURNING → 虚拟下位机理想化转弯）
+        # 4. 处理转弯指令（turn → 虚拟下位机理想化转弯）
         if cmd is not None and cmd.action != TurnAction.STOP:
-            if self._agent.state == AgentState.TURNING:
+            if self._agent.current_head_kind() == "turn":
                 self._robot_bridge.execute_turn(cmd)
                 self._agent.on_turn_done()
 

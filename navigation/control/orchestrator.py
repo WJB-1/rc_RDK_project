@@ -75,9 +75,10 @@ class StateOrchestrator:
     def dequeue_next_edge(self):
         agent = self._agent
         if self.next_is_reverse():
+            # R7：反向段 → 入队 reverse（BACKTRACK），不调 executor.start 保留
+            # executor.current_task（供 DeadEndRecovery 读 from_node/distance_mm）。
             agent._log_event("reverse_segment", "下一段为反向段 → 进入倒车中断 BACKTRACK")
-            agent._backtrack_distance = 0.0
-            agent._transition_to(AgentState.BACKTRACK)
+            agent._enqueue_reverse()
             return
 
         task = agent.planner.next_task()
@@ -96,10 +97,7 @@ class StateOrchestrator:
                 agent._transition_to(AgentState.GLOBAL_PLANNING)
             return
 
-        agent.executor.start(task, agent._cumulative_odom)
-        agent._transition_to(AgentState.EDGE_EXECUTING)
-        agent._log_event("edge_start",
-                         f"{task.from_node}→{task.to_node} {task.distance_mm:.0f}mm")
+        agent._enqueue_drive(task)
 
     def next_is_reverse(self) -> bool:
         """判断下一段边是否相对车头 180° 反向（需倒车而非掉头）。START 例外。"""

@@ -67,4 +67,5 @@ class DeadEndRecovery:
                 )
                 agent.yaw_deg = edge_heading(agent.topo, task.to_node, task.from_node)
                 agent.odom_yaw = agent.yaw_deg
-        agent._transition_to(AgentState.GLOBAL_PLANNING)
+        # 倒车到位：清空 reverse 队列 + 投影 GLOBAL_PLANNING（下一步重规划）
+        agent._on_reverse_done()
