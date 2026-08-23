@@ -25,7 +25,7 @@ class DeadEndRecovery:
     死胡同倒车恢复 —— 只负责 BACKTRACK 状态的 tick 逻辑。
 
     agent：AgentStateMachine 门面引用，用于访问共享字段（executor / yaw /
-    blocked_edges / topo）与调用 _snap_to_node / _transition_to / _log_event。
+    blocked_edges / topo）与调用 _snap_to_node / _log_event。
     """
 
     def __init__(self, agent: Any):

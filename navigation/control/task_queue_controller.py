@@ -112,6 +112,10 @@ class TaskQueueController:
         """
         到达终点语义：若节点是打卡点，注入打卡任务；否则推进。
         队列走空时返回「待规划」而非「完成」。
+
+        死代码（Task 28 第 4 步收尸标注）：门面换核后从未调用本方法，checkpoint
+        任务不靠此路径注入。待 D-16「涵洞发起/验收」落实后启用。勿引入新调用方
+        扩大范围。
         """
         if has_checkpoint:
             self.queue.append(
@@ -211,6 +215,9 @@ class TaskQueueController:
         """
         culvert_probe / checkpoint 回执：单点写入完成（data_acked）→ 推进。
         与旧 _handle_culvert_recon 的「侦查完成」等价，触发推进而非切状态。
+
+        死代码标注（Task 28 第 4 步收尸）：checkpoint 任务的推进路径当前未被门面
+        使用（门面换核后只有 culvert_probe 走此方法），待 D-16 落实后启用 checkpoint。
         """
         t = self.peek()
         if t is not None and t.trigger == "data_acked":

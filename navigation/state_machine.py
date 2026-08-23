@@ -166,7 +166,7 @@ class AgentStateMachine:
             return
         self._snap_to_node("START")
         self._log_event("startup", "Agent 启动")
-        self._transition_to(AgentState.GLOBAL_PLANNING)
+        self._project_state(AgentState.GLOBAL_PLANNING)
         self._started = True
         # immediate: execute planning + dequeue first edge
         self._do_global_planning()
@@ -244,7 +244,7 @@ class AgentStateMachine:
         # else: 完成且停滞 —— 旧代码无日志
         # R3: finish(DONE)
         self.executor.finish(EdgeTaskStatus.DONE)
-        self._transition_to(AgentState.NODE_ARRIVAL)
+        self._project_state(AgentState.NODE_ARRIVAL)
 
     def _tick_turn(self, now: float, head: Task) -> Optional[TurnCommand]:
         """turn 队首：刷新 current_yaw（R8），produce 指令，超时兜底。"""
@@ -255,7 +255,7 @@ class AgentStateMachine:
         if now - self.turn_start_time > self.turn_timeout:
             self._log_event("turn_timeout", "转弯超时")
             self.queue_controller.advance()
-            self._transition_to(AgentState.NODE_ARRIVAL)
+            self._project_state(AgentState.NODE_ARRIVAL)
             return None
 
         # stop 分支（R5）：decision 无下一跳 → 直接返回 STOP（不 produce 计算）
@@ -279,14 +279,14 @@ class AgentStateMachine:
     # ================================================================
 
     def _enqueue_drive(self, task):
-        """入队一条 drive 边任务（等价旧 executor.start + _transition_to(EDGE_EXECUTING)）。"""
+        """入队一条 drive 边任务（等价旧 executor.start + _project_state(EDGE_EXECUTING)）。"""
         # R4：喂 executor.start 基准（_start_odom = 当前累计里程）
         self.executor.start(task, self._cumulative_odom)
         self.queue_controller.invalidate_and_replace(
             [Task(kind="drive", trigger="distance_reached",
                   params={"edge_id": task.edge_id})]
         )
-        self._transition_to(AgentState.EDGE_EXECUTING)
+        self._project_state(AgentState.EDGE_EXECUTING)
         self._log_event("edge_start",
                         f"{task.from_node}→{task.to_node} {task.distance_mm:.0f}mm")
 
@@ -295,11 +295,11 @@ class AgentStateMachine:
         self.queue_controller.invalidate_and_replace(
             [Task(kind="drive", trigger="distance_reached", params={})]
         )
-        self._transition_to(AgentState.EDGE_EXECUTING)
+        self._project_state(AgentState.EDGE_EXECUTING)
 
     def _enqueue_reverse(self, obstacle: bool = False):
         """
-        入队 reverse（倒车中断）。等价旧 _transition_to(BACKTRACK)。
+        入队 reverse（倒车中断）。等价旧 _project_state(BACKTRACK)。
 
         R7：不调 executor.start（保留 executor.current_task 的 from_node/distance_mm
         语义，供 DeadEndRecovery.tick_backtrack 读回退阈值）。
@@ -308,15 +308,15 @@ class AgentStateMachine:
             [Task(kind="reverse", trigger="distance_reached", params={})]
         )
         self._backtrack_distance = 0.0
-        self._transition_to(AgentState.BACKTRACK)
+        self._project_state(AgentState.BACKTRACK)
 
     def _enqueue_culvert_probe(self):
         """入队 culvert_probe（等价旧 on_culvert_entrance_detected → CULVERT_RECON）。"""
         self.queue_controller.invalidate_and_replace(
             [Task(kind="culvert_probe", trigger="data_acked", params={})]
         )
-        # R1：_state_enter_time 由 _transition_to(CULVERT_RECON) 写入，供 2s 延迟
-        self._transition_to(AgentState.CULVERT_RECON)
+        # R1：_state_enter_time 由 _project_state(CULVERT_RECON) 写入，供 2s 延迟
+        self._project_state(AgentState.CULVERT_RECON)
 
     def _enqueue_turn(self, next_node: str, expected_yaw: float,
                       target_node: str, score: float, stop: bool = False):
@@ -341,7 +341,7 @@ class AgentStateMachine:
                           "current_yaw": current_yaw,
                           "stop": stop})]
         )
-        self._transition_to(AgentState.TURNING)
+        self._project_state(AgentState.TURNING)
         self.turn_start_time = self._now()
 
     # ================================================================
@@ -420,7 +420,7 @@ class AgentStateMachine:
         if head is not None and head.kind == "turn":
             self._log_event("turn_done", "下位机确认转弯完成")
             self.queue_controller.advance()
-            self._transition_to(AgentState.NODE_ARRIVAL)
+            self._project_state(AgentState.NODE_ARRIVAL)
 
     def on_culvert_detected(self, event: CulvertEvent):
         """感知线程推送：检测到涵洞墙壁 → 仅「发现」，不「侦查」。"""
@@ -474,7 +474,7 @@ class AgentStateMachine:
         RFID 打卡。R6 四伴生副作用 + D6 打卡完直接推进。
 
         副作用：rfid_error 日志 / has_rfid 静默 return / _snap_to_node 6 字段 /
-        「打卡记完即推进」（等价旧 _transition_to(NODE_ARRIVAL) → 直接推进）。
+        「打卡记完即推进」（等价旧 _project_state(NODE_ARRIVAL) → 直接推进）。
         """
         node_name = event.uid.upper()
         if node_name not in self.topo.nodes:
@@ -493,10 +493,10 @@ class AgentStateMachine:
         self.runtime_map.mark_rfid_visited(node_name)
         self._log_event("rfid", f"打卡: {node_name}")
 
-        # D6/R6 副作用 #4：打卡记完直接推进（旧 _transition_to(NODE_ARRIVAL) 的等价）
+        # D6/R6 副作用 #4：打卡记完直接推进（旧 _project_state(NODE_ARRIVAL) 的等价）
         # 清空队列 + 投影 NODE_ARRIVAL，下一 tick 由 _on_node_arrival 决定 replan/继续。
         self.queue_controller.invalidate_and_replace([])
-        self._transition_to(AgentState.NODE_ARRIVAL)
+        self._project_state(AgentState.NODE_ARRIVAL)
 
     # ================================================================
     # 各状态内部逻辑（旧 _cruise 迁移族 → 队首分派 + 副作用）
@@ -515,19 +515,19 @@ class AgentStateMachine:
                 and self.topo.all_missions_completed()
                 and self.all_culverts_reconed()):
             self._log_event("return_complete", "回到起点，巡逻完成")
-            self._transition_to(AgentState.FINISHED)
+            self._project_state(AgentState.FINISHED)
             return
 
         # RFID 完成但涵洞未侦查完，且当前规划已耗尽 → 重规划扫荡剩余涵洞
         if (self.topo.all_missions_completed()
                 and not self.all_culverts_reconed()
                 and not self.planner.has_next()):
-            self._transition_to(AgentState.GLOBAL_PLANNING)
+            self._project_state(AgentState.GLOBAL_PLANNING)
             return
 
         # 地图未变 → 直接用缓存的下一任务
         if self.planner.should_replan(blocked_edges=self.blocked_edges):
-            self._transition_to(AgentState.GLOBAL_PLANNING)
+            self._project_state(AgentState.GLOBAL_PLANNING)
         else:
             self._dequeue_next_edge()
 
@@ -579,7 +579,7 @@ class AgentStateMachine:
     def _on_reverse_done(self):
         """倒车到位：清空 reverse 队列 → 投影 GLOBAL_PLANNING（下一步重规划）。"""
         self.queue_controller.invalidate_and_replace([])
-        self._transition_to(AgentState.GLOBAL_PLANNING)
+        self._project_state(AgentState.GLOBAL_PLANNING)
 
     # ================================================================
     # 宏观调度委托
@@ -671,10 +671,15 @@ class AgentStateMachine:
             return TurnAction.STOP
         return TurnAction.TURN_LEFT if diff > 0 else TurnAction.TURN_RIGHT
 
-    def _transition_to(self, new_state: AgentState, **kwargs):
+    def _project_state(self, new_state: AgentState, **kwargs):
         """
-        投影写出（R1 三副作用）：self.state + _state_enter_time + 条件 turn_start_time
-        + transition 日志。只写投影，不做行为分支。
+        投影写出器（R1 三副作用）：self.state + _state_enter_time + 条件 turn_start_time
+        + transition 日志。Task 28 第 4 步收尸：原 `_transition_to` 改名 `_project_state`。
+
+        语义：self.state 是「队列→状态」的**单向只写投影**。本方法是投影的唯一写出口，
+        只写投影 + 副作用，不做任何行为分支（内部逻辑只看队首 kind，不反读 self.state）。
+        TODO(D-16)：瞬时态已知分叉 —— drive 推进完成的瞬时，self.state=NODE_ARRIVAL 而
+        current_state()=GLOBAL_PLANNING，下一 tick 收敛。此为合法过渡态，不消除。
         """
         old = self.state
         self.state = new_state
@@ -747,6 +752,8 @@ class AgentStateMachine:
             return AgentState.BACKTRACK
         if kind == "culvert_probe":
             return AgentState.CULVERT_RECON
+        # 死代码（Task 28 第 4 步收尸标注）：checkpoint 任务当前从未被门面入队，
+        # 此投影分支不会命中。待 D-16「涵洞发起/验收」落实、checkpoint 真正入队后启用。
         if kind == "checkpoint":
             return AgentState.NODE_ARRIVAL
         return AgentState.GLOBAL_PLANNING

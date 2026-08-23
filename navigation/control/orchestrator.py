@@ -52,14 +52,14 @@ class StateOrchestrator:
             if unvisited or agent.current_node != "START":
                 agent._log_event("plan_failed",
                                  f"无法到达剩余 {len(unvisited)} 个任务点, blocked={agent.blocked_edges}")
-                agent._transition_to(AgentState.FAILED)
+                agent._project_state(AgentState.FAILED)
                 return
             if not agent.all_culverts_reconed():
                 agent._log_event("plan_failed",
                                  f"涵洞未侦查完且无法规划扫荡路径, remaining={agent._culvert_targets - agent.recon_culverts}")
-                agent._transition_to(AgentState.FAILED)
+                agent._project_state(AgentState.FAILED)
                 return
-            agent._transition_to(AgentState.FINISHED)
+            agent._project_state(AgentState.FINISHED)
             return
 
         if required_edges:
@@ -87,14 +87,14 @@ class StateOrchestrator:
                     and agent.topo.all_missions_completed()
                     and agent.all_culverts_reconed()):
                 agent._log_event("finish", "回到起点且全部任务完成 → FINISHED")
-                agent._transition_to(AgentState.FINISHED)
+                agent._project_state(AgentState.FINISHED)
             elif agent.topo.all_missions_completed() and not agent.all_culverts_reconed():
                 agent._log_event("replan_sweep", "RFID 完成但涵洞未侦查完 → 扫荡重规划")
-                agent._transition_to(AgentState.GLOBAL_PLANNING)
+                agent._project_state(AgentState.GLOBAL_PLANNING)
             else:
                 agent._log_event("replan_exhausted",
                                  f"路径耗尽但任务未完成 (node={agent.current_node}) → 重规划")
-                agent._transition_to(AgentState.GLOBAL_PLANNING)
+                agent._project_state(AgentState.GLOBAL_PLANNING)
             return
 
         agent._enqueue_drive(task)

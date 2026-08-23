@@ -128,7 +128,7 @@ class SimEngine:
 
         # 启动状态机
         self._agent.start()
-        self._prev_state = self._agent.state
+        self._prev_state = self._agent.current_state()
         self._push_state()
 
         while self._running:
@@ -137,7 +137,7 @@ class SimEngine:
                 continue
 
             # 检查是否已完成
-            if self._agent.state in (AgentState.FINISHED, AgentState.FAILED):
+            if self._agent.current_state() in (AgentState.FINISHED, AgentState.FAILED):
                 self._push_state()
                 break
 
@@ -196,7 +196,7 @@ class SimEngine:
         self._tick_count = 0
 
         self._agent.start()
-        self._prev_state = self._agent.state
+        self._prev_state = self._agent.current_state()
         self._push_state()
 
     def step(self):
@@ -212,7 +212,7 @@ class SimEngine:
         if not self._running:
             raise RuntimeError("SimEngine 未启动，请先调用 start()")
 
-        if self._agent.state in (AgentState.FINISHED, AgentState.FAILED):
+        if self._agent.current_state() in (AgentState.FINISHED, AgentState.FAILED):
             self._push_state()
             self._running = False
             return False
@@ -240,7 +240,7 @@ class SimEngine:
 
     def is_done(self) -> bool:
         """仿真是否已完成（FINISHED 或 FAILED）"""
-        return self._agent.state in (AgentState.FINISHED, AgentState.FAILED)
+        return self._agent.current_state() in (AgentState.FINISHED, AgentState.FAILED)
 
     def is_running(self) -> bool:
         """仿真循环是否仍在运行"""
@@ -261,7 +261,7 @@ class SimEngine:
         vision_stats = self._vision.get_discovery_stats()
 
         return {
-            "state": self._agent.state.name,
+            "state": self._agent.current_state().name,
             "sim_time_s": round(self._sim_time, 2),
             "tick_count": self._tick_count,
             "total_distance_mm": round(self._robot_bridge.total_distance, 1),
@@ -369,6 +369,10 @@ class SimEngine:
                 self._agent.on_turn_done()
 
         # 5. 处理节点到达
+        # 注意：这里必须读 self.state（终态/瞬时投影真值），不能读 current_state()。
+        # NODE_ARRIVAL 是真值来自 _on_drive_advance / on_turn_done / on_rfid_scanned 的
+        # 显式 _project_state(NODE_ARRIVAL)；此刻队列已清空，current_state() 会把
+        # 「空队列」投影成 GLOBAL_PLANNING，若改读 current_state() 将漏掉节点到达处理。
         if self._agent.state == AgentState.NODE_ARRIVAL:
             self._handle_node_arrival()
 
@@ -379,8 +383,8 @@ class SimEngine:
         self._push_state()
 
         # 8. 检测状态变化（日志）
-        if self._agent.state != self._prev_state:
-            self._prev_state = self._agent.state
+        if self._agent.current_state() != self._prev_state:
+            self._prev_state = self._agent.current_state()
 
 
     def _check_vision_on_edge(self):
