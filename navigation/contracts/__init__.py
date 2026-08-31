@@ -1,28 +1,103 @@
-"""
-contracts/ — 导航层契约子包
+"""Navigation 2.0 的跨模块数据契约入口。
 
-拆分为 states/events/commands 三文件；此 __init__ 做扁平 re-export，
-使 `from .contracts import X` 或 `from .contracts.states import X` 均可。
+谁调用：导航协调器、执行器和感知适配器。
+谁响应：后续实现只从这里导入公开的数据包类型。
+当前内容：只重新导出阶段 0 已冻结的执行与感知数据类型。
 """
-from .states import AgentState, EdgeTaskStatus, TurnAction, CulvertType
-from .events import (
-    Pose, OdomUpdate, RoadCondition,
-    CrossroadEvent, CulvertEvent, ObstacleEvent, RfidEvent,
+
+# 重新导出异步执行契约，使调用方不依赖 `execution.py` 的内部文件路径。
+from .execution import (
+    DispatchAck,
+    ExecutionEnvironment,
+    ExecutionInterrupt,
+    ExecutionOutcome,
+    ExecutionParameter,
+    ExecutionRequest,
+    ExecutionTarget,
 )
-from .commands import (
-    EdgeTask, DirectedStep, MapEdgeDynamic, TurnCommand,
-    NavigationState, CulvertReconResult,
-    VisionTools, NavigationAgent,
+# 重新导出感知契约，使调用方不依赖 `perception.py` 的内部文件路径。
+from .perception import PerceptionFrame, RoadFeatures, TargetDetection
+# 重新导出编排契约，使协调器和测试不依赖内部模块文件路径。
+from .choreography import (
+    Action,
+    ActionCommand,
+    ActionExpectedEffect,
+    AdvanceOnTraversalEffect,
+    AlignToTraversalEffect,
+    ArriveAtNodeEffect,
+    AwaitObservationEffect,
+    ChoreographyAdvanceResult,
+    ChoreographyAdvanceStatus,
+    ChoreographyPlan,
+    ChoreographyProgress,
+    ChoreographyRejection,
+    ChoreographyRejectionCode,
+    ChoreographyStartResult,
+    ChoreographyStartStatus,
+    ChoreographySourceKind,
+    ChoreographyStage,
+    ChoreographyStageKind,
+    CompleteTaskEffect,
+    DriveDistanceCommand,
+    DrivePurpose,
+    ExecuteTaskCommand,
+    NavigationStateQuery,
+    ObservationScope,
+    ObserveCommand,
+    RetraceTurnCommand,
+    RetraceTurnEffect,
+    ReverseDistanceCommand,
+    StopCommand,
+    StopEffect,
+    TurnAtJunctionCommand,
+    TurnDirection,
 )
 
-__all__ = [
-    # states
-    "AgentState", "EdgeTaskStatus", "TurnAction", "CulvertType",
-    # events
-    "Pose", "OdomUpdate", "RoadCondition",
-    "CrossroadEvent", "CulvertEvent", "ObstacleEvent", "RfidEvent",
-    # commands
-    "EdgeTask", "DirectedStep", "MapEdgeDynamic", "TurnCommand",
-    "NavigationState", "CulvertReconResult",
-    "VisionTools", "NavigationAgent",
-]
+# 声明本包唯一允许外部依赖的公开类型，避免内部实现意外泄漏。
+__all__ = (
+    # 异步执行的环境、路由、结果和数据包类型。
+    "ExecutionEnvironment",
+    "ExecutionTarget",
+    "ExecutionOutcome",
+    "ExecutionParameter",
+    "ExecutionRequest",
+    "DispatchAck",
+    "ExecutionInterrupt",
+    # 感知帧及其道路结构和目标检测类型。
+    "RoadFeatures",
+    "TargetDetection",
+    "PerceptionFrame",
+    # 编排流程、类型化动作、状态投影和只读查询端口类型。
+    "ChoreographySourceKind",
+    "ChoreographyStageKind",
+    "ChoreographyStage",
+    "ChoreographyPlan",
+    "ChoreographyProgress",
+    "ChoreographyAdvanceStatus",
+    "ChoreographyRejectionCode",
+    "ChoreographyRejection",
+    "ChoreographyStartStatus",
+    "ChoreographyStartResult",
+    "ChoreographyAdvanceResult",
+    "ObservationScope",
+    "TurnDirection",
+    "DrivePurpose",
+    "ObserveCommand",
+    "TurnAtJunctionCommand",
+    "DriveDistanceCommand",
+    "ExecuteTaskCommand",
+    "ReverseDistanceCommand",
+    "RetraceTurnCommand",
+    "StopCommand",
+    "ActionCommand",
+    "AwaitObservationEffect",
+    "AlignToTraversalEffect",
+    "AdvanceOnTraversalEffect",
+    "ArriveAtNodeEffect",
+    "RetraceTurnEffect",
+    "CompleteTaskEffect",
+    "StopEffect",
+    "ActionExpectedEffect",
+    "Action",
+    "NavigationStateQuery",
+)
