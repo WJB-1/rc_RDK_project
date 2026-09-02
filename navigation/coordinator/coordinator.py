@@ -204,8 +204,12 @@ class Coordinator:
             target = ExecutionTarget.PERCEPTION_SYSTEM
             execution_command = ObserveExecutionCommand()
         elif isinstance(command, TurnAtJunctionCommand):
+            # 巡航边标识不是底盘转弯轨迹；缺少标定轨迹时必须拒绝下发而不是猜测。
+            trajectory_id = getattr(command, "forward_trajectory_id", None)
+            if trajectory_id is None:
+                raise ValueError("转弯动作缺少已标定的 forward_trajectory_id")
             target = ExecutionTarget.MOTION_CONTROLLER
-            execution_command = TurnExecutionCommand(command.target_traversal_id)
+            execution_command = TurnExecutionCommand(trajectory_id)
         elif isinstance(command, DriveDistanceCommand):
             target = ExecutionTarget.MOTION_CONTROLLER
             execution_command = DriveExecutionCommand(command.distance_mm)
