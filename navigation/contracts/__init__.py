@@ -8,12 +8,21 @@
 # 重新导出异步执行契约，使调用方不依赖 `execution.py` 的内部文件路径。
 from .execution import (
     DispatchAck,
+    DriveExecutionCommand,
+    ExecuteTaskExecutionCommand,
+    ExecutionCommand,
     ExecutionEnvironment,
     ExecutionInterrupt,
     ExecutionOutcome,
     ExecutionParameter,
     ExecutionRequest,
     ExecutionTarget,
+    IAsyncExecutor,
+    ObserveExecutionCommand,
+    RetraceTurnExecutionCommand,
+    ReverseExecutionCommand,
+    StopExecutionCommand,
+    TurnExecutionCommand,
 )
 # 重新导出感知契约，使调用方不依赖 `perception.py` 的内部文件路径。
 from .perception import PerceptionFrame, RoadFeatures, TargetDetection
@@ -63,6 +72,15 @@ __all__ = (
     "ExecutionRequest",
     "DispatchAck",
     "ExecutionInterrupt",
+    "ExecutionCommand",
+    "ObserveExecutionCommand",
+    "TurnExecutionCommand",
+    "DriveExecutionCommand",
+    "ReverseExecutionCommand",
+    "RetraceTurnExecutionCommand",
+    "ExecuteTaskExecutionCommand",
+    "StopExecutionCommand",
+    "IAsyncExecutor",
     # 感知帧及其道路结构和目标检测类型。
     "RoadFeatures",
     "TargetDetection",
