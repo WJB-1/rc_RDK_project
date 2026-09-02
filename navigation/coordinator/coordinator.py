@@ -73,21 +73,45 @@ class Coordinator:
 
         return self._current_request is not None
 
-    def dispatch_next(self, plan: ChoreographyPlan, progress: ChoreographyProgress) -> Optional[DispatchAck]:
-        """解释并提交下一动作；已有在途请求时保持串行并拒绝重复提交。"""
+    def dispatch_next(
+        self,
+        plan: Optional[ChoreographyPlan] = None,
+        progress: Optional[ChoreographyProgress] = None,
+    ) -> Optional[DispatchAck]:
+        """解释并提交下一动作；已有在途请求时保持串行并拒绝重复提交。
+
+        首次调用可提供剧本和指针；后续调用直接使用协调器保存的活动剧本与
+        `resume_progress`，避免外部重复传递或篡改流程游标。
+        """
 
         # 异步动作未结束前不能再次推进剧本，避免下位机同时执行两项导航动作。
         if self._current_request is not None:
             self.diagnostics.append("已有在途请求，忽略重复 dispatch_next")
             return None
+        # 允许首次调用装载剧本；已有活动剧本时忽略外部重复参数，保证游标所有权在协调器。
+        if self._plan is None:
+            if plan is None or progress is None:
+                self.diagnostics.append("首次 dispatch_next 必须提供剧本和指针")
+                return None
+            self._plan = plan
+            self._progress = progress
+        elif plan is not None or progress is not None:
+            self.diagnostics.append("已有活动剧本，忽略外部传入的剧本和指针")
+        if self._progress is None:
+            self.diagnostics.append("活动剧本缺少 resume_progress")
+            return None
         # 编排器负责检查指针和运行时安全，协调器只消费其显式结果。
-        result = self._choreographer.compile_next(plan, progress)
+        result = self._choreographer.compile_next(self._plan, self._progress)
+        if result.status is ChoreographyAdvanceStatus.FINISHED:
+            self._plan = None
+            self._progress = None
+            self.diagnostics.append("活动编排流程已结束")
+            return None
         if result.status is not ChoreographyAdvanceStatus.READY:
             self.diagnostics.append("编排器未返回 READY：{}".format(result.status.value))
             return None
         # 在调用执行器前原子保存剧本、动作和下一指针，保证受理期间状态完整。
         action = result.action
-        self._plan = plan
         self._progress = result.next_progress
         self._current_action = action
         request = self._translate_action(action)
