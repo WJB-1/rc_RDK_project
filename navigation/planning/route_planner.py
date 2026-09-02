@@ -8,9 +8,18 @@ import math
 from typing import Dict, Optional, Tuple
 
 # 导入领域目标、巡航边和拓扑，规划器只读取这些静态与不可变事实。
-from navigation.domain import CruiseEdge, Goal, TrackTopology
+from navigation.domain import AtNode, CruiseEdge, Goal, TrackTopology
 # 导入本层查询、步骤、计划和结果数据包，避免返回裸列表或异常表达不可达。
-from .models import RoutePlan, RoutePlanOutcome, RoutePlanResult, RouteQuery, RouteStep
+from .models import (
+    EscapeAssessment,
+    JunctionPassability,
+    PlanningStateQuery,
+    RoutePlan,
+    RoutePlanOutcome,
+    RoutePlanResult,
+    RouteQuery,
+    RouteStep,
+)
 
 
 class RoutePlanner:
@@ -22,11 +31,44 @@ class RoutePlanner:
     状态影响：不修改拓扑、地图、任务、机器人状态或执行器。
     """
 
-    def __init__(self, topology: TrackTopology) -> None:
+    def __init__(self, topology: TrackTopology, state_query: Optional[PlanningStateQuery] = None) -> None:
         """保存只读端口拓扑，后续每次规划只读取其有向巡航查询。"""
 
         # 保存拓扑依赖；动态阻塞事实始终来自每次查询传入的地图快照。
         self._topology = topology
+        # 可选只读状态口供局部脱困查询使用，普通路径搜索仍以 RouteQuery 快照为准。
+        self._state_query = state_query
+
+    def assess_escape(self) -> EscapeAssessment:
+        """报告当前路口前后左右的局部通路事实，不选择方向或完整路线。"""
+
+        # 局部查询必须依赖装配层提供的共享只读状态，避免调用者重复传入位姿和地图。
+        if self._state_query is None:
+            raise RuntimeError("assess_escape 需要装配 PlanningStateQuery")
+        # 只有路口中心才存在可决策的前后左右方向。
+        robot_state = self._state_query.robot_state()
+        if not isinstance(robot_state.location, AtNode):
+            raise ValueError("只有 AtNode 才能进行局部脱困查询")
+        # 读取同一时刻的动态地图快照，保证四个方向使用一致的阻塞事实。
+        map_snapshot = self._state_query.runtime_map_snapshot()
+        results = {
+            "forward": JunctionPassability.ABSENT,
+            "left": JunctionPassability.ABSENT,
+            "right": JunctionPassability.ABSENT,
+            "backward": JunctionPassability.ABSENT,
+        }
+        # 将每条静态出边按相对朝向归类，并把物理边阻塞映射为局部状态。
+        for cruise_edge in self._topology.outgoing_cruise_edges(robot_state.location.node_id):
+            direction = self._relative_direction(robot_state.location.node_id, cruise_edge, robot_state.heading_deg)
+            if direction is None:
+                continue
+            passability = (
+                JunctionPassability.BLOCKED
+                if self._is_blocked_snapshot(cruise_edge, map_snapshot.blocked_edge_ids)
+                else JunctionPassability.OPEN
+            )
+            results[direction] = self._merge_passability(results[direction], passability)
+        return EscapeAssessment(**results)
 
     def plan(self, query: RouteQuery, candidates: Tuple[Goal, ...]) -> RoutePlanResult:
         """在候选目标中选择合法 Dijkstra 距离最小且标识稳定的路线。
@@ -73,6 +115,12 @@ class RoutePlanner:
         # 先验证起点与目标节点存在，未知静态标识不能被搜索器猜测处理。
         self._topology.get_node(query.start_node_id)
         self._topology.get_node(target.arrival_node_id)
+        # 首边约束的节点和朝向必须与本次查询一致，否则独立返回约束拒绝。
+        if query.entry_constraint is not None:
+            if query.entry_constraint.applicable_node_id != query.start_node_id:
+                return RoutePlanResult(RoutePlanOutcome.CONSTRAINT_UNSATISFIED, None, "首边约束节点与查询起点不一致")
+            if abs(query.entry_constraint.required_heading_deg - query.heading_deg) > 0.000001:
+                return RoutePlanResult(RoutePlanOutcome.CONSTRAINT_UNSATISFIED, None, "首边约束朝向与查询朝向不一致")
         # 状态由当前路口和进入边共同组成，才能在同一节点保留不同的掉头约束。
         start_state = (query.start_node_id, query.entry_traversal_id)
         # 记录每个状态已知的最短物理距离。
@@ -85,7 +133,8 @@ class RoutePlanner:
         sequence = 1
         # 当起点就是目标时，仍需返回一条零长度的正常路线供协调器处理已到达语义。
         if query.start_node_id == target.arrival_node_id:
-            return self._build_result(query, target, start_state, predecessors, 0.0)
+            result = self._build_result(query, target, start_state, predecessors, 0.0)
+            return self._enforce_entry_constraint(query, result)
         # 持续扩展累计距离最小的尚未过期状态。
         while queue:
             # 取出当前累计距离最小的有向状态。
@@ -95,7 +144,8 @@ class RoutePlanner:
                 continue
             # 到达目标路口且末段没有沿涵洞道路驶入时，当前距离才是合法最短距离。
             if node_id == target.arrival_node_id and not self._entered_via_approach_edge(entry_traversal_id, target):
-                return self._build_result(query, target, (node_id, entry_traversal_id), predecessors, distance_mm)
+                result = self._build_result(query, target, (node_id, entry_traversal_id), predecessors, distance_mm)
+                return self._enforce_entry_constraint(query, result)
             # 读取当前路口的静态有向出边，拓扑已保证返回顺序稳定。
             for cruise_edge in self._topology.outgoing_cruise_edges(node_id):
                 # 任何组成物理边被动态地图阻塞时，本次巡航整体不可通行。
@@ -123,6 +173,51 @@ class RoutePlanner:
                 sequence += 1
         # 队列耗尽仍未到达目标，说明阻塞或掉头约束下不存在合法路线。
         return RoutePlanResult(RoutePlanOutcome.NO_ROUTE, None, "没有合法路线")
+
+    @staticmethod
+    def _enforce_entry_constraint(query: RouteQuery, result: RoutePlanResult) -> RoutePlanResult:
+        """在路线生成后确认其第一条巡航满足首边约束。"""
+
+        if query.entry_constraint is None or result.outcome is not RoutePlanOutcome.PLANNED:
+            return result
+        if result.plan is None or not result.plan.steps:
+            return RoutePlanResult(RoutePlanOutcome.CONSTRAINT_UNSATISFIED, None, "首边约束要求路线必须包含指定首边")
+        if result.plan.steps[0].traversal_id != query.entry_constraint.required_first_traversal_id:
+            return RoutePlanResult(RoutePlanOutcome.CONSTRAINT_UNSATISFIED, None, "路线首边不满足指定首边约束")
+        return result
+
+    @staticmethod
+    def _is_blocked_snapshot(cruise_edge: CruiseEdge, blocked_edge_ids) -> bool:
+        """根据同一份地图快照判断巡航边是否被阻塞。"""
+
+        return any(edge_id in blocked_edge_ids for edge_id in cruise_edge.physical_edge_ids)
+
+    def _relative_direction(self, node_id: str, cruise_edge: CruiseEdge, heading_deg: float) -> Optional[str]:
+        """将一条出边按当前车头归类为前、左、右或后。"""
+
+        start_node = self._topology.get_node(node_id)
+        end_node = self._topology.get_node(cruise_edge.to_junction)
+        road_heading = math.degrees(math.atan2(end_node.y_mm - start_node.y_mm, end_node.x_mm - start_node.x_mm))
+        difference = (road_heading - heading_deg + 180.0) % 360.0 - 180.0
+        if abs(difference) < 0.000001:
+            return "forward"
+        if abs(difference - 90.0) < 0.000001:
+            return "left"
+        if abs(difference + 90.0) < 0.000001:
+            return "right"
+        if abs(abs(difference) - 180.0) < 0.000001:
+            return "backward"
+        return None
+
+    @staticmethod
+    def _merge_passability(current: JunctionPassability, observed: JunctionPassability) -> JunctionPassability:
+        """合并同一相对方向的多条出边，优先保留可通行事实。"""
+
+        if current is JunctionPassability.OPEN or observed is JunctionPassability.OPEN:
+            return JunctionPassability.OPEN
+        if current is JunctionPassability.BLOCKED or observed is JunctionPassability.BLOCKED:
+            return JunctionPassability.BLOCKED
+        return JunctionPassability.ABSENT
 
     @staticmethod
     def _is_reverse(entry_traversal_id: Optional[str], next_traversal_id: str) -> bool:
