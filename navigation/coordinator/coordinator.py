@@ -8,6 +8,7 @@ from typing import Callable, List, Optional
 # 导入执行层类型化请求和命令。
 from navigation.contracts import (
     Action,
+    AdvanceOnTraversalEffect,
     ChoreographyAdvanceStatus,
     ChoreographyPlan,
     ChoreographyProgress,
@@ -32,12 +33,19 @@ from navigation.contracts import (
     TurnAtJunctionCommand,
     TurnExecutionCommand,
 )
+from navigation.domain import AtNode, OnCruiseEdge, ProgressSource, RobotState
 
 
 class Coordinator:
     """拥有活动剧本、唯一在途动作并负责异步终局身份校验的中转者。"""
 
-    def __init__(self, executor: IAsyncExecutor, choreographer, clock: Callable[[], float] = time.time) -> None:
+    def __init__(
+        self,
+        executor: IAsyncExecutor,
+        choreographer,
+        clock: Callable[[], float] = time.time,
+        state_store=None,
+    ) -> None:
         """保存已装配依赖；中断回调由 NavigationRuntime 负责注册。"""
 
         # 执行器只负责受理命令和回传终局，协调器不判断仿真或真实环境。
@@ -46,6 +54,8 @@ class Coordinator:
         self._choreographer = choreographer
         # 注入时钟以便测试请求身份和时间字段，不读取系统时间以外的业务状态。
         self._clock = clock
+        # 状态端口由 Runtime 装配，Coordinator 是唯一可以提交新 RobotState 的业务方。
+        self._state_store = state_store
         # 保存当前活动剧本和动作成功后才能兑现的下一指针。
         self._plan: Optional[ChoreographyPlan] = None
         self._progress: Optional[ChoreographyProgress] = None
@@ -139,10 +149,52 @@ class Coordinator:
             self.diagnostics.append("终局身份不匹配，忽略 {}".format(interrupt.request_id))
             return False
         # 同一请求的任何最终结果都只能被消费一次。
+        # 成功终局先按动作效果投影状态，再清理在途身份，避免丢失动作语义。
+        if interrupt.outcome is ExecutionOutcome.COMPLETED:
+            self._project_success(self._current_action, interrupt)
         self._clear_in_flight()
         if interrupt.outcome is not ExecutionOutcome.COMPLETED:
             self.diagnostics.append("动作 {} 以 {} 结束".format(interrupt.action_id, interrupt.outcome.value))
         return True
+
+    def _project_success(self, action: Optional[Action], interrupt: ExecutionInterrupt) -> None:
+        """将当前阶段已确认的前进里程投影为边上逻辑位置。"""
+
+        # 本阶段没有状态端口时仍允许纯串行内核运行，后续 Runtime 装配时再启用投影。
+        if self._state_store is None or action is None:
+            return
+        effect = action.expected_effect
+        if not isinstance(effect, AdvanceOnTraversalEffect):
+            return
+        # 执行层只反馈本次增量；缺失增量时不能伪造边上累计进度。
+        if interrupt.odometry_delta_mm is None:
+            self.diagnostics.append("前进成功中断缺少 odometry_delta_mm")
+            return
+        current_state = self._state_store.robot_state()
+        from_node_id, to_node_id = effect.traversal_id.split("->", 1)
+        if isinstance(current_state.location, OnCruiseEdge):
+            if current_state.location.traversal_id != effect.traversal_id:
+                self.diagnostics.append("前进效果与当前巡航边不一致")
+                return
+            base_progress_mm = current_state.location.progress_mm
+        elif isinstance(current_state.location, AtNode) and current_state.location.node_id == from_node_id:
+            base_progress_mm = 0.0
+        else:
+            self.diagnostics.append("前进效果与当前逻辑位置不匹配")
+            return
+        # 用新的不可变状态替换旧状态，保留朝向和待重规划标记。
+        next_state = RobotState(
+            OnCruiseEdge(
+                effect.traversal_id,
+                from_node_id,
+                to_node_id,
+                base_progress_mm + interrupt.odometry_delta_mm,
+            ),
+            current_state.heading_deg,
+            ProgressSource.ODOMETRY,
+            current_state.pending_replan,
+        )
+        self._state_store.replace_robot_state(next_state)
 
     def _translate_action(self, action: Action) -> ExecutionRequest:
         """把编排动作翻译为执行器可直接路由的类型化命令。"""
