@@ -9,6 +9,7 @@ from typing import Callable, List, Optional
 from navigation.contracts import (
     Action,
     AdvanceOnTraversalEffect,
+    ArriveAtNodeEffect,
     ChoreographyAdvanceStatus,
     ChoreographyPlan,
     ChoreographyProgress,
@@ -34,6 +35,16 @@ from navigation.contracts import (
     TurnExecutionCommand,
 )
 from navigation.domain import AtNode, OnCruiseEdge, ProgressSource, RobotState
+
+
+class LastCompletedTurn:
+    """记录最近一次成功前向转弯，供同轨迹撤回使用。"""
+
+    def __init__(self, source_action_id: str, forward_trajectory_id: str) -> None:
+        """保存动作身份和已标定的前向轨迹身份。"""
+
+        self.source_action_id = source_action_id
+        self.forward_trajectory_id = forward_trajectory_id
 
 
 class Coordinator:
@@ -62,6 +73,8 @@ class Coordinator:
         # 保存唯一在途动作及其执行请求，直到终局到达或同步拒绝。
         self._current_action: Optional[Action] = None
         self._current_request: Optional[ExecutionRequest] = None
+        # 记录最近成功转弯，供局部恢复引用而不要求执行器缓存历史。
+        self._last_completed_turn: Optional[LastCompletedTurn] = None
         # 记录诊断信息但不把迟到事件重新解释为业务动作。
         self.diagnostics: List[str] = []
 
@@ -82,6 +95,12 @@ class Coordinator:
         """返回是否已经提交请求并等待同一身份的最终中断。"""
 
         return self._current_request is not None
+
+    @property
+    def last_completed_turn(self) -> Optional[LastCompletedTurn]:
+        """返回最近一次成功前向转弯记录。"""
+
+        return self._last_completed_turn
 
     def dispatch_next(
         self,
@@ -161,9 +180,23 @@ class Coordinator:
         """将当前阶段已确认的前进里程投影为边上逻辑位置。"""
 
         # 本阶段没有状态端口时仍允许纯串行内核运行，后续 Runtime 装配时再启用投影。
-        if self._state_store is None or action is None:
+        if action is None:
+            return
+        self._record_completed_turn(action)
+        if self._state_store is None:
             return
         effect = action.expected_effect
+        if isinstance(effect, ArriveAtNodeEffect):
+            # 执行层已完成驶入中心动作，协调器将逻辑位置吸附到目标路口。
+            current_state = self._state_store.robot_state()
+            next_state = RobotState(
+                AtNode(effect.node_id, effect.entry_traversal_id),
+                current_state.heading_deg,
+                current_state.progress_source,
+                current_state.pending_replan,
+            )
+            self._state_store.replace_robot_state(next_state)
+            return
         if not isinstance(effect, AdvanceOnTraversalEffect):
             return
         # 执行层只反馈本次增量；缺失增量时不能伪造边上累计进度。
@@ -195,6 +228,17 @@ class Coordinator:
             current_state.pending_replan,
         )
         self._state_store.replace_robot_state(next_state)
+
+    def _record_completed_turn(self, action: Action) -> None:
+        """从成功动作记录前向转弯，不读取执行器角度或历史。"""
+
+        if not isinstance(action.command, TurnAtJunctionCommand):
+            return
+        trajectory_id = getattr(action.command, "forward_trajectory_id", None)
+        if trajectory_id is None:
+            self.diagnostics.append("成功转弯缺少 forward_trajectory_id")
+            return
+        self._last_completed_turn = LastCompletedTurn(action.action_id, trajectory_id)
 
     def _translate_action(self, action: Action) -> ExecutionRequest:
         """把编排动作翻译为执行器可直接路由的类型化命令。"""
