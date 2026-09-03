@@ -114,6 +114,18 @@ class Choreographer:
                     "涵洞替换的流程指针不属于当前剧本",
                 ),
             )
+        # 剧本已经结束，或目标巡航的所有阶段都已位于游标之前时，不能再插入迟到的任务。
+        if progress.stage_index >= len(plan.stages) or not any(
+            stage.traversal_id == traversal_id
+            for stage in plan.stages[progress.stage_index :]
+        ):
+            return ChoreographyStartResult(
+                ChoreographyStartStatus.REJECTED,
+                rejection=ChoreographyRejection(
+                    ChoreographyRejectionCode.INVALID_PROGRESS,
+                    "涵洞替换目标已完成或当前剧本没有剩余阶段",
+                ),
+            )
         # 活动路线必须包含待替换的巡航边，未知边不能被编排器猜测端点。
         if traversal_id not in plan.route_steps:
             return ChoreographyStartResult(
