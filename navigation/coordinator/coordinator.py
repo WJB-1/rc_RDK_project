@@ -208,8 +208,11 @@ class Coordinator:
             self.diagnostics.append("终局身份不匹配，忽略 {}".format(interrupt.request_id))
             return False
         # 同一请求的任何最终结果都只能被消费一次。
+        # 阻塞终局先写入道路事实并销毁旧剧本，避免后续继续下发同一条危险路线。
+        if interrupt.outcome is ExecutionOutcome.BLOCKED:
+            self._handle_blocked_action(self._current_action)
         # 成功终局先按动作效果投影状态，再清理在途身份，避免丢失动作语义。
-        if interrupt.outcome is ExecutionOutcome.COMPLETED:
+        elif interrupt.outcome is ExecutionOutcome.COMPLETED:
             self._project_success(self._current_action, interrupt)
             self._consume_perception(self._current_action, interrupt)
             self._consume_task(self._current_action)
@@ -217,6 +220,39 @@ class Coordinator:
         if interrupt.outcome is not ExecutionOutcome.COMPLETED:
             self.diagnostics.append("动作 {} 以 {} 结束".format(interrupt.action_id, interrupt.outcome.value))
         return True
+
+    def _handle_blocked_action(self, action: Optional[Action]) -> None:
+        """处理动作阻塞：封锁目标物理边、标记重规划并销毁活动剧本。"""
+
+        # 阻塞动作必须能关联一条巡航边，否则只能记录异常并停止旧流程。
+        traversal_id = None
+        if action is not None:
+            command = action.command
+            traversal_id = getattr(command, "traversal_id", None)
+            if traversal_id is None:
+                traversal_id = getattr(command, "target_traversal_id", None)
+        if traversal_id is not None and self._runtime_map is not None and self._topology is not None:
+            # 将巡航边展开为全部物理组成边，保证任一段阻塞都会阻止再次规划该巡航。
+            try:
+                from_node_id, to_node_id = traversal_id.split("->", 1)
+                cruise_edge = self._topology.get_cruise_edge(from_node_id, to_node_id)
+                for edge_id in cruise_edge.physical_edge_ids:
+                    self._runtime_map.apply(
+                        AbsoluteMapUpdate(
+                            AbsoluteMapUpdateKind.BLOCK_EDGE,
+                            MapUpdateAuthority.COORDINATOR,
+                            edge_id=edge_id,
+                        )
+                    )
+            except (KeyError, ValueError) as error:
+                self.diagnostics.append("阻塞巡航无法映射物理边：{}".format(error))
+        else:
+            self.diagnostics.append("阻塞动作缺少巡航边或地图拓扑，未写入物理阻塞事实")
+        # 阻塞意味着当前计划不可继续，统一清理剧本和游标。
+        self._plan = None
+        self._progress = None
+        self._mark_pending_replan()
+        self.diagnostics.append("动作阻塞，已销毁剧本并等待重新规划")
 
     def _consume_task(self, action: Optional[Action]) -> None:
         """将匹配成功的任务动作推进为完成态。"""
