@@ -25,6 +25,7 @@ from navigation.contracts import (
     IAsyncExecutor,
     ObserveCommand,
     ObserveExecutionCommand,
+    PerceptionOutcome,
     RetraceTurnCommand,
     RetraceTurnExecutionCommand,
     ReverseDistanceCommand,
@@ -56,6 +57,9 @@ class Coordinator:
         choreographer,
         clock: Callable[[], float] = time.time,
         state_store=None,
+        perception_adapter=None,
+        runtime_map=None,
+        location_projector=None,
     ) -> None:
         """保存已装配依赖；中断回调由 NavigationRuntime 负责注册。"""
 
@@ -67,6 +71,12 @@ class Coordinator:
         self._clock = clock
         # 状态端口由 Runtime 装配，Coordinator 是唯一可以提交新 RobotState 的业务方。
         self._state_store = state_store
+        # 感知适配器只负责翻译单帧，地图和位置仍由 Coordinator 统一消费。
+        self._perception_adapter = perception_adapter
+        # 运行时地图由 Coordinator 写入，适配器本身不持有地图写权限。
+        self._runtime_map = runtime_map
+        # 位置投影器只接收已确认的视觉校正，不直接参与感知翻译。
+        self._location_projector = location_projector
         # 保存当前活动剧本和动作成功后才能兑现的下一指针。
         self._plan: Optional[ChoreographyPlan] = None
         self._progress: Optional[ChoreographyProgress] = None
@@ -171,10 +181,54 @@ class Coordinator:
         # 成功终局先按动作效果投影状态，再清理在途身份，避免丢失动作语义。
         if interrupt.outcome is ExecutionOutcome.COMPLETED:
             self._project_success(self._current_action, interrupt)
+            self._consume_perception(self._current_action, interrupt)
         self._clear_in_flight()
         if interrupt.outcome is not ExecutionOutcome.COMPLETED:
             self.diagnostics.append("动作 {} 以 {} 结束".format(interrupt.action_id, interrupt.outcome.value))
         return True
+
+    def _consume_perception(self, action: Optional[Action], interrupt: ExecutionInterrupt) -> None:
+        """消费观察完成中断中的唯一感知帧，并应用已确认的翻译结果。"""
+
+        # 非观察动作不应携带感知帧，避免把错误载荷写入地图。
+        if action is None or not isinstance(action.command, ObserveCommand):
+            if interrupt.perception_frame is not None:
+                self.diagnostics.append("非观察动作携带感知帧，已忽略")
+            return
+        # 观察成功必须有最终感知帧；缺失时记录协议诊断但不猜测事实。
+        frame = interrupt.perception_frame
+        if frame is None:
+            self.diagnostics.append("观察完成中断缺少 perception_frame")
+            return
+        # 未装配适配器时不能越过感知边界自行解释相对事实。
+        if self._perception_adapter is None:
+            self.diagnostics.append("未装配感知适配器，已忽略观察帧 {}".format(frame.frame_id))
+            return
+        # 适配器只接收一帧，内部多帧融合对 Coordinator 透明。
+        translation = self._perception_adapter.translate(frame)
+        # 翻译结果必须回显同一帧身份，防止迟到帧污染当前状态。
+        if translation.frame_id != frame.frame_id:
+            self.diagnostics.append("感知翻译 frame_id 不匹配，已忽略")
+            return
+        # 无法确认时只记录原因并继续，不写地图、不校正位置、不重试观察。
+        if translation.outcome is PerceptionOutcome.INCONCLUSIVE:
+            self.diagnostics.append("感知翻译无法确认：{}".format(translation.reason))
+            return
+        # 已确认地图事实只能由 Coordinator 逐条提交 RuntimeMap。
+        if self._runtime_map is None and translation.map_updates:
+            self.diagnostics.append("未装配 RuntimeMap，无法应用感知地图更新")
+        elif self._runtime_map is not None:
+            for update in translation.map_updates:
+                self._runtime_map.apply(update)
+        # 已确认位置校正交给位置投影器，Coordinator 不重复实现几何换算。
+        correction = translation.position_correction
+        if correction is not None:
+            if self._state_store is None or self._location_projector is None:
+                self.diagnostics.append("未装配位置投影器，无法应用感知位置校正")
+                return
+            current_state = self._state_store.robot_state()
+            next_state = self._location_projector.correct_from_landmark(current_state, correction)
+            self._state_store.replace_robot_state(next_state)
 
     def _project_success(self, action: Optional[Action], interrupt: ExecutionInterrupt) -> None:
         """将当前阶段已确认的前进里程投影为边上逻辑位置。"""
