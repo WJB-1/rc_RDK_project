@@ -203,6 +203,66 @@ class Choreographer:
             ChoreographyProgress(choreography_id, insertion_index),
         )
 
+    def start_junction_escape(self, side: TurnDirection) -> ChoreographyStartResult:
+        """按协调器指定的左侧或右侧支路创建局部脱困剧本。
+
+        本入口只负责把指定侧支路展开为“前向转弯、转弯后观察”两个阶段；
+        是否继续驶入该支路以及正式路线是否合法，仍由 Coordinator 和 RoutePlanner 决定。
+        """
+
+        # 局部脱困只能从路口中心开始，边上状态没有可定义的侧支路。
+        robot_state = self._state_query.robot_state()
+        if not isinstance(robot_state.location, AtNode):
+            return ChoreographyStartResult(
+                ChoreographyStartStatus.REJECTED,
+                rejection=ChoreographyRejection(
+                    ChoreographyRejectionCode.INVALID_PROGRESS,
+                    "局部脱困必须从路口中心开始",
+                ),
+            )
+        # 依据当前车头朝向筛选指定侧的九十度有向巡航边。
+        traversal_id = None
+        for cruise_edge in self._topology.outgoing_cruise_edges(robot_state.location.node_id):
+            difference = self._turn_difference_deg(
+                cruise_edge.from_junction,
+                cruise_edge.to_junction,
+                robot_state.heading_deg,
+            )
+            if side is TurnDirection.LEFT and abs(difference - 90.0) < 0.000001:
+                traversal_id = cruise_edge.traversal_id
+                break
+            if side is TurnDirection.RIGHT and abs(difference + 90.0) < 0.000001:
+                traversal_id = cruise_edge.traversal_id
+                break
+        # 静态拓扑没有指定侧支路时显式拒绝，不把直行或掉头误当作脱困侧支。
+        if traversal_id is None:
+            return ChoreographyStartResult(
+                ChoreographyStartStatus.REJECTED,
+                rejection=ChoreographyRejection(
+                    ChoreographyRejectionCode.MISSING_TURN_CONFIGURATION,
+                    "指定侧支路不存在已标定的九十度前向转弯",
+                ),
+            )
+        # 局部剧本只保留转弯和转后观察，不预先驶入侧支或生成完整路线。
+        stages = (
+            self._stage(0, "escape_turn", ChoreographyStageKind.TURN_AT_JUNCTION, traversal_id, robot_state.location.node_id),
+            self._stage(0, "escape_observe", ChoreographyStageKind.OBSERVE_POST_TURN, traversal_id, robot_state.location.node_id),
+        )
+        choreography_id = self._choreography_id("junction-escape:{}".format(robot_state.location.node_id), tuple(stage.stage_id for stage in stages))
+        plan = ChoreographyPlan(
+            choreography_id,
+            "junction-escape:{}".format(robot_state.location.node_id),
+            ChoreographySourceKind.JUNCTION_RECOVERY,
+            0,
+            (traversal_id,),
+            stages,
+        )
+        return ChoreographyStartResult(
+            ChoreographyStartStatus.STARTED,
+            plan,
+            ChoreographyProgress(choreography_id, 0),
+        )
+
     def _start_route(self, route: RoutePlan) -> ChoreographyStartResult:
         """把正常路线的每条巡航边预展开为统一的经验流程阶段。"""
 
