@@ -6,7 +6,14 @@
 """
 
 # 重新导出异步执行和感知数据包，使应用入口不依赖 contracts 内部文件路径。
-from .contracts import ExecutionInterrupt, ExecutionRequest, PerceptionFrame
+from .contracts import (
+    ExecutionInterrupt,
+    ExecutionRequest,
+    PerceptionFrame,
+    PerceptionOutcome,
+    PerceptionTranslation,
+    PositionCorrection,
+)
 # 重新导出纯编排入口，使后续协调器不依赖 choreography 内部文件路径。
 from .choreography import Choreographer, MotionProfile
 # 重新导出状态、任务、地图和静态拓扑，使后续模块只依赖一个稳定入口。
@@ -37,6 +44,9 @@ __all__ = (
     "ExecutionRequest",
     "ExecutionInterrupt",
     "PerceptionFrame",
+    "PerceptionOutcome",
+    "PerceptionTranslation",
+    "PositionCorrection",
     # 纯编排器与其不可变经验距离配置。
     "Choreographer",
     "MotionProfile",

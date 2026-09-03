@@ -25,7 +25,14 @@ from .execution import (
     TurnExecutionCommand,
 )
 # 重新导出感知契约，使调用方不依赖 `perception.py` 的内部文件路径。
-from .perception import PerceptionFrame, RoadFeatures, TargetDetection
+from .perception import (
+    PerceptionFrame,
+    PerceptionOutcome,
+    PerceptionTranslation,
+    PositionCorrection,
+    RoadFeatures,
+    TargetDetection,
+)
 # 重新导出编排契约，使协调器和测试不依赖内部模块文件路径。
 from .choreography import (
     Action,
@@ -85,6 +92,9 @@ __all__ = (
     "RoadFeatures",
     "TargetDetection",
     "PerceptionFrame",
+    "PerceptionOutcome",
+    "PositionCorrection",
+    "PerceptionTranslation",
     # 编排流程、类型化动作、状态投影和只读查询端口类型。
     "ChoreographySourceKind",
     "ChoreographyStageKind",
