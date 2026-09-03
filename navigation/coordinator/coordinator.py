@@ -36,7 +36,16 @@ from navigation.contracts import (
     TurnAtJunctionCommand,
     TurnExecutionCommand,
 )
-from navigation.domain import AtNode, OnCruiseEdge, ProgressSource, RobotState
+from navigation.domain import (
+    AbsoluteMapUpdate,
+    AbsoluteMapUpdateKind,
+    AtNode,
+    MapUpdateAuthority,
+    OnCruiseEdge,
+    ProgressSource,
+    RobotState,
+    TaskKind,
+)
 from navigation.domain import TrackTopology
 
 
@@ -223,6 +232,31 @@ class Coordinator:
         transition = self._task_registry.complete(action.expected_effect.task_id)
         if not transition.accepted:
             self.diagnostics.append("任务完成状态转换被拒绝：{}".format(transition.reason))
+            return
+        # 任务完成后由 Coordinator 派生与任务类型对应的绝对地图事实。
+        completed_task = transition.after
+        if self._runtime_map is None or completed_task is None:
+            return
+        if completed_task.kind is TaskKind.CHECK_IN:
+            update = AbsoluteMapUpdate(
+                AbsoluteMapUpdateKind.VISIT_NODE,
+                MapUpdateAuthority.COORDINATOR,
+                node_id=completed_task.target_id,
+            )
+        elif completed_task.kind is TaskKind.CULVERT_RECON:
+            update = AbsoluteMapUpdate(
+                AbsoluteMapUpdateKind.RECON_CULVERT,
+                MapUpdateAuthority.COORDINATOR,
+                edge_id=completed_task.target_id,
+            )
+        else:
+            self.diagnostics.append("任务类型没有完成地图事实：{}".format(completed_task.kind.value))
+            return
+        # 地图自身负责前置条件和幂等性，Coordinator 只提交已校验的派生事实。
+        try:
+            self._runtime_map.apply(update)
+        except ValueError as error:
+            self.diagnostics.append("任务完成地图事实被拒绝：{}".format(error))
 
     def _consume_perception(self, action: Optional[Action], interrupt: ExecutionInterrupt) -> None:
         """消费观察完成中断中的唯一感知帧，并应用已确认的翻译结果。"""
