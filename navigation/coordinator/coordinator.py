@@ -192,6 +192,32 @@ class Coordinator:
             self._clear_in_flight()
         return ack
 
+    def start_junction_escape(self, side) -> bool:
+        """接收恢复策略选定的侧支方向并保存编排器生成的局部剧本。
+
+        本入口只做协调器中转，不自动提交第一条动作；调用方应在确认状态后
+        再调用 `dispatch_next()`，从而保留异步执行的单一入口。
+        """
+
+        # 在途动作尚未终局时不能替换剧本，避免旧动作与新恢复流程并行存在。
+        if self._current_request is not None:
+            self.diagnostics.append("已有在途请求，不能启动局部脱困剧本")
+            return False
+        # 侧支剧本由编排器生成，Coordinator 不自行构造阶段或运动命令。
+        start_method = getattr(self._choreographer, "start_junction_escape", None)
+        if start_method is None:
+            self.diagnostics.append("编排器未提供局部脱困入口")
+            return False
+        result = start_method(side)
+        if result.status is not ChoreographyStartStatus.STARTED or result.plan is None or result.progress is None:
+            self.diagnostics.append("局部脱困剧本启动被拒绝")
+            return False
+        # 保存新剧本及其首个游标，后续动作仍由 dispatch_next 统一中转执行器。
+        self._plan = result.plan
+        self._progress = result.progress
+        self.diagnostics.append("已装载局部脱困剧本")
+        return True
+
     def handle_execution_interrupt(self, interrupt: ExecutionInterrupt) -> bool:
         """消费第一条完整匹配的终局；迟到、重复或未知身份只记录诊断。"""
 
