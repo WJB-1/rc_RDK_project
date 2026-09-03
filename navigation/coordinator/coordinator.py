@@ -13,6 +13,7 @@ from navigation.contracts import (
     ChoreographyAdvanceStatus,
     ChoreographyPlan,
     ChoreographyProgress,
+    CompleteTaskEffect,
     DispatchAck,
     DriveDistanceCommand,
     DriveExecutionCommand,
@@ -62,6 +63,7 @@ class Coordinator:
         runtime_map=None,
         location_projector=None,
         topology: Optional[TrackTopology] = None,
+        task_registry=None,
     ) -> None:
         """保存已装配依赖；中断回调由 NavigationRuntime 负责注册。"""
 
@@ -81,6 +83,8 @@ class Coordinator:
         self._location_projector = location_projector
         # 静态拓扑用于把地图更新的物理边映射到活动路线的巡航边。
         self._topology = topology
+        # 任务注册表由 Coordinator 在提交和确认任务动作时推进生命周期。
+        self._task_registry = task_registry
         # 保存当前活动剧本和动作成功后才能兑现的下一指针。
         self._plan: Optional[ChoreographyPlan] = None
         self._progress: Optional[ChoreographyProgress] = None
@@ -165,6 +169,13 @@ class Coordinator:
         self._current_action = action
         request = self._translate_action(action)
         self._current_request = request
+        # 任务动作只有在注册表成功占用后才能交给执行器，避免重复执行同一任务。
+        if isinstance(action.expected_effect, CompleteTaskEffect) and self._task_registry is not None:
+            transition = self._task_registry.begin(action.expected_effect.task_id)
+            if not transition.accepted:
+                self.diagnostics.append("任务无法进入执行态：{}".format(transition.reason))
+                self._clear_in_flight()
+                return DispatchAck(request.request_id, False, transition.reason or "任务无法开始")
         # 同步拒绝表示动作从未开始，必须撤销刚才预保存的在途记录。
         ack = self._executor.submit(request)
         if not ack.accepted:
@@ -192,10 +203,26 @@ class Coordinator:
         if interrupt.outcome is ExecutionOutcome.COMPLETED:
             self._project_success(self._current_action, interrupt)
             self._consume_perception(self._current_action, interrupt)
+            self._consume_task(self._current_action)
         self._clear_in_flight()
         if interrupt.outcome is not ExecutionOutcome.COMPLETED:
             self.diagnostics.append("动作 {} 以 {} 结束".format(interrupt.action_id, interrupt.outcome.value))
         return True
+
+    def _consume_task(self, action: Optional[Action]) -> None:
+        """将匹配成功的任务动作推进为完成态。"""
+
+        # 只有带完成投影效果的任务动作需要触碰任务注册表。
+        if action is None or not isinstance(action.expected_effect, CompleteTaskEffect):
+            return
+        # 未装配注册表时只保留诊断，不在协调器内部复制任务生命周期。
+        if self._task_registry is None:
+            self.diagnostics.append("未装配任务注册表，无法完成任务 {}".format(action.expected_effect.task_id))
+            return
+        # 注册表拒绝通常表示迟到或重复任务终局，记录原因但不伪造成功。
+        transition = self._task_registry.complete(action.expected_effect.task_id)
+        if not transition.accepted:
+            self.diagnostics.append("任务完成状态转换被拒绝：{}".format(transition.reason))
 
     def _consume_perception(self, action: Optional[Action], interrupt: ExecutionInterrupt) -> None:
         """消费观察完成中断中的唯一感知帧，并应用已确认的翻译结果。"""
