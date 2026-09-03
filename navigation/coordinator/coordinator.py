@@ -36,6 +36,7 @@ from navigation.contracts import (
     TurnExecutionCommand,
 )
 from navigation.domain import AtNode, OnCruiseEdge, ProgressSource, RobotState
+from navigation.domain import TrackTopology
 
 
 class LastCompletedTurn:
@@ -60,6 +61,7 @@ class Coordinator:
         perception_adapter=None,
         runtime_map=None,
         location_projector=None,
+        topology: Optional[TrackTopology] = None,
     ) -> None:
         """保存已装配依赖；中断回调由 NavigationRuntime 负责注册。"""
 
@@ -77,6 +79,8 @@ class Coordinator:
         self._runtime_map = runtime_map
         # 位置投影器只接收已确认的视觉校正，不直接参与感知翻译。
         self._location_projector = location_projector
+        # 静态拓扑用于把地图更新的物理边映射到活动路线的巡航边。
+        self._topology = topology
         # 保存当前活动剧本和动作成功后才能兑现的下一指针。
         self._plan: Optional[ChoreographyPlan] = None
         self._progress: Optional[ChoreographyProgress] = None
@@ -99,6 +103,12 @@ class Coordinator:
         """返回当前唯一在途执行请求，未受理或已终局时为空。"""
 
         return self._current_request
+
+    @property
+    def active_choreography(self) -> Optional[ChoreographyPlan]:
+        """返回当前活动剧本，剧本销毁或完成后返回空值。"""
+
+        return self._plan
 
     @property
     def is_waiting_interrupt(self) -> bool:
@@ -219,7 +229,9 @@ class Coordinator:
             self.diagnostics.append("未装配 RuntimeMap，无法应用感知地图更新")
         elif self._runtime_map is not None:
             for update in translation.map_updates:
-                self._runtime_map.apply(update)
+                changed = self._runtime_map.apply(update)
+                if changed:
+                    self._handle_map_update_impact(update)
         # 已确认位置校正交给位置投影器，Coordinator 不重复实现几何换算。
         correction = translation.position_correction
         if correction is not None:
@@ -229,6 +241,42 @@ class Coordinator:
             current_state = self._state_store.robot_state()
             next_state = self._location_projector.correct_from_landmark(current_state, correction)
             self._state_store.replace_robot_state(next_state)
+
+    def _handle_map_update_impact(self, update) -> None:
+        """根据已生效地图事实决定保留活动剧本还是销毁并等待重规划。"""
+
+        # 地图事实生效后，无论是否影响当前路线，都应在状态中留下待重规划意图。
+        self._mark_pending_replan()
+        # 只有能够映射到活动剧本的物理边时，才需要立即废弃旧剧本。
+        if self._plan is None or self._topology is None or update.edge_id is None:
+            return
+        # 遍历活动剧本的巡航步骤，检查更新物理边是否属于任一路线组成。
+        for traversal_id in self._plan.route_steps:
+            from_node_id, to_node_id = traversal_id.split("->", 1)
+            cruise_edge = self._topology.get_cruise_edge(from_node_id, to_node_id)
+            if update.edge_id in cruise_edge.physical_edge_ids:
+                # 当前路线已无法保证安全，销毁路线和编排游标，禁止继续旧动作。
+                self._plan = None
+                self._progress = None
+                self.diagnostics.append("地图更新影响活动路线，已销毁剧本并等待重新规划")
+                return
+
+    def _mark_pending_replan(self) -> None:
+        """在不改变当前位置的前提下设置待安全路口兑现的重规划标记。"""
+
+        if self._state_store is None:
+            return
+        current_state = self._state_store.robot_state()
+        if current_state.pending_replan:
+            return
+        self._state_store.replace_robot_state(
+            RobotState(
+                current_state.location,
+                current_state.heading_deg,
+                current_state.progress_source,
+                True,
+            )
+        )
 
     def _project_success(self, action: Optional[Action], interrupt: ExecutionInterrupt) -> None:
         """将当前阶段已确认的前进里程投影为边上逻辑位置。"""
