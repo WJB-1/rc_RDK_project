@@ -138,7 +138,6 @@ class Coordinator:
         self._navigation_state = navigation_state
         if self._navigation_state is None and (state_store is not None or runtime_map is not None):
             self._navigation_state = _LegacyNavigationStateAdapter(state_store, runtime_map)
-        self._event_projector = EventProjector(self._navigation_state) if self._navigation_state is not None else None
         # 感知适配器只负责翻译单帧，地图和位置仍由 Coordinator 统一消费。
         self._perception_adapter = perception_adapter
         # 运行时地图由 Coordinator 写入，适配器本身不持有地图写权限。
@@ -171,6 +170,19 @@ class Coordinator:
         self._pending_retrace_source_action_id: Optional[str] = None
         # 记录诊断信息但不把迟到事件重新解释为业务动作。
         self.diagnostics: List[str] = []
+        # 投影器集中处理执行反馈写入，地图影响仍回调 Coordinator 做路线生命周期分流。
+        self._event_projector = (
+            EventProjector(
+                self._navigation_state,
+                task_registry=self._task_registry,
+                perception_adapter=self._perception_adapter,
+                location_projector=self._location_projector,
+                on_map_update=self._handle_projected_map_update,
+                diagnostics=self.diagnostics,
+            )
+            if self._navigation_state is not None
+            else None
+        )
 
     @property
     def current_action(self) -> Optional[Action]:
@@ -521,6 +533,10 @@ class Coordinator:
     def _consume_task(self, action: Optional[Action]) -> None:
         """将匹配成功的任务动作推进为完成态。"""
 
+        if self._event_projector is not None:
+            self._event_projector.project_task(action)
+            return
+
         # 只有带完成投影效果的任务动作需要触碰任务注册表。
         if action is None or not isinstance(action.expected_effect, CompleteTaskEffect):
             return
@@ -560,6 +576,10 @@ class Coordinator:
 
     def _consume_perception(self, action: Optional[Action], interrupt: ExecutionInterrupt) -> None:
         """消费观察完成中断中的唯一感知帧，并应用已确认的翻译结果。"""
+
+        if self._event_projector is not None:
+            self._event_projector.project_perception(action, interrupt)
+            return
 
         # 非观察动作不应携带感知帧，避免把错误载荷写入地图。
         if action is None or not isinstance(action.command, ObserveCommand):
@@ -606,6 +626,14 @@ class Coordinator:
             current_state = self._navigation_state.robot_state()
             next_state = self._location_projector.correct_from_landmark(current_state, correction)
             self._navigation_state.replace_robot_state(next_state)
+
+    def _handle_projected_map_update(self, update: AbsoluteMapUpdate) -> None:
+        """接收投影器已写入的地图事实并处理活动路线生命周期。"""
+
+        if update.kind is AbsoluteMapUpdateKind.DISCOVER_CULVERT:
+            self._replace_culvert_choreography(update)
+        else:
+            self._handle_map_update_impact(update)
 
     def _replace_culvert_choreography(self, update: AbsoluteMapUpdate) -> None:
         """将命中活动路线的涵洞发现交给编排器替换当前剧本。"""
