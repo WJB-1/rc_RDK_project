@@ -57,6 +57,8 @@ from .departure_flow import DepartureFlow
 from .escape_flow import EscapeFlow
 from .return_flow import ReturnFlow
 from .task_flow import TaskFlow
+from .context import CoordinatorContext
+from .states import CoordinatorState, DepartureSubstate, EscapeSubstate, ReturnSubstate, TaskSubstate
 
 
 class LastCompletedTurn:
@@ -155,6 +157,8 @@ class Coordinator:
         self._task_flow = TaskFlow(self)
         self._escape_flow = EscapeFlow(self)
         self._return_flow = ReturnFlow(self)
+        # 保存外层状态与内部阶段，供事件入口和调试面板读取。
+        self._context = CoordinatorContext()
         # 保存当前活动剧本和动作成功后才能兑现的下一指针。
         self._plan: Optional[ChoreographyPlan] = None
         self._progress: Optional[ChoreographyProgress] = None
@@ -198,6 +202,37 @@ class Coordinator:
 
         return self._last_completed_turn
 
+    @property
+    def state(self) -> CoordinatorState:
+        """返回协调器当前外层有限状态。"""
+
+        return self._context.state
+
+    @property
+    def substate(self):
+        """返回当前外层状态对应的内部阶段。"""
+
+        if self._context.state is CoordinatorState.DEPARTURE:
+            return self._context.departure_substate
+        if self._context.state is CoordinatorState.TASK_PROCESSING:
+            return self._context.task_substate
+        if self._context.state is CoordinatorState.ESCAPE:
+            return self._context.escape_substate
+        if self._context.state is CoordinatorState.RETURNING:
+            return self._context.return_substate
+        return None
+
+    def enter_returning(self) -> None:
+        """切换到返回状态机的首个规划阶段。"""
+
+        self._context.transition(CoordinatorState.RETURNING, ReturnSubstate.PLAN_TO_START)
+
+    def enter_exception(self, reason: str) -> None:
+        """记录异常原因并进入异常终局，不再生成普通动作。"""
+
+        self.diagnostics.append(reason)
+        self._context.transition(CoordinatorState.EXCEPTION)
+
     def dispatch_next(
         self,
         plan: Optional[ChoreographyPlan] = None,
@@ -239,6 +274,12 @@ class Coordinator:
         action = result.action
         self._progress = result.next_progress
         self._current_action = action
+        if self._context.state is CoordinatorState.DEPARTURE:
+            self._context.transition(CoordinatorState.DEPARTURE, DepartureSubstate.EXECUTE)
+        elif self._context.state is CoordinatorState.TASK_PROCESSING:
+            self._context.transition(CoordinatorState.TASK_PROCESSING, TaskSubstate.EXECUTING)
+        elif self._context.state is CoordinatorState.ESCAPE:
+            self._context.transition(CoordinatorState.ESCAPE, EscapeSubstate.BACKTRACK_EXECUTING)
         request = self._translate_action(action)
         self._current_request = request
         # 任务动作只有在注册表成功占用后才能交给执行器，避免重复执行同一任务。
@@ -287,10 +328,15 @@ class Coordinator:
         Coordinator 只负责选择恢复分支、保存编排结果并继续统一的异步执行入口。
         """
 
+        # 正常重规划属于任务处理状态，状态值用于调试和后续子流程分发。
+        if self._context.state in (CoordinatorState.DEPARTURE, CoordinatorState.TASK_PROCESSING):
+            self._context.transition(CoordinatorState.TASK_PROCESSING, TaskSubstate.PLANNING)
         # 在途动作尚未终局时不能销毁剧本或启动另一条规划流程。
         if self._current_request is not None:
             self.diagnostics.append("已有在途请求，不能开始重新规划")
             return False
+        # 进入脱困子状态后再创建侧支局部剧本，便于调试期间追踪恢复阶段。
+        self._context.transition(CoordinatorState.ESCAPE, EscapeSubstate.TURN_SIDE)
         # 规划只能在路口中心兑现，避免在边上直接转弯或切换目标。
         if self._navigation_state is not None and not self._navigation_state.robot_state().is_at_safe_node:
             self.diagnostics.append("当前位置不是安全路口，暂不兑现重新规划")
@@ -357,6 +403,12 @@ class Coordinator:
             return False
         self._plan = start_result.plan
         self._progress = start_result.progress
+        self._context.active_plan = start_result.plan
+        self._context.active_progress = start_result.progress
+        if self._context.state is CoordinatorState.TASK_PROCESSING:
+            self._context.transition(CoordinatorState.TASK_PROCESSING, TaskSubstate.CHOREOGRAPHING)
+        elif self._context.state is CoordinatorState.ESCAPE:
+            self._context.transition(CoordinatorState.TASK_PROCESSING, TaskSubstate.CHOREOGRAPHING)
         self._clear_pending_replan()
         return True
 
@@ -424,6 +476,8 @@ class Coordinator:
             source_action_id = self._pending_retrace_source_action_id
             self._pending_retrace_source_action_id = None
             self._start_retrace_turn(source_action_id)
+        elif interrupt.outcome is ExecutionOutcome.COMPLETED and self._context.state is CoordinatorState.TASK_PROCESSING:
+            self._context.transition(CoordinatorState.TASK_PROCESSING, TaskSubstate.ANALYZING)
         if interrupt.outcome is not ExecutionOutcome.COMPLETED:
             self.diagnostics.append("动作 {} 以 {} 结束".format(interrupt.action_id, interrupt.outcome.value))
         return True
@@ -458,6 +512,9 @@ class Coordinator:
         # 阻塞意味着当前计划不可继续，统一清理剧本和游标。
         self._plan = None
         self._progress = None
+        self._context.active_plan = None
+        self._context.active_progress = None
+        self._context.transition(CoordinatorState.ESCAPE, EscapeSubstate.RESTORE_HEADING)
         self._mark_pending_replan()
         self.diagnostics.append("动作阻塞，已销毁剧本并等待重新规划")
 
@@ -627,6 +684,7 @@ class Coordinator:
     def _start_retrace_turn(self, source_action_id: str) -> bool:
         """在观察中断收口后装载编排器生成的同轨迹撤回剧本。"""
 
+        self._context.transition(CoordinatorState.ESCAPE, EscapeSubstate.RETRACE_TURN)
         start_method = getattr(self._choreographer, "start_retrace_turn", None)
         if start_method is None:
             self.diagnostics.append("编排器未提供撤回转弯入口")
