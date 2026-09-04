@@ -12,6 +12,7 @@ from navigation.domain import AtNode, CruiseEdge, Goal, TrackTopology
 # 导入本层查询、步骤、计划和结果数据包，避免返回裸列表或异常表达不可达。
 from .models import (
     EscapeAssessment,
+    EscapeDirectionAssessment,
     JunctionPassability,
     PlanningStateQuery,
     RoutePlan,
@@ -52,23 +53,40 @@ class RoutePlanner:
         # 读取同一时刻的动态地图快照，保证四个方向使用一致的阻塞事实。
         map_snapshot = self._state_query.runtime_map_snapshot()
         results = {
-            "forward": JunctionPassability.ABSENT,
-            "left": JunctionPassability.ABSENT,
-            "right": JunctionPassability.ABSENT,
-            "backward": JunctionPassability.ABSENT,
+            "forward": EscapeDirectionAssessment(JunctionPassability.ABSENT, False),
+            "left": EscapeDirectionAssessment(JunctionPassability.ABSENT, False),
+            "right": EscapeDirectionAssessment(JunctionPassability.ABSENT, False),
+            "backward": EscapeDirectionAssessment(JunctionPassability.ABSENT, False),
         }
         # 将每条静态出边按相对朝向归类，并把物理边阻塞映射为局部状态。
         for cruise_edge in self._topology.outgoing_cruise_edges(robot_state.location.node_id):
             direction = self._relative_direction(robot_state.location.node_id, cruise_edge, robot_state.heading_deg)
             if direction is None:
                 continue
-            passability = (
-                JunctionPassability.BLOCKED
-                if self._is_blocked_snapshot(cruise_edge, map_snapshot.blocked_edge_ids)
-                else JunctionPassability.OPEN
-            )
-            results[direction] = self._merge_passability(results[direction], passability)
+            passability = self._passability(cruise_edge, map_snapshot)
+            worth_trying = self._worth_trying(direction, cruise_edge, passability)
+            candidate = EscapeDirectionAssessment(passability, worth_trying, cruise_edge.traversal_id)
+            results[direction] = self._merge_assessment(results[direction], candidate)
         return EscapeAssessment(**results)
+
+    def _passability(self, cruise_edge: CruiseEdge, map_snapshot) -> JunctionPassability:
+        """将一条完整巡航边的物理事实合成为四状态之一。"""
+
+        if self._is_blocked_snapshot(cruise_edge, map_snapshot.blocked_edge_ids):
+            return JunctionPassability.BLOCKED
+        if all(edge_id in map_snapshot.confirmed_clear_edge_ids for edge_id in cruise_edge.physical_edge_ids):
+            return JunctionPassability.CLEAR
+        return JunctionPassability.UNOBSERVED
+
+    def _worth_trying(self, direction: str, cruise_edge: CruiseEdge, status: JunctionPassability) -> bool:
+        """返回方向是否值得尝试；完整目标可达性可由状态查询口提供。"""
+
+        if status in (JunctionPassability.ABSENT, JunctionPassability.BLOCKED):
+            return False
+        reachability = getattr(self._state_query, "can_escape_via", None)
+        if reachability is not None:
+            return bool(reachability(direction, cruise_edge.traversal_id))
+        return True
 
     def plan(self, query: RouteQuery, candidates: Tuple[Goal, ...]) -> RoutePlanResult:
         """在候选目标中选择合法 Dijkstra 距离最小且标识稳定的路线。
@@ -210,14 +228,26 @@ class RoutePlanner:
         return None
 
     @staticmethod
-    def _merge_passability(current: JunctionPassability, observed: JunctionPassability) -> JunctionPassability:
-        """合并同一相对方向的多条出边，优先保留可通行事实。"""
+    def _merge_assessment(current: EscapeDirectionAssessment, observed: EscapeDirectionAssessment) -> EscapeDirectionAssessment:
+        """合并同一相对方向的多条出边，保留更安全且值得尝试的事实。"""
 
-        if current is JunctionPassability.OPEN or observed is JunctionPassability.OPEN:
-            return JunctionPassability.OPEN
-        if current is JunctionPassability.BLOCKED or observed is JunctionPassability.BLOCKED:
-            return JunctionPassability.BLOCKED
-        return JunctionPassability.ABSENT
+        if current.status is JunctionPassability.ABSENT:
+            return observed
+        if current.status is JunctionPassability.BLOCKED or observed.status is JunctionPassability.BLOCKED:
+            return EscapeDirectionAssessment(
+                JunctionPassability.BLOCKED,
+                False,
+                current.traversal_id or observed.traversal_id,
+            )
+        if observed.status is JunctionPassability.CLEAR:
+            return observed
+        if current.status is JunctionPassability.CLEAR:
+            return current
+        return EscapeDirectionAssessment(
+            current.status,
+            current.worth_trying or observed.worth_trying,
+            current.traversal_id or observed.traversal_id,
+        )
 
     @staticmethod
     def _is_reverse(entry_traversal_id: Optional[str], next_traversal_id: str) -> bool:

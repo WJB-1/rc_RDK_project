@@ -263,6 +263,58 @@ class Choreographer:
             ChoreographyProgress(choreography_id, 0),
         )
 
+    def start_retrace_turn(self, source_action_id: str) -> ChoreographyStartResult:
+        """为已完成但验证失败的侧支转弯创建单步同轨迹撤回剧本。"""
+
+        if not source_action_id:
+            return ChoreographyStartResult(
+                ChoreographyStartStatus.REJECTED,
+                rejection=ChoreographyRejection(
+                    ChoreographyRejectionCode.MISSING_RETRACE_SOURCE,
+                    "撤回转弯缺少原前向动作标识",
+                ),
+            )
+        robot_state = self._state_query.robot_state()
+        if not isinstance(robot_state.location, AtNode):
+            return ChoreographyStartResult(
+                ChoreographyStartStatus.REJECTED,
+                rejection=ChoreographyRejection(
+                    ChoreographyRejectionCode.INVALID_PROGRESS,
+                    "撤回转弯必须从路口中心开始",
+                ),
+            )
+        stage = self._stage(
+            0,
+            "retrace",
+            ChoreographyStageKind.RETRACE_TURN,
+            None,
+            robot_state.location.node_id,
+        )
+        stage = ChoreographyStage(
+            stage.stage_id,
+            stage.kind,
+            stage.traversal_id,
+            stage.node_id,
+            source_action_id=source_action_id,
+        )
+        choreography_id = self._choreography_id(
+            "junction-retrace:{}".format(robot_state.location.node_id),
+            (stage.stage_id, source_action_id),
+        )
+        plan = ChoreographyPlan(
+            choreography_id,
+            "junction-retrace:{}".format(robot_state.location.node_id),
+            ChoreographySourceKind.JUNCTION_RECOVERY,
+            0,
+            (),
+            (stage,),
+        )
+        return ChoreographyStartResult(
+            ChoreographyStartStatus.STARTED,
+            plan,
+            ChoreographyProgress(choreography_id, 0),
+        )
+
     def _start_route(self, route: RoutePlan) -> ChoreographyStartResult:
         """把正常路线的每条巡航边预展开为统一的经验流程阶段。"""
 

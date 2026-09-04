@@ -9,6 +9,7 @@ from .recovery_planner import RecoveryPlanner
 # 重新导出路线和恢复数据包，使协调器不依赖规划模型的内部文件路径。
 from .models import (
     EscapeAssessment,
+    EscapeDirectionAssessment,
     JunctionPassability,
     PlanningEntryConstraint,
     PlanningStateQuery,
@@ -42,6 +43,7 @@ __all__ = (
     # 局部脱困查询和首边规划门禁类型。
     "JunctionPassability",
     "EscapeAssessment",
+    "EscapeDirectionAssessment",
     "PlanningEntryConstraint",
     "PlanningStateQuery",
     # 恢复查询、步骤、计划和显式结果类型。

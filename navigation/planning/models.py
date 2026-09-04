@@ -14,26 +14,55 @@ from navigation.domain import AtNode, Goal, RobotState, RuntimeMapSnapshot
 class JunctionPassability(Enum):
     """当前路口某个相对方向的局部通路事实。"""
 
-    # 静态巡航边存在，且其物理组成边没有被运行时地图阻塞。
-    OPEN = "open"
+    # 静态巡航边存在，且其物理组成边都已由可靠观察确认无障碍。
+    CLEAR = "clear"
+    # 兼容旧调用方；OPEN 与 CLEAR 表示同一事实。
+    OPEN = "clear"
     # 静态巡航边存在，但至少一条物理组成边当前被阻塞。
     BLOCKED = "blocked"
+    # 静态巡航边存在，但尚未获得完整的安全或阻塞观察结论。
+    UNOBSERVED = "unobserved"
     # 静态拓扑中没有对应方向的巡航边。
     ABSENT = "absent"
 
 
 @dataclass(frozen=True)
+class EscapeDirectionAssessment:
+    """一个相对方向的通路状态和是否值得尝试的规划报告。"""
+
+    # 该方向对应静态巡航边的动态事实状态。
+    status: JunctionPassability
+    # 从该方向继续后，当前任务目标或返航目标是否仍可达。
+    worth_trying: bool
+    # 该方向对应的有向巡航标识；不存在时为空。
+    traversal_id: Optional[str] = None
+
+    def __eq__(self, other) -> bool:
+        """兼容旧的状态比较，同时保留新报告对象的完整相等语义。"""
+
+        if isinstance(other, JunctionPassability):
+            return self.status is other
+        if not isinstance(other, EscapeDirectionAssessment):
+            return NotImplemented
+        return (
+            self.status is other.status
+            and self.worth_trying == other.worth_trying
+            and self.traversal_id == other.traversal_id
+        )
+
+
+@dataclass(frozen=True)
 class EscapeAssessment:
-    """路径层对当前路口前后左右局部通路的只读报告，不做方向推荐。"""
+    """路径层对当前路口前后左右的事实和脱困可行性只读报告。"""
 
     # 机器人当前车头正前方的局部通路状态。
-    forward: JunctionPassability
+    forward: EscapeDirectionAssessment
     # 机器人左侧九十度方向的局部通路状态。
-    left: JunctionPassability
+    left: EscapeDirectionAssessment
     # 机器人右侧九十度方向的局部通路状态。
-    right: JunctionPassability
+    right: EscapeDirectionAssessment
     # 机器人后方一百八十度方向的局部通路状态，仅供诊断显示。
-    backward: JunctionPassability
+    backward: EscapeDirectionAssessment
 
 
 @dataclass(frozen=True)

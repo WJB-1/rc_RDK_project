@@ -14,6 +14,7 @@ from navigation.contracts import (
     ChoreographyStartStatus,
     ChoreographyPlan,
     ChoreographyProgress,
+    ChoreographySourceKind,
     CompleteTaskEffect,
     DispatchAck,
     DriveDistanceCommand,
@@ -48,6 +49,7 @@ from navigation.domain import (
     TaskKind,
 )
 from navigation.domain import TrackTopology
+from navigation.planning import RecoveryPlanOutcome, RoutePlanOutcome
 
 
 class LastCompletedTurn:
@@ -74,6 +76,8 @@ class Coordinator:
         location_projector=None,
         topology: Optional[TrackTopology] = None,
         task_registry=None,
+        route_planner=None,
+        recovery_planner=None,
     ) -> None:
         """保存已装配依赖；中断回调由 NavigationRuntime 负责注册。"""
 
@@ -95,6 +99,10 @@ class Coordinator:
         self._topology = topology
         # 任务注册表由 Coordinator 在提交和确认任务动作时推进生命周期。
         self._task_registry = task_registry
+        # 正常规划器负责自行选目标和生成路线，Coordinator 只消费其结果。
+        self._route_planner = route_planner
+        # 恢复规划器负责自行选择倒车目标，Coordinator 不传入安全路口参数。
+        self._recovery_planner = recovery_planner
         # 保存当前活动剧本和动作成功后才能兑现的下一指针。
         self._plan: Optional[ChoreographyPlan] = None
         self._progress: Optional[ChoreographyProgress] = None
@@ -103,6 +111,8 @@ class Coordinator:
         self._current_request: Optional[ExecutionRequest] = None
         # 记录最近成功转弯，供局部恢复引用而不要求执行器缓存历史。
         self._last_completed_turn: Optional[LastCompletedTurn] = None
+        # 记录侧支观察发现阻塞后，待当前观察中断收口再生成的撤回来源动作。
+        self._pending_retrace_source_action_id: Optional[str] = None
         # 记录诊断信息但不把迟到事件重新解释为业务动作。
         self.diagnostics: List[str] = []
 
@@ -218,6 +228,119 @@ class Coordinator:
         self.diagnostics.append("已装载局部脱困剧本")
         return True
 
+    def replan(self) -> bool:
+        """在安全路口触发一次无参规划，并按结果装载正常或恢复剧本。
+
+        正常规划和倒车恢复都由各自规划器自行读取共享地图、位姿和任务上下文；
+        Coordinator 只负责选择恢复分支、保存编排结果并继续统一的异步执行入口。
+        """
+
+        # 在途动作尚未终局时不能销毁剧本或启动另一条规划流程。
+        if self._current_request is not None:
+            self.diagnostics.append("已有在途请求，不能开始重新规划")
+            return False
+        # 规划只能在路口中心兑现，避免在边上直接转弯或切换目标。
+        if self._state_store is not None and not self._state_store.robot_state().is_at_safe_node:
+            self.diagnostics.append("当前位置不是安全路口，暂不兑现重新规划")
+            return False
+        if self._route_planner is None:
+            self.diagnostics.append("未装配正常规划器")
+            return False
+
+        # 新规划开始前销毁与旧地图版本绑定的路线和编排游标。
+        self._plan = None
+        self._progress = None
+        result = self._route_planner.plan()
+        if result.outcome is RoutePlanOutcome.PLANNED and result.plan is not None:
+            return self._load_planning_result(result.plan)
+
+        # 正常路线不可行时，请路径规划层给出四方向受困分析。
+        assess_method = getattr(self._route_planner, "assess_escape", None)
+        if assess_method is None:
+            self.diagnostics.append("规划器未提供受困分析接口")
+            return False
+        assessment = assess_method()
+
+        # 前方优先；若规划器认为前方仍值得尝试，再给它一次无参正式规划机会。
+        if self._is_worth_trying(assessment.forward):
+            forward_result = self._route_planner.plan()
+            if forward_result.outcome is RoutePlanOutcome.PLANNED and forward_result.plan is not None:
+                return self._load_planning_result(forward_result.plan)
+
+        # 前方不可用后依次尝试左、右，方向选择只消费规划层报告。
+        for report, side in (
+            (assessment.left, "LEFT"),
+            (assessment.right, "RIGHT"),
+        ):
+            if not self._is_worth_trying(report):
+                continue
+            direction = self._turn_direction_by_name(side)
+            if self.start_junction_escape(direction):
+                return True
+
+        # 三个前向方向都不能脱困时才启动无参倒车恢复规划。
+        if self._recovery_planner is None:
+            self.diagnostics.append("没有可尝试的前向方向且未装配恢复规划器")
+            return False
+        recovery_result = self._recovery_planner.plan()
+        if recovery_result.outcome is not RecoveryPlanOutcome.RECOVERABLE or recovery_result.plan is None:
+            self.diagnostics.append("恢复规划未找到可行倒车目标")
+            return False
+        return self._load_planning_result(recovery_result.plan)
+
+    def _load_planning_result(self, planning_plan) -> bool:
+        """把规划器返回的路线或恢复路线交给编排器并保存新游标。"""
+
+        start_method = getattr(self._choreographer, "start", None)
+        if start_method is None:
+            self.diagnostics.append("编排器未提供 start 入口")
+            return False
+        start_result = start_method(planning_plan)
+        if (
+            start_result.status is not ChoreographyStartStatus.STARTED
+            or start_result.plan is None
+            or start_result.progress is None
+        ):
+            self.diagnostics.append("编排器拒绝规划结果")
+            return False
+        self._plan = start_result.plan
+        self._progress = start_result.progress
+        self._clear_pending_replan()
+        return True
+
+    @staticmethod
+    def _is_worth_trying(report) -> bool:
+        """读取方向报告的 worth_trying；兼容旧版单枚举状态报告。"""
+
+        if hasattr(report, "worth_trying"):
+            return bool(report.worth_trying)
+        return report.name in ("CLEAR", "OPEN", "UNOBSERVED")
+
+    @staticmethod
+    def _turn_direction_by_name(name: str):
+        """将协调器的固定优先级名称映射为公开转向枚举。"""
+
+        from navigation.contracts import TurnDirection
+
+        return TurnDirection.LEFT if name == "LEFT" else TurnDirection.RIGHT
+
+    def _clear_pending_replan(self) -> None:
+        """新剧本成功装载后清除已经兑现的待重规划标记。"""
+
+        if self._state_store is None:
+            return
+        current_state = self._state_store.robot_state()
+        if not current_state.pending_replan:
+            return
+        self._state_store.replace_robot_state(
+            RobotState(
+                current_state.location,
+                current_state.heading_deg,
+                current_state.progress_source,
+                False,
+            )
+        )
+
     def handle_execution_interrupt(self, interrupt: ExecutionInterrupt) -> bool:
         """消费第一条完整匹配的终局；迟到、重复或未知身份只记录诊断。"""
 
@@ -244,6 +367,11 @@ class Coordinator:
             self._consume_perception(self._current_action, interrupt)
             self._consume_task(self._current_action)
         self._clear_in_flight()
+        # 观察中断已经完成清理后，才允许装载撤回剧本，保持单一在途请求。
+        if self._pending_retrace_source_action_id is not None:
+            source_action_id = self._pending_retrace_source_action_id
+            self._pending_retrace_source_action_id = None
+            self._start_retrace_turn(source_action_id)
         if interrupt.outcome is not ExecutionOutcome.COMPLETED:
             self.diagnostics.append("动作 {} 以 {} 结束".format(interrupt.action_id, interrupt.outcome.value))
         return True
@@ -417,8 +545,9 @@ class Coordinator:
     def _handle_map_update_impact(self, update) -> None:
         """根据已生效地图事实决定保留活动剧本还是销毁并等待重规划。"""
 
-        # 地图事实生效后，无论是否影响当前路线，都应在状态中留下待重规划意图。
-        self._mark_pending_replan()
+        # 确认道路安全不是路线变化，不应凭空触发重规划。
+        if update.kind is not AbsoluteMapUpdateKind.BLOCK_EDGE:
+            return
         # 只有能够映射到活动剧本的物理边时，才需要立即废弃旧剧本。
         if self._plan is None or self._topology is None or update.edge_id is None:
             return
@@ -427,11 +556,37 @@ class Coordinator:
             from_node_id, to_node_id = traversal_id.split("->", 1)
             cruise_edge = self._topology.get_cruise_edge(from_node_id, to_node_id)
             if update.edge_id in cruise_edge.physical_edge_ids:
+                # 只有命中活动路线的阻塞才设置待重规划标记。
+                self._mark_pending_replan()
+                # 局部侧支观察确认阻塞时，先沿刚完成的真实转弯轨迹撤回。
+                if self._plan.source_kind is ChoreographySourceKind.JUNCTION_RECOVERY:
+                    if self._last_completed_turn is not None:
+                        self._pending_retrace_source_action_id = self._last_completed_turn.source_action_id
+                    self._plan = None
+                    self._progress = None
+                    self.diagnostics.append("侧支观察发现阻塞，等待生成同轨迹撤回剧本")
+                    return
                 # 当前路线已无法保证安全，销毁路线和编排游标，禁止继续旧动作。
                 self._plan = None
                 self._progress = None
                 self.diagnostics.append("地图更新影响活动路线，已销毁剧本并等待重新规划")
                 return
+
+    def _start_retrace_turn(self, source_action_id: str) -> bool:
+        """在观察中断收口后装载编排器生成的同轨迹撤回剧本。"""
+
+        start_method = getattr(self._choreographer, "start_retrace_turn", None)
+        if start_method is None:
+            self.diagnostics.append("编排器未提供撤回转弯入口")
+            return False
+        result = start_method(source_action_id)
+        if result.status is not ChoreographyStartStatus.STARTED or result.plan is None or result.progress is None:
+            self.diagnostics.append("撤回转弯剧本启动被拒绝")
+            return False
+        self._plan = result.plan
+        self._progress = result.progress
+        self.diagnostics.append("已装载同轨迹撤回转弯剧本")
+        return True
 
     def _mark_pending_replan(self) -> None:
         """在不改变当前位置的前提下设置待安全路口兑现的重规划标记。"""

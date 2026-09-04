@@ -20,8 +20,8 @@ class RoutePlannerPort(Protocol):
     def assess_escape(self) -> EscapeAssessment:
         """读取当前路口前后左右的局部通路事实，不选择方向。"""
 
-    def plan(self, query: RouteQuery, candidates: Tuple[Goal, ...]) -> RoutePlanResult:
-        """在候选目标中选择合法且距离最短的正常路线。"""
+    def plan(self) -> RoutePlanResult:
+        """读取共享状态，自行选择目标并返回正常路线。"""
 
     def plan_to(self, query: RouteQuery, target: Goal) -> RoutePlanResult:
         """为已确定的单一目标生成正常路线。"""
@@ -30,8 +30,8 @@ class RoutePlannerPort(Protocol):
 class RecoveryPlannerPort(Protocol):
     """Coordinator 调用倒车恢复规划器的最小业务端口。"""
 
-    def plan(self, query: RecoveryQuery) -> RecoveryPlanResult:
-        """沿当前进入边验证并生成返回上一安全路口的恢复计划。"""
+    def plan(self) -> RecoveryPlanResult:
+        """读取共享状态，自行选择倒车目标并返回恢复路线。"""
 
     def plan_to(self, query: RecoveryQuery, safe_node: str) -> RecoveryPlanResult:
         """为明确安全路口生成受限倒车恢复计划。"""
@@ -46,5 +46,10 @@ class ChoreographerPort(Protocol):
     def start_junction_escape(self, side):
         """生成指定侧前向转弯和转弯后观察的局部剧本。"""
 
+    def start_retrace_turn(self, source_action_id: str):
+        """引用已完成的前向转弯轨迹，生成同轨迹撤回剧本。"""
+
     def replace_current_traversal_with_culvert(self, plan, progress, traversal_id: str, task_id: str):
         """把当前巡航剩余阶段替换为涵洞探索剧本。"""
+    def start(self, plan):
+        """接收规划器返回的正常或恢复路线并创建新剧本。"""

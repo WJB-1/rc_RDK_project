@@ -24,6 +24,8 @@ class AbsoluteMapUpdateKind(Enum):
     BLOCK_EDGE = "block_edge"
     # 将此前阻塞的道路恢复为可通行。
     UNBLOCK_EDGE = "unblock_edge"
+    # 由一次可靠观察确认道路当前没有障碍。
+    CONFIRM_EDGE_CLEAR = "confirm_edge_clear"
     # 确认某条道路上存在待侦查涵洞。
     DISCOVER_CULVERT = "discover_culvert"
     # 确认某个已发现涵洞已经由匹配任务成功中断确认侦查完成。
@@ -68,6 +70,8 @@ class RuntimeMapSnapshot:
     recon_culvert_edge_ids: FrozenSet[str]
     # 已由协调器确认到达或打卡的节点集合。
     visited_node_ids: FrozenSet[str]
+    # 已由可靠观察确认当前可通行的物理边集合。
+    confirmed_clear_edge_ids: FrozenSet[str] = frozenset()
 
 
 class RuntimeMap:
@@ -84,6 +88,7 @@ class RuntimeMap:
         (
             AbsoluteMapUpdateKind.BLOCK_EDGE,
             AbsoluteMapUpdateKind.UNBLOCK_EDGE,
+            AbsoluteMapUpdateKind.CONFIRM_EDGE_CLEAR,
             AbsoluteMapUpdateKind.DISCOVER_CULVERT,
         )
     )
@@ -109,6 +114,8 @@ class RuntimeMap:
         self._version = 0
         # 保存当前不可通行的物理边标识。
         self._blocked_edge_ids: Set[str] = set()
+        # 保存已经由可靠观察确认没有障碍的物理边标识。
+        self._confirmed_clear_edge_ids: Set[str] = set()
         # 保存已经由视觉确认存在涵洞的物理边标识。
         self._discovered_culvert_edge_ids: Set[str] = set()
         # 保存已经由协调器确认侦查完成的涵洞边标识。
@@ -135,6 +142,8 @@ class RuntimeMap:
             changed = edge_id not in self._blocked_edge_ids
             # 写入阻塞事实；重复添加仍保持集合不变。
             self._blocked_edge_ids.add(edge_id)
+            # 新阻塞事实会使此前的安全确认失效，避免快照同时表达矛盾状态。
+            self._confirmed_clear_edge_ids.discard(edge_id)
         elif update.kind is AbsoluteMapUpdateKind.UNBLOCK_EDGE:
             # 解除阻塞事实必须引用一条物理边。
             edge_id = self._require_edge_id(update)
@@ -142,6 +151,17 @@ class RuntimeMap:
             changed = edge_id in self._blocked_edge_ids
             # 移除阻塞事实；不存在时保持集合不变。
             self._blocked_edge_ids.discard(edge_id)
+            # 解除阻塞本身不等于新的视觉确认，清除旧的安全事实等待重新观察。
+            self._confirmed_clear_edge_ids.discard(edge_id)
+        elif update.kind is AbsoluteMapUpdateKind.CONFIRM_EDGE_CLEAR:
+            # 安全事实必须引用一条物理边。
+            edge_id = self._require_edge_id(update)
+            # 已阻塞的道路不能被普通确认安全事实覆盖，必须先有明确解除阻塞事件。
+            if edge_id in self._blocked_edge_ids:
+                raise ValueError("已阻塞道路不能直接确认安全")
+            # 只有此前没有确认安全的道路会改变地图。
+            changed = edge_id not in self._confirmed_clear_edge_ids
+            self._confirmed_clear_edge_ids.add(edge_id)
         elif update.kind is AbsoluteMapUpdateKind.DISCOVER_CULVERT:
             # 涵洞发现事实必须引用一条物理边。
             edge_id = self._require_edge_id(update)
@@ -189,6 +209,7 @@ class RuntimeMap:
         return RuntimeMapSnapshot(
             version=self._version,
             blocked_edge_ids=frozenset(self._blocked_edge_ids),
+            confirmed_clear_edge_ids=frozenset(self._confirmed_clear_edge_ids),
             discovered_culvert_edge_ids=frozenset(self._discovered_culvert_edge_ids),
             recon_culvert_edge_ids=frozenset(self._recon_culvert_edge_ids),
             visited_node_ids=frozenset(self._visited_node_ids),
