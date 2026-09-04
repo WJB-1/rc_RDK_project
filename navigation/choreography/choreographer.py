@@ -31,6 +31,8 @@ from navigation.contracts import (
     ChoreographyStartStatus,
     DriveDistanceCommand,
     DrivePurpose,
+    CompleteTaskEffect,
+    ExecuteTaskCommand,
     NavigationStateQuery,
     ObservationScope,
     ObserveCommand,
@@ -87,6 +89,179 @@ class Choreographer:
             return self._start_recovery(route_or_recovery)
         # 其他对象不是规划层冻结的输入类型，直接拒绝可避免错误的隐式解释。
         raise TypeError("start 只接受 RoutePlan 或 RecoveryPlan")
+
+    def replace_current_traversal_with_culvert(
+        self,
+        plan: ChoreographyPlan,
+        progress: ChoreographyProgress,
+        traversal_id: str,
+        task_id: str,
+    ) -> ChoreographyStartResult:
+        """将当前巡航边尚未执行的普通阶段替换为涵洞探索阶段。
+
+        谁调用：`Coordinator` 已确认涵洞位于活动路线后调用。
+        谁响应：本方法保留已完成阶段和后续路线阶段，重建当前边剩余阶段。
+        输入输出：输入活动剧本、当前游标、巡航标识和涵洞任务标识；输出新剧本及首个游标。
+        状态影响：只创建不可变剧本，不修改旧剧本、地图、任务或机器人状态。
+        """
+
+        # 先验证游标属于当前剧本，避免在替换时误用已经销毁的旧路线。
+        if not self._is_valid_progress(plan, progress):
+            return ChoreographyStartResult(
+                ChoreographyStartStatus.REJECTED,
+                rejection=ChoreographyRejection(
+                    ChoreographyRejectionCode.INVALID_PROGRESS,
+                    "涵洞替换的流程指针不属于当前剧本",
+                ),
+            )
+        # 剧本已经结束，或目标巡航的所有阶段都已位于游标之前时，不能再插入迟到的任务。
+        if progress.stage_index >= len(plan.stages) or not any(
+            stage.traversal_id == traversal_id
+            for stage in plan.stages[progress.stage_index :]
+        ):
+            return ChoreographyStartResult(
+                ChoreographyStartStatus.REJECTED,
+                rejection=ChoreographyRejection(
+                    ChoreographyRejectionCode.INVALID_PROGRESS,
+                    "涵洞替换目标已完成或当前剧本没有剩余阶段",
+                ),
+            )
+        # 活动路线必须包含待替换的巡航边，未知边不能被编排器猜测端点。
+        if traversal_id not in plan.route_steps:
+            return ChoreographyStartResult(
+                ChoreographyStartStatus.REJECTED,
+                rejection=ChoreographyRejection(
+                    ChoreographyRejectionCode.INVALID_PROGRESS,
+                    "涵洞替换目标不在活动路线中",
+                ),
+            )
+        # 解析当前巡航两端并查询静态长度，保证新剧本仍遵守原路线几何。
+        from_node_id, to_node_id = self._split_traversal_id(traversal_id)
+        cruise_edge = self._topology.get_cruise_edge(from_node_id, to_node_id)
+        # 游标之前的阶段已经执行或正在等待其终局，必须原样保留。
+        preserved_stages = list(plan.stages[: progress.stage_index])
+        # 当前阶段及其后续阶段中，属于目标巡航的普通阶段全部删除；后续巡航阶段继续保留。
+        preserved_stages.extend(
+            stage
+            for stage in plan.stages[progress.stage_index :]
+            if stage.traversal_id != traversal_id
+        )
+        # 新阶段插入在已完成前缀之后，游标指向第一条替换动作。
+        insertion_index = len(plan.stages[: progress.stage_index])
+        replacement_stages = []
+        preserved_current_kinds = {
+            stage.kind
+            for stage in plan.stages[: progress.stage_index]
+            if stage.traversal_id == traversal_id
+        }
+        # 尚未完成进入前观察时保留观察闭环的第一段。
+        if ChoreographyStageKind.OBSERVE_PRE_ENTRY not in preserved_current_kinds:
+            replacement_stages.append(
+                self._stage(0, "culvert_pre", ChoreographyStageKind.OBSERVE_PRE_ENTRY, traversal_id, from_node_id)
+            )
+        # 尚未完成路口转向时继续生成编排器负责的前向转弯阶段。
+        if ChoreographyStageKind.TURN_AT_JUNCTION not in preserved_current_kinds:
+            replacement_stages.append(
+                self._stage(0, "culvert_turn", ChoreographyStageKind.TURN_AT_JUNCTION, traversal_id, from_node_id)
+            )
+        # 涵洞不进入边中观察区，但转弯后仍需观察一次目标边。
+        if ChoreographyStageKind.OBSERVE_POST_TURN not in preserved_current_kinds:
+            replacement_stages.append(
+                self._stage(0, "culvert_post", ChoreographyStageKind.OBSERVE_POST_TURN, traversal_id, from_node_id)
+            )
+        # 涵洞任务的运动收口仍是驶入相邻路口中心。
+        if ChoreographyStageKind.DRIVE_TO_NEXT_CENTER not in preserved_current_kinds:
+            replacement_stages.append(
+                self._stage(0, "culvert_center", ChoreographyStageKind.DRIVE_TO_NEXT_CENTER, traversal_id, to_node_id)
+            )
+        # 到达涵洞目标路口后执行任务，任务阶段由 Coordinator 后续推进注册表生命周期。
+        replacement_stages.append(
+            ChoreographyStage(
+                "stage:0:culvert_task:{}".format(task_id),
+                ChoreographyStageKind.EXECUTE_TASK,
+                traversal_id,
+                to_node_id,
+                task_id,
+            )
+        )
+        # 将替换阶段插回已完成前缀与后续路线之间，保持路线步骤顺序不变。
+        new_stages = preserved_stages[:insertion_index] + replacement_stages + preserved_stages[insertion_index:]
+        # 以源计划和新阶段清单生成新的稳定剧本身份，旧剧本自然失效。
+        choreography_id = self._choreography_id(plan.source_plan_id, tuple(stage.stage_id for stage in new_stages))
+        new_plan = ChoreographyPlan(
+            choreography_id,
+            plan.source_plan_id,
+            plan.source_kind,
+            plan.source_map_version,
+            plan.route_steps,
+            tuple(new_stages),
+        )
+        # 返回替换段第一阶段的游标，协调器随后按普通串行规则提交动作。
+        return ChoreographyStartResult(
+            ChoreographyStartStatus.STARTED,
+            new_plan,
+            ChoreographyProgress(choreography_id, insertion_index),
+        )
+
+    def start_junction_escape(self, side: TurnDirection) -> ChoreographyStartResult:
+        """按协调器指定的左侧或右侧支路创建局部脱困剧本。
+
+        本入口只负责把指定侧支路展开为“前向转弯、转弯后观察”两个阶段；
+        是否继续驶入该支路以及正式路线是否合法，仍由 Coordinator 和 RoutePlanner 决定。
+        """
+
+        # 局部脱困只能从路口中心开始，边上状态没有可定义的侧支路。
+        robot_state = self._state_query.robot_state()
+        if not isinstance(robot_state.location, AtNode):
+            return ChoreographyStartResult(
+                ChoreographyStartStatus.REJECTED,
+                rejection=ChoreographyRejection(
+                    ChoreographyRejectionCode.INVALID_PROGRESS,
+                    "局部脱困必须从路口中心开始",
+                ),
+            )
+        # 依据当前车头朝向筛选指定侧的九十度有向巡航边。
+        traversal_id = None
+        for cruise_edge in self._topology.outgoing_cruise_edges(robot_state.location.node_id):
+            difference = self._turn_difference_deg(
+                cruise_edge.from_junction,
+                cruise_edge.to_junction,
+                robot_state.heading_deg,
+            )
+            if side is TurnDirection.LEFT and abs(difference - 90.0) < 0.000001:
+                traversal_id = cruise_edge.traversal_id
+                break
+            if side is TurnDirection.RIGHT and abs(difference + 90.0) < 0.000001:
+                traversal_id = cruise_edge.traversal_id
+                break
+        # 静态拓扑没有指定侧支路时显式拒绝，不把直行或掉头误当作脱困侧支。
+        if traversal_id is None:
+            return ChoreographyStartResult(
+                ChoreographyStartStatus.REJECTED,
+                rejection=ChoreographyRejection(
+                    ChoreographyRejectionCode.MISSING_TURN_CONFIGURATION,
+                    "指定侧支路不存在已标定的九十度前向转弯",
+                ),
+            )
+        # 局部剧本只保留转弯和转后观察，不预先驶入侧支或生成完整路线。
+        stages = (
+            self._stage(0, "escape_turn", ChoreographyStageKind.TURN_AT_JUNCTION, traversal_id, robot_state.location.node_id),
+            self._stage(0, "escape_observe", ChoreographyStageKind.OBSERVE_POST_TURN, traversal_id, robot_state.location.node_id),
+        )
+        choreography_id = self._choreography_id("junction-escape:{}".format(robot_state.location.node_id), tuple(stage.stage_id for stage in stages))
+        plan = ChoreographyPlan(
+            choreography_id,
+            "junction-escape:{}".format(robot_state.location.node_id),
+            ChoreographySourceKind.JUNCTION_RECOVERY,
+            0,
+            (traversal_id,),
+            stages,
+        )
+        return ChoreographyStartResult(
+            ChoreographyStartStatus.STARTED,
+            plan,
+            ChoreographyProgress(choreography_id, 0),
+        )
 
     def _start_route(self, route: RoutePlan) -> ChoreographyStartResult:
         """把正常路线的每条巡航边预展开为统一的经验流程阶段。"""
@@ -202,11 +377,33 @@ class Choreographer:
         # 路口局部恢复必须沿已完成的真实前向转弯轨迹反向撤回，绝不重新计算左右转。
         if stage.kind == ChoreographyStageKind.RETRACE_TURN:
             return self._ready_retrace_turn(plan, progress, stage)
+        # 到达涵洞或打卡目标后生成任务动作，任务结果由协调器确认并推进生命周期。
+        if stage.kind == ChoreographyStageKind.EXECUTE_TASK:
+            return self._ready_execute_task(plan, progress, stage)
         # 本任务暂未实现任务、倒车和撤回的单步动作；未知阶段不得伪造可执行指令。
         return self._rejected(
             ChoreographyRejectionCode.INVALID_PROGRESS,
             "当前流程阶段尚未实现动作翻译：{}".format(stage.kind.value),
         )
+
+    def _ready_execute_task(
+        self,
+        plan: ChoreographyPlan,
+        progress: ChoreographyProgress,
+        stage: ChoreographyStage,
+    ) -> ChoreographyAdvanceResult:
+        """将任务阶段翻译为单条类型化任务命令。"""
+
+        # 缺少任务标识时无法路由任务执行器，必须显式拒绝。
+        if stage.task_id is None:
+            return self._rejected(ChoreographyRejectionCode.INVALID_PROGRESS, "任务阶段缺少 task_id")
+        # 创建任务动作；完成后由 Coordinator 推进 TaskRegistry，而不是编排器直接改状态。
+        action = Action(
+            action_id=self._action_id(plan, progress.stage_index),
+            command=ExecuteTaskCommand(stage.task_id),
+            expected_effect=CompleteTaskEffect(stage.task_id),
+        )
+        return self._ready(action, plan, progress.stage_index + 1)
 
     def _compile_turn_or_skip(
         self,

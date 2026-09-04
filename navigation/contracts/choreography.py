@@ -181,6 +181,10 @@ class TurnAtJunctionCommand:
     turn_direction: TurnDirection
     # 转弯后准备驶入的目标有向巡航边。
     target_traversal_id: str
+    # 已标定的前向真实转弯轨迹；缺失时由 Coordinator 拒绝下发。
+    forward_trajectory_id: Optional[str] = None
+    # 与前向轨迹对应的同轨迹反向撤回轨迹；供后续局部恢复使用。
+    retrace_trajectory_id: Optional[str] = None
 
 
 @dataclass(frozen=True)

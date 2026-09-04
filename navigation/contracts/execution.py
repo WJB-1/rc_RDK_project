@@ -5,7 +5,7 @@ from dataclasses import dataclass
 # 导入枚举基类，避免用无约束字符串表达环境、接收方和结果。
 from enum import Enum
 # 导入 Python 3.8 兼容的类型注解工具和仅类型检查开关。
-from typing import TYPE_CHECKING, Optional, Tuple
+from typing import TYPE_CHECKING, Callable, Optional, Protocol, Tuple, runtime_checkable
 
 # 仅供静态类型检查导入感知帧，避免执行契约与感知契约在运行时形成循环导入。
 if TYPE_CHECKING:
@@ -57,6 +57,64 @@ class ExecutionOutcome(Enum):
 
 
 @dataclass(frozen=True)
+class ExecutionCommand:
+    """所有下行执行命令的不可变基类，不承载具体动作参数。"""
+
+
+@dataclass(frozen=True)
+class ObserveExecutionCommand(ExecutionCommand):
+    """请求感知系统完成一次观察并返回唯一最终感知帧。"""
+
+
+@dataclass(frozen=True)
+class TurnExecutionCommand(ExecutionCommand):
+    """请求运动控制器沿已标定的前向转弯轨迹完成一次路口转向。"""
+
+    # 编排器选择的真实车身轨迹标识，不能用 LEFT_90 等抽象角度替代。
+    forward_trajectory_id: str
+
+
+@dataclass(frozen=True)
+class DriveExecutionCommand(ExecutionCommand):
+    """请求运动控制器沿当前边向前行进指定距离。"""
+
+    # 本次前进动作的目标距离，单位为毫米。
+    distance_mm: float
+
+
+@dataclass(frozen=True)
+class ReverseExecutionCommand(ExecutionCommand):
+    """请求运动控制器沿当前边或恢复路线倒车指定距离。"""
+
+    # 本次倒车动作的目标距离，单位为毫米。
+    distance_mm: float
+
+
+@dataclass(frozen=True)
+class RetraceTurnExecutionCommand(ExecutionCommand):
+    """请求运动控制器沿已完成转弯的反向标定轨迹撤回。"""
+
+    # 与原前向转弯对应的反向真实轨迹标识。
+    retrace_trajectory_id: str
+
+
+@dataclass(frozen=True)
+class ExecuteTaskExecutionCommand(ExecutionCommand):
+    """请求任务系统执行一次打卡或涵洞侦查任务。"""
+
+    # 待执行任务的稳定标识。
+    task_id: str
+
+
+@dataclass(frozen=True)
+class StopExecutionCommand(ExecutionCommand):
+    """请求运动控制器进入安全停止状态。"""
+
+    # 停止原因供执行器和调试面板记录。
+    reason: str = ""
+
+
+@dataclass(frozen=True)
 class ExecutionParameter:
     """动作的单个命名参数，避免用无约束字典在模块间传递含义。"""
 
@@ -84,12 +142,16 @@ class ExecutionRequest:
     action_id: str
     # 接收该请求的外部系统。
     target: ExecutionTarget
-    # 动作语义名称，例如 `DRIVE_DISTANCE` 或 `OBSERVE`。
-    kind: str
-    # 与动作语义对应的命名不可变参数。
-    parameters: Tuple[ExecutionParameter, ...]
+    # 由具体命令类型表达的动作语义和必需参数。
+    command: ExecutionCommand
     # 请求创建时的运行环境时间。
     timestamp: float
+
+    def __post_init__(self):
+        """拒绝非类型化命令，防止旧的字符串和参数元组重新进入边界。"""
+
+        if not isinstance(self.command, ExecutionCommand):
+            raise TypeError("command 必须是 ExecutionCommand")
 
 
 @dataclass(frozen=True)
@@ -126,8 +188,8 @@ class ExecutionInterrupt:
     outcome: ExecutionOutcome
     # 中断产生时的运行环境时间。
     timestamp: float
-    # 运动实际完成的距离，非运动请求为空。
-    actual_progress_mm: Optional[float] = None
+    # 本次直行或倒车请求实际产生的非负里程计增量，非运动请求为空。
+    odometry_delta_mm: Optional[float] = None
     # 转向后的实际朝向，非转向请求为空。
     actual_heading_deg: Optional[float] = None
     # 任务系统给出的简短业务结果，非任务请求为空。
@@ -138,3 +200,29 @@ class ExecutionInterrupt:
     error_code: Optional[str] = None
     # 额外的命名诊断信息，不承载未定义的业务状态。
     details: Tuple[ExecutionParameter, ...] = ()
+
+    def __post_init__(self):
+        """校验执行反馈的通用数据边界。"""
+
+        if self.odometry_delta_mm is not None and self.odometry_delta_mm < 0:
+            raise ValueError("odometry_delta_mm 不能为负数")
+
+
+@runtime_checkable
+class IAsyncExecutor(Protocol):
+    """Coordinator 使用的统一异步执行端口。"""
+
+    def submit(self, request: ExecutionRequest) -> DispatchAck:
+        """受理一条异步执行请求。"""
+
+    def cancel(self, request_id: str, reason: str) -> DispatchAck:
+        """请求取消一条仍在途的异步执行请求。"""
+
+    def on_interrupt(
+        self,
+        callback: Callable[[ExecutionInterrupt], None],
+    ) -> None:
+        """登记唯一的最终中断上行回调。"""
+
+    def environment(self) -> ExecutionEnvironment:
+        """返回固定执行环境，供装配层和调试快照读取。"""

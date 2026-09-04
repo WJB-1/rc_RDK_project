@@ -5,10 +5,57 @@ from dataclasses import dataclass
 # 导入受控枚举基类，避免用无约束字符串判断规划和恢复结果。
 from enum import Enum
 # 导入 Python 3.8 兼容的可选值和元组类型注解。
-from typing import Optional, Tuple
+from typing import Optional, Protocol, Tuple
 
 # 导入安全路口、领域快照和目标，规划层只读取这些对象而不拥有其状态。
-from navigation.domain import AtNode, Goal, RuntimeMapSnapshot
+from navigation.domain import AtNode, Goal, RobotState, RuntimeMapSnapshot
+
+
+class JunctionPassability(Enum):
+    """当前路口某个相对方向的局部通路事实。"""
+
+    # 静态巡航边存在，且其物理组成边没有被运行时地图阻塞。
+    OPEN = "open"
+    # 静态巡航边存在，但至少一条物理组成边当前被阻塞。
+    BLOCKED = "blocked"
+    # 静态拓扑中没有对应方向的巡航边。
+    ABSENT = "absent"
+
+
+@dataclass(frozen=True)
+class EscapeAssessment:
+    """路径层对当前路口前后左右局部通路的只读报告，不做方向推荐。"""
+
+    # 机器人当前车头正前方的局部通路状态。
+    forward: JunctionPassability
+    # 机器人左侧九十度方向的局部通路状态。
+    left: JunctionPassability
+    # 机器人右侧九十度方向的局部通路状态。
+    right: JunctionPassability
+    # 机器人后方一百八十度方向的局部通路状态，仅供诊断显示。
+    backward: JunctionPassability
+
+
+@dataclass(frozen=True)
+class PlanningEntryConstraint:
+    """限制正常路线第一条巡航必须符合当前节点和车头朝向的规划门禁。"""
+
+    # 规划结果必须使用的首条有向巡航标识。
+    required_first_traversal_id: str
+    # 该约束适用的当前路口节点。
+    applicable_node_id: str
+    # 构造约束时的车头朝向，单位为度。
+    required_heading_deg: float
+
+
+class PlanningStateQuery(Protocol):
+    """规划器访问导航域共享状态的最小只读端口。"""
+
+    def robot_state(self) -> RobotState:
+        """返回当前不可变机器人状态。"""
+
+    def runtime_map_snapshot(self) -> RuntimeMapSnapshot:
+        """返回当前不可变动态地图快照。"""
 
 
 class RoutePlanOutcome(Enum):
@@ -18,6 +65,8 @@ class RoutePlanOutcome(Enum):
     PLANNED = "planned"
     # 没有任何合法候选路线，不能用空步骤伪装成成功计划。
     NO_ROUTE = "no_route"
+    # 当前规划无法满足协调器指定的首边节点或朝向约束。
+    CONSTRAINT_UNSATISFIED = "constraint_unsatisfied"
 
 
 class RecoveryPlanOutcome(Enum):
@@ -54,6 +103,8 @@ class RouteQuery:
     heading_deg: float
     # 规划时刻的不可变动态地图事实，路线结果必须记录其版本。
     map_snapshot: RuntimeMapSnapshot
+    # 可选的首边规划门禁，普通自由规划时为空。
+    entry_constraint: Optional[PlanningEntryConstraint] = None
 
 
 @dataclass(frozen=True)

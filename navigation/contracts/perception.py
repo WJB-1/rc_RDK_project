@@ -2,8 +2,22 @@
 
 # 导入不可变数据类装饰器，保证同一帧观察在适配期间保持稳定。
 from dataclasses import dataclass
+# 导入枚举基类，限制感知翻译结果只能处于已确认或无法确认状态。
+from enum import Enum
 # 导入 Python 3.8 兼容的可选值和元组类型注解。
 from typing import Optional, Tuple
+
+# 导入绝对地图更新类型，保证适配器输出不会重新发明地图数据结构。
+from navigation.domain.runtime_map import AbsoluteMapUpdate
+
+
+class PerceptionOutcome(Enum):
+    """感知适配器对一帧相对事实能否安全翻译的结论。"""
+
+    # 适配器已经完成绝对映射，可以由协调器消费其更新和校正。
+    CONFIRMED = "confirmed"
+    # 适配器无法安全确定绝对含义，只能携带原因并由协调器继续流程。
+    INCONCLUSIVE = "inconclusive"
 
 
 @dataclass(frozen=True)
@@ -54,3 +68,78 @@ class PerceptionFrame:
     targets: Tuple[TargetDetection, ...]
     # 调试时可选关联的图像或日志引用，不参与导航决策。
     debug_attachment: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class PositionCorrection:
+    """视觉或 IPM 对当前巡航边剩余距离的绝对位置校正。"""
+
+    # 本次位置校正的稳定标识，供调试和重复帧排查使用。
+    correction_id: str
+    # 产生校正的观察帧标识，便于追溯校正来源。
+    source_observation_id: str
+    # 校正所针对的有向巡航边标识。
+    traversal_id: str
+    # 从当前位置到目标路口中心的视觉估计剩余距离，单位毫米。
+    remaining_to_node_mm: float
+    # 校正产生的运行环境时间。
+    timestamp: float
+    # 视觉校正置信度，范围为 0 到 1。
+    confidence: float
+
+    def __post_init__(self) -> None:
+        """拒绝无法用于位置投影的负距离和非法置信度。"""
+
+        # 剩余距离不能为负，否则会把机器人投影到目标路口之外。
+        if self.remaining_to_node_mm < 0:
+            raise ValueError("remaining_to_node_mm 不能为负数")
+        # 置信度采用统一闭区间，避免下游误解异常数值。
+        if not 0.0 <= self.confidence <= 1.0:
+            raise ValueError("confidence 必须位于 0 到 1 之间")
+
+
+@dataclass(frozen=True)
+class PerceptionTranslation:
+    """感知适配器交给协调器的一帧翻译结果。"""
+
+    # 必须对应输入感知帧的唯一标识。
+    frame_id: str
+    # 本帧翻译是否已经足够可靠。
+    outcome: PerceptionOutcome
+    # 已映射的绝对地图事实，由协调器逐条提交 RuntimeMap。
+    map_updates: Tuple[AbsoluteMapUpdate, ...] = ()
+    # 可选的视觉位置校正，由协调器交给位置投影器。
+    position_correction: Optional[PositionCorrection] = None
+    # 无法翻译时的诊断原因；已确认结果必须为空。
+    reason: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        """严格校验结果状态与载荷组合，避免下游猜测字段含义。"""
+
+        # 空帧标识无法关联观察完成中断，必须在契约边界拒绝。
+        if not self.frame_id:
+            raise ValueError("frame_id 不能为空")
+        # 即使调用方传入列表，也立即冻结成元组，避免结果在异步处理中被修改。
+        updates = tuple(self.map_updates)
+        object.__setattr__(self, "map_updates", updates)
+        # 地图更新集合只能包含正式绝对更新对象。
+        if any(not isinstance(update, AbsoluteMapUpdate) for update in updates):
+            raise TypeError("map_updates 必须全部是 AbsoluteMapUpdate")
+        # 已确认结果表示翻译完成，不应同时携带失败原因。
+        if self.outcome is PerceptionOutcome.CONFIRMED:
+            if self.reason is not None:
+                raise ValueError("CONFIRMED 结果的 reason 必须为空")
+            return
+        # 无法确认时必须给出可读原因，供协调器记录诊断。
+        if self.outcome is PerceptionOutcome.INCONCLUSIVE:
+            if self.reason is None or not self.reason.strip():
+                raise ValueError("INCONCLUSIVE 结果必须提供 reason")
+            # 不确定时不能伪造任何绝对地图事实。
+            if updates:
+                raise ValueError("INCONCLUSIVE 结果不能携带 map_updates")
+            # 不确定时也不能把不可靠位置送入状态投影器。
+            if self.position_correction is not None:
+                raise ValueError("INCONCLUSIVE 结果不能携带 position_correction")
+            return
+        # 枚举扩展但未同步字段规则时立即失败，防止默认放行新状态。
+        raise ValueError("不支持的感知翻译结果")

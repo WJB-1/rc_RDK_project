@@ -8,15 +8,31 @@
 # 重新导出异步执行契约，使调用方不依赖 `execution.py` 的内部文件路径。
 from .execution import (
     DispatchAck,
+    DriveExecutionCommand,
+    ExecuteTaskExecutionCommand,
+    ExecutionCommand,
     ExecutionEnvironment,
     ExecutionInterrupt,
     ExecutionOutcome,
     ExecutionParameter,
     ExecutionRequest,
     ExecutionTarget,
+    IAsyncExecutor,
+    ObserveExecutionCommand,
+    RetraceTurnExecutionCommand,
+    ReverseExecutionCommand,
+    StopExecutionCommand,
+    TurnExecutionCommand,
 )
 # 重新导出感知契约，使调用方不依赖 `perception.py` 的内部文件路径。
-from .perception import PerceptionFrame, RoadFeatures, TargetDetection
+from .perception import (
+    PerceptionFrame,
+    PerceptionOutcome,
+    PerceptionTranslation,
+    PositionCorrection,
+    RoadFeatures,
+    TargetDetection,
+)
 # 重新导出编排契约，使协调器和测试不依赖内部模块文件路径。
 from .choreography import (
     Action,
@@ -63,10 +79,22 @@ __all__ = (
     "ExecutionRequest",
     "DispatchAck",
     "ExecutionInterrupt",
+    "ExecutionCommand",
+    "ObserveExecutionCommand",
+    "TurnExecutionCommand",
+    "DriveExecutionCommand",
+    "ReverseExecutionCommand",
+    "RetraceTurnExecutionCommand",
+    "ExecuteTaskExecutionCommand",
+    "StopExecutionCommand",
+    "IAsyncExecutor",
     # 感知帧及其道路结构和目标检测类型。
     "RoadFeatures",
     "TargetDetection",
     "PerceptionFrame",
+    "PerceptionOutcome",
+    "PositionCorrection",
+    "PerceptionTranslation",
     # 编排流程、类型化动作、状态投影和只读查询端口类型。
     "ChoreographySourceKind",
     "ChoreographyStageKind",
