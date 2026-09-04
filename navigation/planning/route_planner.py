@@ -271,11 +271,11 @@ class RoutePlanner:
         return any(edge_id in map_snapshot.blocked_edge_ids for edge_id in cruise_edge.physical_edge_ids)
 
     def _current_map_snapshot(self, query: RouteQuery) -> RuntimeMapSnapshot:
-        """返回规划时刻地图；共享状态口优先于兼容字段。"""
+        """返回规划时刻地图；地图只能从装配的共享只读状态口读取。"""
 
-        if self._state_query is not None:
-            return self._state_query.runtime_map_snapshot()
-        return query.map_snapshot
+        if self._state_query is None:
+            raise RuntimeError("RoutePlanner 必须装配 PlanningStateQuery")
+        return self._state_query.runtime_map_snapshot()
 
     def _is_initial_uturn(self, query: RouteQuery, cruise_edge: CruiseEdge) -> bool:
         """在没有进入边的初始路口，判断当前车头到首段道路是否为原地掉头。"""

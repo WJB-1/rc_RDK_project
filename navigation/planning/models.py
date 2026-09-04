@@ -120,7 +120,7 @@ class RouteQuery:
 
     谁调用：后续 `Coordinator` 在规划门禁满足且机器人位于 `AtNode` 时构造。
     谁响应：`RoutePlanner` 读取本对象进行有向 Dijkstra 搜索。
-    输入输出：输入起点、进入巡航、车头朝向和地图快照；输出由规划器生成路线结果。
+    输入输出：输入起点、进入巡航和车头朝向；地图由规划器装配的只读状态口读取。
     状态影响：本对象不修改机器人、地图、任务或拓扑。
     """
 
@@ -130,8 +130,6 @@ class RouteQuery:
     entry_traversal_id: Optional[str]
     # 当前车头朝向，初始位置没有进入巡航时用于检查首段掉头风险。
     heading_deg: float
-    # 规划时刻的不可变动态地图事实，路线结果必须记录其版本。
-    map_snapshot: RuntimeMapSnapshot
     # 可选的首边规划门禁，普通自由规划时为空。
     entry_constraint: Optional[PlanningEntryConstraint] = None
 
