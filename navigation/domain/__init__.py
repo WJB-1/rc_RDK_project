@@ -6,13 +6,21 @@
 """
 
 # 重新导出位置和机器人状态类型，使调用方不依赖 `state.py` 的内部文件路径。
-from .state import AtNode, LogicalLocation, OnCruiseEdge, ProgressSource, RobotState, WorldPose
+from .state import AtNode, LogicalLocation, NavigationStateStore, OnCruiseEdge, ProgressSource, RobotState, WorldPose
 # 重新导出任务和规划目标类型，使调用方不依赖 `tasks.py` 的内部文件路径。
 from .tasks import Goal, GoalKind, Task, TaskKind, TaskLifecycle
 # 重新导出任务注册表及其转换结果，使协调器不依赖领域内部文件路径。
 from .task_registry import TaskRegistry, TaskTransition
 # 重新导出运行时地图类型，使调用方不依赖 `runtime_map.py` 的内部文件路径。
-from .runtime_map import AbsoluteMapUpdate, AbsoluteMapUpdateKind, MapUpdateAuthority, RuntimeMap, RuntimeMapSnapshot
+from .runtime_map import (
+    AbsoluteMapUpdate,
+    AbsoluteMapUpdateKind,
+    EdgeKnowledgeStatus,
+    MapObservationScope,
+    MapUpdateAuthority,
+    RuntimeMap,
+    RuntimeMapSnapshot,
+)
 # 重新导出静态拓扑类型和工厂，使调用方不依赖 `topology.py` 的内部文件路径。
 from .topology import CruiseEdge, MapNode, PhysicalEdge, TrackTopology, build_default_topology
 
@@ -25,6 +33,7 @@ __all__ = (
     "LogicalLocation",
     "WorldPose",
     "RobotState",
+    "NavigationStateStore",
     # 任务、目标及其枚举类型。
     "TaskKind",
     "TaskLifecycle",
@@ -40,6 +49,8 @@ __all__ = (
     "AbsoluteMapUpdate",
     "RuntimeMapSnapshot",
     "RuntimeMap",
+    "MapObservationScope",
+    "EdgeKnowledgeStatus",
     # 静态端口拓扑、物理边、巡航视图和工厂类型。
     "MapNode",
     "PhysicalEdge",

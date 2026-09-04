@@ -7,6 +7,8 @@ from enum import Enum
 # 导入 Python 3.8 兼容的联合类型工具。
 from typing import Optional, Union
 
+from .runtime_map import AbsoluteMapUpdate, RuntimeMap, RuntimeMapSnapshot
+
 
 class ProgressSource(Enum):
     """机器人边上进度的可信来源，位置投影器据此解释精度和校正方式。"""
@@ -88,3 +90,39 @@ class RobotState:
 
         # 只有路口中心类型代表经验上可安全转弯和重新规划的位置。
         return isinstance(self.location, AtNode)
+
+
+class NavigationStateStore:
+    """导航域共享状态的唯一持有者，统一维护动态地图和机器人逻辑位姿。"""
+
+    def __init__(self, runtime_map: RuntimeMap, initial_robot_state: RobotState) -> None:
+        """创建状态层并保存地图与机器人状态的两个独立内部职责。"""
+
+        if not isinstance(runtime_map, RuntimeMap):
+            raise TypeError("runtime_map 必须是 RuntimeMap")
+        if not isinstance(initial_robot_state, RobotState):
+            raise TypeError("initial_robot_state 必须是 RobotState")
+        self._runtime_map = runtime_map
+        self._robot_state = initial_robot_state
+
+    def robot_state(self) -> RobotState:
+        """返回当前机器人状态的不可变快照，调用方不能通过它修改内部状态。"""
+
+        return self._robot_state
+
+    def runtime_map_snapshot(self) -> RuntimeMapSnapshot:
+        """返回当前动态地图的不可变快照，供规划和编排模块只读访问。"""
+
+        return self._runtime_map.snapshot()
+
+    def apply_map_update(self, update: AbsoluteMapUpdate) -> bool:
+        """提交一条经过授权的地图事实，返回地图是否产生新变化。"""
+
+        return self._runtime_map.apply(update)
+
+    def replace_robot_state(self, state: RobotState) -> None:
+        """由协调器提交新的完整机器人状态，状态层替换旧快照。"""
+
+        if not isinstance(state, RobotState):
+            raise TypeError("state 必须是 RobotState")
+        self._robot_state = state

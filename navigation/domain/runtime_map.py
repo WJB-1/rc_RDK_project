@@ -8,6 +8,26 @@ from enum import Enum
 from typing import FrozenSet, Optional, Set
 
 
+class MapObservationScope(Enum):
+    """描述观察是否覆盖整条物理边的证据范围。"""
+
+    # 路口中心的观察可以完整看清下一条边，允许确认整条边无障碍。
+    JUNCTION_FULL = "junction_full"
+    # 观察区只能看到边的一部分，不足以证明整条边无障碍。
+    OBSERVATION_ZONE = "observation_zone"
+
+
+class EdgeKnowledgeStatus(Enum):
+    """运行时地图对单条物理边的障碍状态。"""
+
+    # 尚未获得足以判断整条边的证据。
+    UNKNOWN = "unknown"
+    # 已由路口完整观察确认当前没有障碍。
+    CLEAR = "clear"
+    # 已检测到障碍物，确定不可通行。
+    BLOCKED = "blocked"
+
+
 class MapUpdateAuthority(Enum):
     """绝对地图事实的业务授权来源，防止外部模块越权宣告任务完成。"""
 
@@ -54,6 +74,8 @@ class AbsoluteMapUpdate:
     node_id: Optional[str] = None
     # 该事实被确认的运行环境时间。
     timestamp: float = 0.0
+    # 产生道路观察事实的范围；非观察类更新保持为空。
+    observation_scope: Optional[MapObservationScope] = None
 
 
 @dataclass(frozen=True)
@@ -72,6 +94,15 @@ class RuntimeMapSnapshot:
     visited_node_ids: FrozenSet[str]
     # 已由可靠观察确认当前可通行的物理边集合。
     confirmed_clear_edge_ids: FrozenSet[str] = frozenset()
+
+    def edge_status(self, edge_id: str) -> EdgeKnowledgeStatus:
+        """返回单条物理边当前的确定/不确定状态。"""
+
+        if edge_id in self.blocked_edge_ids:
+            return EdgeKnowledgeStatus.BLOCKED
+        if edge_id in self.confirmed_clear_edge_ids:
+            return EdgeKnowledgeStatus.CLEAR
+        return EdgeKnowledgeStatus.UNKNOWN
 
 
 class RuntimeMap:
@@ -156,6 +187,9 @@ class RuntimeMap:
         elif update.kind is AbsoluteMapUpdateKind.CONFIRM_EDGE_CLEAR:
             # 安全事实必须引用一条物理边。
             edge_id = self._require_edge_id(update)
+            # 只有路口完整观察能够证明整条边无障碍，观察区证据必须拒绝。
+            if update.observation_scope is MapObservationScope.OBSERVATION_ZONE:
+                raise ValueError("观察区不能确认整条道路安全")
             # 已阻塞的道路不能被普通确认安全事实覆盖，必须先有明确解除阻塞事件。
             if edge_id in self._blocked_edge_ids:
                 raise ValueError("已阻塞道路不能直接确认安全")

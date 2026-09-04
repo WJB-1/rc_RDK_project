@@ -8,7 +8,7 @@ import math
 from typing import Dict, Optional, Tuple
 
 # 导入领域目标、巡航边和拓扑，规划器只读取这些静态与不可变事实。
-from navigation.domain import AtNode, CruiseEdge, Goal, TrackTopology
+from navigation.domain import AtNode, CruiseEdge, Goal, RuntimeMapSnapshot, TrackTopology
 # 导入本层查询、步骤、计划和结果数据包，避免返回裸列表或异常表达不可达。
 from .models import (
     EscapeAssessment,
@@ -130,6 +130,8 @@ class RoutePlanner:
         状态影响：不修改任何输入对象和运行时状态。
         """
 
+        # 规划器装配共享状态口时始终读取最新地图，不再依赖调用方转发的旧快照。
+        map_snapshot = self._current_map_snapshot(query)
         # 先验证起点与目标节点存在，未知静态标识不能被搜索器猜测处理。
         self._topology.get_node(query.start_node_id)
         self._topology.get_node(target.arrival_node_id)
@@ -151,7 +153,7 @@ class RoutePlanner:
         sequence = 1
         # 当起点就是目标时，仍需返回一条零长度的正常路线供协调器处理已到达语义。
         if query.start_node_id == target.arrival_node_id:
-            result = self._build_result(query, target, start_state, predecessors, 0.0)
+            result = self._build_result(query, target, start_state, predecessors, 0.0, map_snapshot)
             return self._enforce_entry_constraint(query, result)
         # 持续扩展累计距离最小的尚未过期状态。
         while queue:
@@ -162,12 +164,12 @@ class RoutePlanner:
                 continue
             # 到达目标路口且末段没有沿涵洞道路驶入时，当前距离才是合法最短距离。
             if node_id == target.arrival_node_id and not self._entered_via_approach_edge(entry_traversal_id, target):
-                result = self._build_result(query, target, (node_id, entry_traversal_id), predecessors, distance_mm)
+                result = self._build_result(query, target, (node_id, entry_traversal_id), predecessors, distance_mm, map_snapshot)
                 return self._enforce_entry_constraint(query, result)
             # 读取当前路口的静态有向出边，拓扑已保证返回顺序稳定。
             for cruise_edge in self._topology.outgoing_cruise_edges(node_id):
                 # 任何组成物理边被动态地图阻塞时，本次巡航整体不可通行。
-                if self._is_blocked(cruise_edge, query):
+                if self._is_blocked(cruise_edge, map_snapshot):
                     continue
                 # 从刚驶入的边立即反向离开属于被禁止的普通掉头。
                 if self._is_reverse(entry_traversal_id, cruise_edge.traversal_id):
@@ -262,11 +264,18 @@ class RoutePlanner:
         return next_traversal_id == "{}->{}".format(to_node_id, from_node_id)
 
     @staticmethod
-    def _is_blocked(cruise_edge: CruiseEdge, query: RouteQuery) -> bool:
-        """判断巡航组成物理边是否与规划快照中的阻塞事实相交。"""
+    def _is_blocked(cruise_edge: CruiseEdge, map_snapshot: RuntimeMapSnapshot) -> bool:
+        """判断巡航组成物理边是否与统一状态层快照中的阻塞事实相交。"""
 
         # 任一物理段被阻塞都使中心到中心巡航无法安全通过。
-        return any(edge_id in query.map_snapshot.blocked_edge_ids for edge_id in cruise_edge.physical_edge_ids)
+        return any(edge_id in map_snapshot.blocked_edge_ids for edge_id in cruise_edge.physical_edge_ids)
+
+    def _current_map_snapshot(self, query: RouteQuery) -> RuntimeMapSnapshot:
+        """返回规划时刻地图；共享状态口优先于兼容字段。"""
+
+        if self._state_query is not None:
+            return self._state_query.runtime_map_snapshot()
+        return query.map_snapshot
 
     def _is_initial_uturn(self, query: RouteQuery, cruise_edge: CruiseEdge) -> bool:
         """在没有进入边的初始路口，判断当前车头到首段道路是否为原地掉头。"""
@@ -300,6 +309,7 @@ class RoutePlanner:
         state: Tuple[str, Optional[str]],
         predecessors: Dict[Tuple[str, Optional[str]], Tuple[Tuple[str, Optional[str]], CruiseEdge]],
         distance_mm: float,
+        map_snapshot: RuntimeMapSnapshot,
     ) -> RoutePlanResult:
         """从 Dijkstra 前驱链重建顺序正确的路口步骤并包装成功结果。"""
 
@@ -316,8 +326,8 @@ class RoutePlanner:
         # 反转回溯结果，得到起点到目标的实际执行顺序。
         steps = tuple(reversed(reversed_steps))
         # 用地图版本、起点和目标标识生成确定性计划标识，便于日志与回归比较。
-        plan_id = "route:{}:{}:{}".format(query.map_snapshot.version, query.start_node_id, target.goal_id)
+        plan_id = "route:{}:{}:{}".format(map_snapshot.version, query.start_node_id, target.goal_id)
         # 创建不含动作的正常路线对象。
-        plan = RoutePlan(plan_id, query.map_snapshot.version, query.start_node_id, target, steps, distance_mm)
+        plan = RoutePlan(plan_id, map_snapshot.version, query.start_node_id, target, steps, distance_mm)
         # 返回明确成功结果，调用方无需通过步骤是否为空猜测含义。
         return RoutePlanResult(RoutePlanOutcome.PLANNED, plan)

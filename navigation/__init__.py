@@ -22,6 +22,7 @@ from .domain import (
     Goal,
     OnCruiseEdge,
     RobotState,
+    NavigationStateStore,
     RuntimeMap,
     Task,
     TrackTopology,
@@ -34,6 +35,7 @@ __all__ = (
     "TrackTopology",
     "build_default_topology",
     "RuntimeMap",
+    "NavigationStateStore",
     # 机器人逻辑位置、运行状态、长期任务和短期目标类型。
     "RobotState",
     "AtNode",

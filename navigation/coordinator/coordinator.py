@@ -46,6 +46,7 @@ from navigation.domain import (
     OnCruiseEdge,
     ProgressSource,
     RobotState,
+    NavigationStateStore,
     TaskKind,
 )
 from navigation.domain import TrackTopology
@@ -62,6 +63,42 @@ class LastCompletedTurn:
         self.forward_trajectory_id = forward_trajectory_id
 
 
+class _LegacyNavigationStateAdapter:
+    """把旧版分离的状态依赖适配为统一状态层接口，仅用于迁移兼容。"""
+
+    def __init__(self, state_store=None, runtime_map=None) -> None:
+        self._state_store = state_store
+        self._runtime_map = runtime_map
+
+    def robot_state(self) -> Optional[RobotState]:
+        """读取旧状态仓中的机器人快照。"""
+
+        if self._state_store is None:
+            return None
+        return self._state_store.robot_state()
+
+    def runtime_map_snapshot(self):
+        """读取旧运行时地图的不可变快照。"""
+
+        if self._runtime_map is None:
+            raise RuntimeError("未装配运行时地图")
+        return self._runtime_map.snapshot()
+
+    def apply_map_update(self, update: AbsoluteMapUpdate) -> bool:
+        """把地图事实转交给旧运行时地图。"""
+
+        if self._runtime_map is None:
+            raise RuntimeError("未装配运行时地图")
+        return self._runtime_map.apply(update)
+
+    def replace_robot_state(self, state: RobotState) -> None:
+        """把新机器人状态转交给旧状态仓。"""
+
+        if self._state_store is None:
+            raise RuntimeError("未装配机器人状态仓")
+        self._state_store.replace_robot_state(state)
+
+
 class Coordinator:
     """拥有活动剧本、唯一在途动作并负责异步终局身份校验的中转者。"""
 
@@ -73,6 +110,7 @@ class Coordinator:
         state_store=None,
         perception_adapter=None,
         runtime_map=None,
+        navigation_state=None,
         location_projector=None,
         topology: Optional[TrackTopology] = None,
         task_registry=None,
@@ -88,11 +126,13 @@ class Coordinator:
         # 注入时钟以便测试请求身份和时间字段，不读取系统时间以外的业务状态。
         self._clock = clock
         # 状态端口由 Runtime 装配，Coordinator 是唯一可以提交新 RobotState 的业务方。
-        self._state_store = state_store
+        # 新版只接收统一状态层；旧参数仅通过适配器兼容迁移中的测试和装配代码。
+        self._navigation_state = navigation_state
+        if self._navigation_state is None and (state_store is not None or runtime_map is not None):
+            self._navigation_state = _LegacyNavigationStateAdapter(state_store, runtime_map)
         # 感知适配器只负责翻译单帧，地图和位置仍由 Coordinator 统一消费。
         self._perception_adapter = perception_adapter
         # 运行时地图由 Coordinator 写入，适配器本身不持有地图写权限。
-        self._runtime_map = runtime_map
         # 位置投影器只接收已确认的视觉校正，不直接参与感知翻译。
         self._location_projector = location_projector
         # 静态拓扑用于把地图更新的物理边映射到活动路线的巡航边。
@@ -240,7 +280,7 @@ class Coordinator:
             self.diagnostics.append("已有在途请求，不能开始重新规划")
             return False
         # 规划只能在路口中心兑现，避免在边上直接转弯或切换目标。
-        if self._state_store is not None and not self._state_store.robot_state().is_at_safe_node:
+        if self._navigation_state is not None and not self._navigation_state.robot_state().is_at_safe_node:
             self.diagnostics.append("当前位置不是安全路口，暂不兑现重新规划")
             return False
         if self._route_planner is None:
@@ -327,12 +367,12 @@ class Coordinator:
     def _clear_pending_replan(self) -> None:
         """新剧本成功装载后清除已经兑现的待重规划标记。"""
 
-        if self._state_store is None:
+        if self._navigation_state is None:
             return
-        current_state = self._state_store.robot_state()
+        current_state = self._navigation_state.robot_state()
         if not current_state.pending_replan:
             return
-        self._state_store.replace_robot_state(
+        self._navigation_state.replace_robot_state(
             RobotState(
                 current_state.location,
                 current_state.heading_deg,
@@ -386,13 +426,13 @@ class Coordinator:
             traversal_id = getattr(command, "traversal_id", None)
             if traversal_id is None:
                 traversal_id = getattr(command, "target_traversal_id", None)
-        if traversal_id is not None and self._runtime_map is not None and self._topology is not None:
+        if traversal_id is not None and self._navigation_state is not None and self._topology is not None:
             # 将巡航边展开为全部物理组成边，保证任一段阻塞都会阻止再次规划该巡航。
             try:
                 from_node_id, to_node_id = traversal_id.split("->", 1)
                 cruise_edge = self._topology.get_cruise_edge(from_node_id, to_node_id)
                 for edge_id in cruise_edge.physical_edge_ids:
-                    self._runtime_map.apply(
+                    self._navigation_state.apply_map_update(
                         AbsoluteMapUpdate(
                             AbsoluteMapUpdateKind.BLOCK_EDGE,
                             MapUpdateAuthority.COORDINATOR,
@@ -426,7 +466,7 @@ class Coordinator:
             return
         # 任务完成后由 Coordinator 派生与任务类型对应的绝对地图事实。
         completed_task = transition.after
-        if self._runtime_map is None or completed_task is None:
+        if self._navigation_state is None or completed_task is None:
             return
         if completed_task.kind is TaskKind.CHECK_IN:
             update = AbsoluteMapUpdate(
@@ -445,7 +485,7 @@ class Coordinator:
             return
         # 地图自身负责前置条件和幂等性，Coordinator 只提交已校验的派生事实。
         try:
-            self._runtime_map.apply(update)
+            self._navigation_state.apply_map_update(update)
         except ValueError as error:
             self.diagnostics.append("任务完成地图事实被拒绝：{}".format(error))
 
@@ -477,11 +517,11 @@ class Coordinator:
             self.diagnostics.append("感知翻译无法确认：{}".format(translation.reason))
             return
         # 已确认地图事实只能由 Coordinator 逐条提交 RuntimeMap。
-        if self._runtime_map is None and translation.map_updates:
+        if self._navigation_state is None and translation.map_updates:
             self.diagnostics.append("未装配 RuntimeMap，无法应用感知地图更新")
-        elif self._runtime_map is not None:
+        elif self._navigation_state is not None:
             for update in translation.map_updates:
-                changed = self._runtime_map.apply(update)
+                changed = self._navigation_state.apply_map_update(update)
                 if changed:
                     # 涵洞发现属于当前路线时替换剧本，不应按道路阻塞销毁路线。
                     if update.kind is AbsoluteMapUpdateKind.DISCOVER_CULVERT:
@@ -491,12 +531,12 @@ class Coordinator:
         # 已确认位置校正交给位置投影器，Coordinator 不重复实现几何换算。
         correction = translation.position_correction
         if correction is not None:
-            if self._state_store is None or self._location_projector is None:
+            if self._navigation_state is None or self._location_projector is None:
                 self.diagnostics.append("未装配位置投影器，无法应用感知位置校正")
                 return
-            current_state = self._state_store.robot_state()
+            current_state = self._navigation_state.robot_state()
             next_state = self._location_projector.correct_from_landmark(current_state, correction)
-            self._state_store.replace_robot_state(next_state)
+            self._navigation_state.replace_robot_state(next_state)
 
     def _replace_culvert_choreography(self, update: AbsoluteMapUpdate) -> None:
         """将命中活动路线的涵洞发现交给编排器替换当前剧本。"""
@@ -591,12 +631,14 @@ class Coordinator:
     def _mark_pending_replan(self) -> None:
         """在不改变当前位置的前提下设置待安全路口兑现的重规划标记。"""
 
-        if self._state_store is None:
+        if self._navigation_state is None:
             return
-        current_state = self._state_store.robot_state()
+        current_state = self._navigation_state.robot_state()
+        if current_state is None:
+            return
         if current_state.pending_replan:
             return
-        self._state_store.replace_robot_state(
+        self._navigation_state.replace_robot_state(
             RobotState(
                 current_state.location,
                 current_state.heading_deg,
@@ -612,19 +654,22 @@ class Coordinator:
         if action is None:
             return
         self._record_completed_turn(action)
-        if self._state_store is None:
+        if self._navigation_state is None:
             return
         effect = action.expected_effect
         if isinstance(effect, ArriveAtNodeEffect):
             # 执行层已完成驶入中心动作，协调器将逻辑位置吸附到目标路口。
-            current_state = self._state_store.robot_state()
+            current_state = self._navigation_state.robot_state()
+            if current_state is None:
+                self.diagnostics.append("未装配机器人状态仓，无法投影到达路口")
+                return
             next_state = RobotState(
                 AtNode(effect.node_id, effect.entry_traversal_id),
                 current_state.heading_deg,
                 current_state.progress_source,
                 current_state.pending_replan,
             )
-            self._state_store.replace_robot_state(next_state)
+            self._navigation_state.replace_robot_state(next_state)
             return
         if not isinstance(effect, AdvanceOnTraversalEffect):
             return
@@ -632,7 +677,10 @@ class Coordinator:
         if interrupt.odometry_delta_mm is None:
             self.diagnostics.append("前进成功中断缺少 odometry_delta_mm")
             return
-        current_state = self._state_store.robot_state()
+        current_state = self._navigation_state.robot_state()
+        if current_state is None:
+            self.diagnostics.append("未装配机器人状态仓，无法投影边上进度")
+            return
         from_node_id, to_node_id = effect.traversal_id.split("->", 1)
         if isinstance(current_state.location, OnCruiseEdge):
             if current_state.location.traversal_id != effect.traversal_id:
@@ -656,7 +704,7 @@ class Coordinator:
             ProgressSource.ODOMETRY,
             current_state.pending_replan,
         )
-        self._state_store.replace_robot_state(next_state)
+        self._navigation_state.replace_robot_state(next_state)
 
     def _record_completed_turn(self, action: Action) -> None:
         """从成功动作记录前向转弯，不读取执行器角度或历史。"""
