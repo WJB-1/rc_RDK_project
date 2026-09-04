@@ -53,6 +53,10 @@ from navigation.domain import TrackTopology
 from navigation.planning import RecoveryPlanOutcome, RoutePlanOutcome
 from .execution_bridge import ExecutionBridge
 from .event_projection import EventProjector
+from .departure_flow import DepartureFlow
+from .escape_flow import EscapeFlow
+from .return_flow import ReturnFlow
+from .task_flow import TaskFlow
 
 
 class LastCompletedTurn:
@@ -146,6 +150,11 @@ class Coordinator:
         self._route_planner = route_planner
         # 恢复规划器负责自行选择倒车目标，Coordinator 不传入安全路口参数。
         self._recovery_planner = recovery_planner
+        # 四个内部流程对象按外层状态承载阶段业务，公共执行入口仍由本类统一维护。
+        self._departure_flow = DepartureFlow(self)
+        self._task_flow = TaskFlow(self)
+        self._escape_flow = EscapeFlow(self)
+        self._return_flow = ReturnFlow(self)
         # 保存当前活动剧本和动作成功后才能兑现的下一指针。
         self._plan: Optional[ChoreographyPlan] = None
         self._progress: Optional[ChoreographyProgress] = None
