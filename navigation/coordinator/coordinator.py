@@ -51,6 +51,7 @@ from navigation.domain import (
 )
 from navigation.domain import TrackTopology
 from navigation.planning import RecoveryPlanOutcome, RoutePlanOutcome
+from .execution_bridge import ExecutionBridge
 
 
 class LastCompletedTurn:
@@ -718,45 +719,10 @@ class Coordinator:
         self._last_completed_turn = LastCompletedTurn(action.action_id, trajectory_id)
 
     def _translate_action(self, action: Action) -> ExecutionRequest:
-        """把编排动作翻译为执行器可直接路由的类型化命令。"""
+        """委托 ExecutionBridge 翻译编排动作，保留旧私有入口兼容测试。"""
 
-        command = action.command
-        if isinstance(command, ObserveCommand):
-            target = ExecutionTarget.PERCEPTION_SYSTEM
-            execution_command = ObserveExecutionCommand()
-        elif isinstance(command, TurnAtJunctionCommand):
-            # 巡航边标识不是底盘转弯轨迹；缺少标定轨迹时必须拒绝下发而不是猜测。
-            trajectory_id = getattr(command, "forward_trajectory_id", None)
-            if trajectory_id is None:
-                raise ValueError("转弯动作缺少已标定的 forward_trajectory_id")
-            target = ExecutionTarget.MOTION_CONTROLLER
-            execution_command = TurnExecutionCommand(trajectory_id)
-        elif isinstance(command, DriveDistanceCommand):
-            target = ExecutionTarget.MOTION_CONTROLLER
-            execution_command = DriveExecutionCommand(command.distance_mm)
-        elif isinstance(command, ReverseDistanceCommand):
-            target = ExecutionTarget.MOTION_CONTROLLER
-            execution_command = ReverseExecutionCommand(command.distance_mm)
-        elif isinstance(command, RetraceTurnCommand):
-            target = ExecutionTarget.MOTION_CONTROLLER
-            execution_command = RetraceTurnExecutionCommand(command.source_action_id)
-        elif isinstance(command, ExecuteTaskCommand):
-            target = ExecutionTarget.TASK_SYSTEM
-            execution_command = ExecuteTaskExecutionCommand(command.task_id)
-        elif isinstance(command, StopCommand):
-            target = ExecutionTarget.MOTION_CONTROLLER
-            execution_command = StopExecutionCommand(command.reason)
-        else:
-            raise TypeError("未知 ActionCommand：{}".format(type(command).__name__))
-        # 请求身份由协调器生成，执行器只消费本次动作必需的类型化命令。
-        return ExecutionRequest(
-            request_id="request:{}".format(action.action_id),
-            execution_id=self._plan.choreography_id if self._plan is not None else "execution:unknown",
-            action_id=action.action_id,
-            target=target,
-            command=execution_command,
-            timestamp=self._clock(),
-        )
+        choreography_id = self._plan.choreography_id if self._plan is not None else "execution:unknown"
+        return ExecutionBridge.translate(action, choreography_id, self._clock())
 
     def _clear_in_flight(self) -> None:
         """清理当前动作和请求，但保留活动剧本供上层决定是否继续。"""
