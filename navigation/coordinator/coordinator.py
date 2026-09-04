@@ -52,6 +52,7 @@ from navigation.domain import (
 from navigation.domain import TrackTopology
 from navigation.planning import RecoveryPlanOutcome, RoutePlanOutcome
 from .execution_bridge import ExecutionBridge
+from .event_projection import EventProjector
 
 
 class LastCompletedTurn:
@@ -131,6 +132,7 @@ class Coordinator:
         self._navigation_state = navigation_state
         if self._navigation_state is None and (state_store is not None or runtime_map is not None):
             self._navigation_state = _LegacyNavigationStateAdapter(state_store, runtime_map)
+        self._event_projector = EventProjector(self._navigation_state) if self._navigation_state is not None else None
         # 感知适配器只负责翻译单帧，地图和位置仍由 Coordinator 统一消费。
         self._perception_adapter = perception_adapter
         # 运行时地图由 Coordinator 写入，适配器本身不持有地图写权限。
@@ -649,63 +651,13 @@ class Coordinator:
         )
 
     def _project_success(self, action: Optional[Action], interrupt: ExecutionInterrupt) -> None:
-        """将当前阶段已确认的前进里程投影为边上逻辑位置。"""
+        """记录成功转弯并委托投影器更新机器人逻辑位置。"""
 
-        # 本阶段没有状态端口时仍允许纯串行内核运行，后续 Runtime 装配时再启用投影。
         if action is None:
             return
         self._record_completed_turn(action)
-        if self._navigation_state is None:
-            return
-        effect = action.expected_effect
-        if isinstance(effect, ArriveAtNodeEffect):
-            # 执行层已完成驶入中心动作，协调器将逻辑位置吸附到目标路口。
-            current_state = self._navigation_state.robot_state()
-            if current_state is None:
-                self.diagnostics.append("未装配机器人状态仓，无法投影到达路口")
-                return
-            next_state = RobotState(
-                AtNode(effect.node_id, effect.entry_traversal_id),
-                current_state.heading_deg,
-                current_state.progress_source,
-                current_state.pending_replan,
-            )
-            self._navigation_state.replace_robot_state(next_state)
-            return
-        if not isinstance(effect, AdvanceOnTraversalEffect):
-            return
-        # 执行层只反馈本次增量；缺失增量时不能伪造边上累计进度。
-        if interrupt.odometry_delta_mm is None:
-            self.diagnostics.append("前进成功中断缺少 odometry_delta_mm")
-            return
-        current_state = self._navigation_state.robot_state()
-        if current_state is None:
-            self.diagnostics.append("未装配机器人状态仓，无法投影边上进度")
-            return
-        from_node_id, to_node_id = effect.traversal_id.split("->", 1)
-        if isinstance(current_state.location, OnCruiseEdge):
-            if current_state.location.traversal_id != effect.traversal_id:
-                self.diagnostics.append("前进效果与当前巡航边不一致")
-                return
-            base_progress_mm = current_state.location.progress_mm
-        elif isinstance(current_state.location, AtNode) and current_state.location.node_id == from_node_id:
-            base_progress_mm = 0.0
-        else:
-            self.diagnostics.append("前进效果与当前逻辑位置不匹配")
-            return
-        # 用新的不可变状态替换旧状态，保留朝向和待重规划标记。
-        next_state = RobotState(
-            OnCruiseEdge(
-                effect.traversal_id,
-                from_node_id,
-                to_node_id,
-                base_progress_mm + interrupt.odometry_delta_mm,
-            ),
-            current_state.heading_deg,
-            ProgressSource.ODOMETRY,
-            current_state.pending_replan,
-        )
-        self._navigation_state.replace_robot_state(next_state)
+        if self._event_projector is not None:
+            self._event_projector.project_success(action, interrupt)
 
     def _record_completed_turn(self, action: Action) -> None:
         """从成功动作记录前向转弯，不读取执行器角度或历史。"""
