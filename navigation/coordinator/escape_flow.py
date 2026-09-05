@@ -1,5 +1,7 @@
 """脱困状态机的业务流程入口。"""
 
+from navigation.contracts import ChoreographyStartStatus
+from navigation.domain import AbsoluteMapUpdate, AbsoluteMapUpdateKind, MapUpdateAuthority
 from navigation.planning import RecoveryPlanOutcome
 
 
@@ -57,3 +59,55 @@ class EscapeFlow:
         """把脱困动作终局交回协调器统一校验。"""
 
         return self._coordinator._handle_execution_interrupt_core(interrupt)
+
+    def start_retrace_turn(self, source_action_id):
+        """装载编排器按原轨迹生成的撤回转弯剧本。"""
+
+        coordinator = self._coordinator
+        from .states import CoordinatorState, EscapeSubstate
+        coordinator._context.transition(CoordinatorState.ESCAPE, EscapeSubstate.RETRACE_TURN)
+        start_method = getattr(coordinator._choreographer, "start_retrace_turn", None)
+        if start_method is None:
+            coordinator.diagnostics.append("编排器未提供撤回转弯入口")
+            return False
+        result = start_method(source_action_id)
+        if result.status is not ChoreographyStartStatus.STARTED or result.plan is None or result.progress is None:
+            coordinator.diagnostics.append("撤回转弯剧本启动被拒绝")
+            return False
+        coordinator._plan = result.plan
+        coordinator._progress = result.progress
+        coordinator._context.active_plan = result.plan
+        coordinator._context.active_progress = result.progress
+        coordinator.diagnostics.append("已装载同轨迹撤回转弯剧本")
+        return True
+
+    def handle_blocked_action(self, action):
+        """写入阻塞道路事实、销毁失效剧本并进入脱困状态。"""
+
+        coordinator = self._coordinator
+        traversal_id = None
+        if action is not None:
+            command = action.command
+            traversal_id = getattr(command, "traversal_id", None)
+            if traversal_id is None:
+                traversal_id = getattr(command, "target_traversal_id", None)
+        if traversal_id is not None and coordinator._navigation_state is not None and coordinator._topology is not None:
+            try:
+                from_node_id, to_node_id = traversal_id.split("->", 1)
+                cruise_edge = coordinator._topology.get_cruise_edge(from_node_id, to_node_id)
+                for edge_id in cruise_edge.physical_edge_ids:
+                    coordinator._navigation_state.apply_map_update(
+                        AbsoluteMapUpdate(AbsoluteMapUpdateKind.BLOCK_EDGE, MapUpdateAuthority.COORDINATOR, edge_id=edge_id)
+                    )
+            except (KeyError, ValueError) as error:
+                coordinator.diagnostics.append("阻塞巡航无法映射物理边：{}".format(error))
+        else:
+            coordinator.diagnostics.append("阻塞动作缺少巡航边或地图拓扑，未写入物理阻塞事实")
+        coordinator._plan = None
+        coordinator._progress = None
+        coordinator._context.active_plan = None
+        coordinator._context.active_progress = None
+        from .states import CoordinatorState, EscapeSubstate
+        coordinator._context.transition(CoordinatorState.ESCAPE, EscapeSubstate.RESTORE_HEADING)
+        coordinator._mark_pending_replan()
+        coordinator.diagnostics.append("动作阻塞，已销毁剧本并等待重新规划")

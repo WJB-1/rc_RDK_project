@@ -474,40 +474,9 @@ class Coordinator:
         return True
 
     def _handle_blocked_action(self, action: Optional[Action]) -> None:
-        """处理动作阻塞：封锁目标物理边、标记重规划并销毁活动剧本。"""
+        """兼容旧调用方，转交 EscapeFlow 处理动作阻塞。"""
 
-        # 阻塞动作必须能关联一条巡航边，否则只能记录异常并停止旧流程。
-        traversal_id = None
-        if action is not None:
-            command = action.command
-            traversal_id = getattr(command, "traversal_id", None)
-            if traversal_id is None:
-                traversal_id = getattr(command, "target_traversal_id", None)
-        if traversal_id is not None and self._navigation_state is not None and self._topology is not None:
-            # 将巡航边展开为全部物理组成边，保证任一段阻塞都会阻止再次规划该巡航。
-            try:
-                from_node_id, to_node_id = traversal_id.split("->", 1)
-                cruise_edge = self._topology.get_cruise_edge(from_node_id, to_node_id)
-                for edge_id in cruise_edge.physical_edge_ids:
-                    self._navigation_state.apply_map_update(
-                        AbsoluteMapUpdate(
-                            AbsoluteMapUpdateKind.BLOCK_EDGE,
-                            MapUpdateAuthority.COORDINATOR,
-                            edge_id=edge_id,
-                        )
-                    )
-            except (KeyError, ValueError) as error:
-                self.diagnostics.append("阻塞巡航无法映射物理边：{}".format(error))
-        else:
-            self.diagnostics.append("阻塞动作缺少巡航边或地图拓扑，未写入物理阻塞事实")
-        # 阻塞意味着当前计划不可继续，统一清理剧本和游标。
-        self._plan = None
-        self._progress = None
-        self._context.active_plan = None
-        self._context.active_progress = None
-        self._context.transition(CoordinatorState.ESCAPE, EscapeSubstate.RESTORE_HEADING)
-        self._mark_pending_replan()
-        self.diagnostics.append("动作阻塞，已销毁剧本并等待重新规划")
+        self._escape_flow.handle_blocked_action(action)
 
     def _consume_task(self, action: Optional[Action]) -> None:
         """将匹配成功的任务动作推进为完成态。"""
@@ -622,21 +591,9 @@ class Coordinator:
         self._task_flow._handle_map_update_impact(update)
 
     def _start_retrace_turn(self, source_action_id: str) -> bool:
-        """在观察中断收口后装载编排器生成的同轨迹撤回剧本。"""
+        """兼容旧调用方，转交 EscapeFlow 装载撤回剧本。"""
 
-        self._context.transition(CoordinatorState.ESCAPE, EscapeSubstate.RETRACE_TURN)
-        start_method = getattr(self._choreographer, "start_retrace_turn", None)
-        if start_method is None:
-            self.diagnostics.append("编排器未提供撤回转弯入口")
-            return False
-        result = start_method(source_action_id)
-        if result.status is not ChoreographyStartStatus.STARTED or result.plan is None or result.progress is None:
-            self.diagnostics.append("撤回转弯剧本启动被拒绝")
-            return False
-        self._plan = result.plan
-        self._progress = result.progress
-        self.diagnostics.append("已装载同轨迹撤回转弯剧本")
-        return True
+        return self._escape_flow.start_retrace_turn(source_action_id)
 
     def _mark_pending_replan(self) -> None:
         """在不改变当前位置的前提下设置待安全路口兑现的重规划标记。"""
