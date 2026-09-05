@@ -1,7 +1,6 @@
 """脱困状态机的业务流程入口。"""
 
 from navigation.contracts import ChoreographyStartStatus
-from navigation.domain import AbsoluteMapUpdate, AbsoluteMapUpdateKind, MapUpdateAuthority
 from navigation.planning import RecoveryPlanOutcome
 
 
@@ -117,27 +116,9 @@ class EscapeFlow:
         return True
 
     def handle_blocked_action(self, action):
-        """写入阻塞道路事实、销毁失效剧本并进入脱困状态。"""
+        """处理执行终局并销毁失效剧本；道路阻塞事实只由视觉感知写入。"""
 
         coordinator = self._coordinator
-        traversal_id = None
-        if action is not None:
-            command = action.command
-            traversal_id = getattr(command, "traversal_id", None)
-            if traversal_id is None:
-                traversal_id = getattr(command, "target_traversal_id", None)
-        if traversal_id is not None and coordinator._navigation_state is not None and coordinator._topology is not None:
-            try:
-                from_node_id, to_node_id = traversal_id.split("->", 1)
-                cruise_edge = coordinator._topology.get_cruise_edge(from_node_id, to_node_id)
-                for edge_id in cruise_edge.physical_edge_ids:
-                    coordinator._navigation_state.apply_map_update(
-                        AbsoluteMapUpdate(AbsoluteMapUpdateKind.BLOCK_EDGE, MapUpdateAuthority.COORDINATOR, edge_id=edge_id)
-                    )
-            except (KeyError, ValueError) as error:
-                coordinator.diagnostics.append("阻塞巡航无法映射物理边：{}".format(error))
-        else:
-            coordinator.diagnostics.append("阻塞动作缺少巡航边或地图拓扑，未写入物理阻塞事实")
         coordinator._context.active_plan = None
         coordinator._context.active_progress = None
         from .states import CoordinatorState, EscapeSubstate
