@@ -314,9 +314,9 @@ class Coordinator:
             self.diagnostics.append("终局身份不匹配，忽略 {}".format(interrupt.request_id))
             return False
         # 同一请求的任何最终结果都只能被消费一次。
-        # 阻塞终局先写入道路事实并销毁旧剧本，避免后续继续下发同一条危险路线。
+        # 执行器的 BLOCKED 只表示本次动作未能完成，不是视觉确认的地图边阻塞。
         if interrupt.outcome is ExecutionOutcome.BLOCKED:
-            self._escape_flow.handle_blocked_action(self._context.current_action)
+            self._handle_execution_failure(interrupt)
         # 成功终局先按动作效果投影状态，再清理在途身份，避免丢失动作语义。
         elif interrupt.outcome is ExecutionOutcome.COMPLETED:
             self._event_projector.project_success(self._context.current_action, interrupt)
@@ -333,6 +333,23 @@ class Coordinator:
         if interrupt.outcome is not ExecutionOutcome.COMPLETED:
             self.diagnostics.append("动作 {} 以 {} 结束".format(interrupt.action_id, interrupt.outcome.value))
         return True
+
+    def _handle_execution_failure(self, interrupt: ExecutionInterrupt) -> None:
+        """处理执行端中止，不把执行失败误判为地图阻塞或脱困场景。
+
+        `BLOCKED` 是执行器对当前动作无法完成的终局反馈。真实道路是否阻塞只能由
+        观察结果中的 `BLOCK_EDGE` 地图更新确认，因此这里必须进入异常终局，不能调用
+        `EscapeFlow`、写入 `RuntimeMap` 或生成撤回/倒车动作。
+        """
+
+        # 异常终局后销毁活动剧本，禁止错误动作继续被重新派发。
+        self._context.active_plan = None
+        self._context.active_progress = None
+        # 清除可能残留的局部撤回意图，避免异常状态继续装载恢复剧本。
+        self._context.pending_retrace = None
+        # 交由统一错误入口记录原因并切换到不可继续派发的异常态。
+        reason = "动作 {} 被执行器中止：{}".format(interrupt.action_id, interrupt.error_code or "BLOCKED")
+        self.enter_exception(reason)
 
     def _mark_pending_replan(self) -> None:
         """在不改变当前位置的前提下设置待安全路口兑现的重规划标记。"""

@@ -46,7 +46,7 @@ class ExecutionOutcome(Enum):
     COMPLETED = "completed"
     # 表示请求未完成且不是道路阻塞，协调器交给失败或重试策略处理。
     FAILED = "failed"
-    # 表示当前运动道路不可通行，协调器将触发地图更新和倒车恢复流程。
+    # 表示执行器无法完成当前动作；它不是视觉确认的地图边阻塞事实。
     BLOCKED = "blocked"
     # 表示外部系统未在允许时间内完成，不得将任务或动作标记为成功。
     TIMEOUT = "timeout"
