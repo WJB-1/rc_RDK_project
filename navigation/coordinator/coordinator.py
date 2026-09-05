@@ -50,7 +50,7 @@ from navigation.domain import (
     TaskKind,
 )
 from navigation.domain import TrackTopology
-from navigation.planning import RecoveryPlanOutcome, RoutePlanOutcome
+from navigation.planning import RecoveryPlan, RecoveryPlanOutcome, RoutePlanOutcome
 from .execution_bridge import ExecutionBridge
 from .event_projection import EventProjector
 from .departure_flow import DepartureFlow
@@ -177,7 +177,7 @@ class Coordinator:
                 task_registry=self._task_registry,
                 perception_adapter=self._perception_adapter,
                 location_projector=self._location_projector,
-                on_map_update=self._handle_projected_map_update,
+                on_map_update=self._task_flow.handle_map_update,
                 diagnostics=self.diagnostics,
             )
             if self._navigation_state is not None
@@ -290,8 +290,6 @@ class Coordinator:
             self._context.transition(CoordinatorState.DEPARTURE, DepartureSubstate.EXECUTE)
         elif self._context.state is CoordinatorState.TASK_PROCESSING:
             self._context.transition(CoordinatorState.TASK_PROCESSING, TaskSubstate.EXECUTING)
-        elif self._context.state is CoordinatorState.ESCAPE:
-            self._context.transition(CoordinatorState.ESCAPE, EscapeSubstate.BACKTRACK_EXECUTING)
         request = self._translate_action(action)
         self._current_request = request
         # 任务动作只有在注册表成功占用后才能交给执行器，避免重复执行同一任务。
@@ -318,6 +316,8 @@ class Coordinator:
         if self._current_request is not None:
             self.diagnostics.append("已有在途请求，不能启动局部脱困剧本")
             return False
+        # 侧支局部剧本属于脱困状态，但尚未开始倒车；子状态记录当前正在准备侧支转向。
+        self._context.transition(CoordinatorState.ESCAPE, EscapeSubstate.TURN_SIDE)
         # 侧支剧本由编排器生成，Coordinator 不自行构造阶段或运动命令。
         start_method = getattr(self._choreographer, "start_junction_escape", None)
         if start_method is None:
@@ -340,63 +340,37 @@ class Coordinator:
         Coordinator 只负责选择恢复分支、保存编排结果并继续统一的异步执行入口。
         """
 
-        # 正常重规划属于任务处理状态，状态值用于调试和后续子流程分发。
-        if self._context.state in (CoordinatorState.DEPARTURE, CoordinatorState.TASK_PROCESSING):
-            self._context.transition(CoordinatorState.TASK_PROCESSING, TaskSubstate.PLANNING)
         # 在途动作尚未终局时不能销毁剧本或启动另一条规划流程。
         if self._current_request is not None:
             self.diagnostics.append("已有在途请求，不能开始重新规划")
             return False
-        # 进入脱困子状态后再创建侧支局部剧本，便于调试期间追踪恢复阶段。
-        self._context.transition(CoordinatorState.ESCAPE, EscapeSubstate.TURN_SIDE)
-        # 规划只能在路口中心兑现，避免在边上直接转弯或切换目标。
+        if self._context.state is CoordinatorState.ESCAPE:
+            return self._escape_flow.assess_and_replan()
+        if self._context.state is CoordinatorState.RETURNING:
+            return self._return_flow.plan()
+        return self._task_flow.plan()
+
+    def _try_normal_plan(self) -> bool:
+        """在当前安全路口尝试一次普通规划并交给编排器。"""
+
         if self._navigation_state is not None and not self._navigation_state.robot_state().is_at_safe_node:
             self.diagnostics.append("当前位置不是安全路口，暂不兑现重新规划")
             return False
         if self._route_planner is None:
             self.diagnostics.append("未装配正常规划器")
             return False
-
-        # 新规划开始前销毁与旧地图版本绑定的路线和编排游标。
         self._plan = None
         self._progress = None
         result = self._route_planner.plan()
         if result.outcome is RoutePlanOutcome.PLANNED and result.plan is not None:
             return self._load_planning_result(result.plan)
+        return False
 
-        # 正常路线不可行时，请路径规划层给出四方向受困分析。
-        assess_method = getattr(self._route_planner, "assess_escape", None)
-        if assess_method is None:
-            self.diagnostics.append("规划器未提供受困分析接口")
-            return False
-        assessment = assess_method()
+    def _plan_return_route(self) -> bool:
+        """请求返场路线；返场仍使用规划器的无参共享状态接口。"""
 
-        # 前方优先；若规划器认为前方仍值得尝试，再给它一次无参正式规划机会。
-        if self._is_worth_trying(assessment.forward):
-            forward_result = self._route_planner.plan()
-            if forward_result.outcome is RoutePlanOutcome.PLANNED and forward_result.plan is not None:
-                return self._load_planning_result(forward_result.plan)
-
-        # 前方不可用后依次尝试左、右，方向选择只消费规划层报告。
-        for report, side in (
-            (assessment.left, "LEFT"),
-            (assessment.right, "RIGHT"),
-        ):
-            if not self._is_worth_trying(report):
-                continue
-            direction = self._turn_direction_by_name(side)
-            if self.start_junction_escape(direction):
-                return True
-
-        # 三个前向方向都不能脱困时才启动无参倒车恢复规划。
-        if self._recovery_planner is None:
-            self.diagnostics.append("没有可尝试的前向方向且未装配恢复规划器")
-            return False
-        recovery_result = self._recovery_planner.plan()
-        if recovery_result.outcome is not RecoveryPlanOutcome.RECOVERABLE or recovery_result.plan is None:
-            self.diagnostics.append("恢复规划未找到可行倒车目标")
-            return False
-        return self._load_planning_result(recovery_result.plan)
+        self._context.transition(CoordinatorState.RETURNING, ReturnSubstate.PLAN_TO_START)
+        return self._try_normal_plan()
 
     def _load_planning_result(self, planning_plan) -> bool:
         """把规划器返回的路线或恢复路线交给编排器并保存新游标。"""
@@ -420,7 +394,13 @@ class Coordinator:
         if self._context.state is CoordinatorState.TASK_PROCESSING:
             self._context.transition(CoordinatorState.TASK_PROCESSING, TaskSubstate.CHOREOGRAPHING)
         elif self._context.state is CoordinatorState.ESCAPE:
-            self._context.transition(CoordinatorState.TASK_PROCESSING, TaskSubstate.CHOREOGRAPHING)
+            # RecoveryPlan 进入倒车编排；普通路线则表示脱困已成功，回到任务流程。
+            if isinstance(planning_plan, RecoveryPlan):
+                self._context.transition(CoordinatorState.ESCAPE, EscapeSubstate.BACKTRACK_CHOREOGRAPHING)
+            else:
+                self._context.transition(CoordinatorState.TASK_PROCESSING, TaskSubstate.CHOREOGRAPHING)
+        elif self._context.state is CoordinatorState.RETURNING:
+            self._context.transition(CoordinatorState.RETURNING, ReturnSubstate.CHOREOGRAPH_TO_START)
         self._clear_pending_replan()
         return True
 
@@ -458,6 +438,17 @@ class Coordinator:
         )
 
     def handle_execution_interrupt(self, interrupt: ExecutionInterrupt) -> bool:
+        """按当前外层状态把执行中断交给对应流程处理。"""
+
+        if self._context.state is CoordinatorState.DEPARTURE:
+            return self._departure_flow.handle_interrupt(interrupt)
+        if self._context.state is CoordinatorState.ESCAPE:
+            return self._escape_flow.handle_interrupt(interrupt)
+        if self._context.state is CoordinatorState.RETURNING:
+            return self._return_flow.handle_interrupt(interrupt)
+        return self._task_flow.handle_interrupt(interrupt)
+
+    def _handle_execution_interrupt_core(self, interrupt: ExecutionInterrupt) -> bool:
         """消费第一条完整匹配的终局；迟到、重复或未知身份只记录诊断。"""
 
         request = self._current_request

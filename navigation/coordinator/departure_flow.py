@@ -17,6 +17,5 @@ class DepartureFlow:
     def handle_interrupt(self, interrupt):
         """把出发阶段的终局交回协调器统一校验。"""
 
-        return self._coordinator.handle_execution_interrupt(interrupt)
-
+        return self._coordinator._handle_execution_interrupt_core(interrupt)
 

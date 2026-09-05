@@ -12,10 +12,14 @@ class ReturnFlow:
     def plan(self):
         """请求协调器装载返回阶段的规划结果。"""
 
-        return self._coordinator.replan()
+        return self._coordinator._plan_return_route()
 
     def dispatch_next(self):
         """提交返回剧本的下一条异步动作。"""
 
         return self._coordinator.dispatch_next()
 
+    def handle_interrupt(self, interrupt):
+        """把返场动作终局交回协调器统一校验。"""
+
+        return self._coordinator._handle_execution_interrupt_core(interrupt)
