@@ -8,6 +8,7 @@
 # 重新导出异步执行契约，使调用方不依赖 `execution.py` 的内部文件路径。
 from .execution import (
     DispatchAck,
+    ExecutionTargetPort,
     DriveExecutionCommand,
     ExecuteTaskExecutionCommand,
     ExecutionCommand,
@@ -22,6 +23,8 @@ from .execution import (
     RetraceTurnExecutionCommand,
     ReverseExecutionCommand,
     StopExecutionCommand,
+    TargetCompletion,
+    TargetCompletionSink,
     TurnExecutionCommand,
 )
 # 重新导出感知契约，使调用方不依赖 `perception.py` 的内部文件路径。
@@ -78,6 +81,9 @@ __all__ = (
     "ExecutionParameter",
     "ExecutionRequest",
     "DispatchAck",
+    "TargetCompletion",
+    "TargetCompletionSink",
+    "ExecutionTargetPort",
     "ExecutionInterrupt",
     "ExecutionCommand",
     "ObserveExecutionCommand",

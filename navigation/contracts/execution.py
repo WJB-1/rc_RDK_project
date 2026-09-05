@@ -164,6 +164,42 @@ class DispatchAck:
     accepted: bool
     # 拒绝或取消受理时的简短原因。
     reason: str = ""
+    # 受理时可供上层诊断的语义证据，例如 `MOTION_RUNNING`。
+    acceptance_evidence: Optional[str] = None
+    # 拒绝时可供上层分流的稳定代码，例如 `TARGET_COMMAND_MISMATCH`。
+    rejection_code: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class TargetCompletion:
+    """目标端口上报给执行器的无身份终局事实。
+
+    目标端口只描述执行结果，不携带导航请求身份；执行器通过绑定的
+    `BoundCompletionSink` 补齐请求、动作和目标身份后，才生成 `ExecutionInterrupt`。
+    """
+
+    # 目标端口对当前动作给出的最终结果。
+    outcome: ExecutionOutcome
+    # 目标端口产生终局时的单调时钟时间。
+    timestamp: float
+    # 本次直行或倒车动作的里程计增量，其他动作为空。
+    odometry_delta_mm: Optional[float] = None
+    # 转向动作的可选实际朝向反馈。
+    actual_heading_deg: Optional[float] = None
+    # 任务目标返回的简短结果摘要。
+    task_result: Optional[str] = None
+    # 观察动作成功时携带的一份最终感知帧。
+    perception_frame: Optional["PerceptionFrame"] = None
+    # 目标后端提供的稳定诊断代码。
+    error_code: Optional[str] = None
+    # 额外的命名诊断参数。
+    details: Tuple[ExecutionParameter, ...] = ()
+
+    def __post_init__(self):
+        """校验目标端口反馈的通用数据边界。"""
+
+        if self.odometry_delta_mm is not None and self.odometry_delta_mm < 0:
+            raise ValueError("odometry_delta_mm 不能为负数")
 
 
 @dataclass(frozen=True)
@@ -226,3 +262,30 @@ class IAsyncExecutor(Protocol):
 
     def environment(self) -> ExecutionEnvironment:
         """返回固定执行环境，供装配层和调试快照读取。"""
+
+
+@runtime_checkable
+class TargetCompletionSink(Protocol):
+    """目标端口发布无身份终局的单向接口。"""
+
+    def publish(self, completion: TargetCompletion) -> None:
+        """提交一次目标端口终局。"""
+
+
+@runtime_checkable
+class ExecutionTargetPort(Protocol):
+    """单个执行目标的异步 I/O 适配端口。"""
+
+    @property
+    def target(self) -> ExecutionTarget:
+        """返回该端口负责的执行目标。"""
+
+    def submit(
+        self,
+        request: ExecutionRequest,
+        completion_sink: TargetCompletionSink,
+    ) -> DispatchAck:
+        """受理请求并在未来通过终局接口回调。"""
+
+    def cancel(self, request_id: str, reason: str) -> DispatchAck:
+        """请求取消该端口上的在途动作。"""
