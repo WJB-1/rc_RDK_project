@@ -57,43 +57,8 @@ from .escape_flow import EscapeFlow
 from .return_flow import ReturnFlow
 from .task_flow import TaskFlow
 from .context import CoordinatorContext, LastMotionRecord
+from .state_adapter import LegacyNavigationStateAdapter
 from .states import CoordinatorState, DepartureSubstate, EscapeSubstate, ReturnSubstate, TaskSubstate
-
-
-class _LegacyNavigationStateAdapter:
-    """把旧版分离的状态依赖适配为统一状态层接口，仅用于迁移兼容。"""
-
-    def __init__(self, state_store=None, runtime_map=None) -> None:
-        self._state_store = state_store
-        self._runtime_map = runtime_map
-
-    def robot_state(self) -> Optional[RobotState]:
-        """读取旧状态仓中的机器人快照。"""
-
-        if self._state_store is None:
-            return None
-        return self._state_store.robot_state()
-
-    def runtime_map_snapshot(self):
-        """读取旧运行时地图的不可变快照。"""
-
-        if self._runtime_map is None:
-            raise RuntimeError("未装配运行时地图")
-        return self._runtime_map.snapshot()
-
-    def apply_map_update(self, update: AbsoluteMapUpdate) -> bool:
-        """把地图事实转交给旧运行时地图。"""
-
-        if self._runtime_map is None:
-            raise RuntimeError("未装配运行时地图")
-        return self._runtime_map.apply(update)
-
-    def replace_robot_state(self, state: RobotState) -> None:
-        """把新机器人状态转交给旧状态仓。"""
-
-        if self._state_store is None:
-            raise RuntimeError("未装配机器人状态仓")
-        self._state_store.replace_robot_state(state)
 
 
 class Coordinator:
@@ -126,7 +91,7 @@ class Coordinator:
         # 新版只接收统一状态层；旧参数仅通过适配器兼容迁移中的测试和装配代码。
         self._navigation_state = navigation_state
         if self._navigation_state is None and (state_store is not None or runtime_map is not None):
-            self._navigation_state = _LegacyNavigationStateAdapter(state_store, runtime_map)
+            self._navigation_state = LegacyNavigationStateAdapter(state_store, runtime_map)
         # 感知适配器只负责翻译单帧，地图和位置仍由 Coordinator 统一消费。
         self._perception_adapter = perception_adapter
         # 运行时地图由 Coordinator 写入，适配器本身不持有地图写权限。
@@ -160,8 +125,7 @@ class Coordinator:
                 on_map_update=self._task_flow.handle_map_update,
                 diagnostics=self.diagnostics,
             )
-            if self._navigation_state is not None
-            else None
+            
         )
 
     @property
@@ -445,145 +409,23 @@ class Coordinator:
         # 同一请求的任何最终结果都只能被消费一次。
         # 阻塞终局先写入道路事实并销毁旧剧本，避免后续继续下发同一条危险路线。
         if interrupt.outcome is ExecutionOutcome.BLOCKED:
-            self._handle_blocked_action(self._context.current_action)
+            self._escape_flow.handle_blocked_action(self._context.current_action)
         # 成功终局先按动作效果投影状态，再清理在途身份，避免丢失动作语义。
         elif interrupt.outcome is ExecutionOutcome.COMPLETED:
             self._project_success(self._context.current_action, interrupt)
-            self._consume_perception(self._context.current_action, interrupt)
-            self._consume_task(self._context.current_action)
+            self._event_projector.project_perception(self._context.current_action, interrupt)
+            self._event_projector.project_task(self._context.current_action)
         self._clear_in_flight()
         # 观察中断已经完成清理后，才允许装载撤回剧本，保持单一在途请求。
         if self._context.pending_retrace is not None:
             source_action_id = self._context.pending_retrace.source_action_id
             self._context.pending_retrace = None
-            self._start_retrace_turn(source_action_id)
+            self._escape_flow.start_retrace_turn(source_action_id)
         elif interrupt.outcome is ExecutionOutcome.COMPLETED and self._context.state is CoordinatorState.TASK_PROCESSING:
             self._context.transition(CoordinatorState.TASK_PROCESSING, TaskSubstate.ANALYZING)
         if interrupt.outcome is not ExecutionOutcome.COMPLETED:
             self.diagnostics.append("动作 {} 以 {} 结束".format(interrupt.action_id, interrupt.outcome.value))
         return True
-
-    def _handle_blocked_action(self, action: Optional[Action]) -> None:
-        """兼容旧调用方，转交 EscapeFlow 处理动作阻塞。"""
-
-        self._escape_flow.handle_blocked_action(action)
-
-    def _consume_task(self, action: Optional[Action]) -> None:
-        """将匹配成功的任务动作推进为完成态。"""
-
-        if self._event_projector is not None:
-            self._event_projector.project_task(action)
-            return
-
-        # 只有带完成投影效果的任务动作需要触碰任务注册表。
-        if action is None or not isinstance(action.expected_effect, CompleteTaskEffect):
-            return
-        # 未装配注册表时只保留诊断，不在协调器内部复制任务生命周期。
-        if self._task_registry is None:
-            self.diagnostics.append("未装配任务注册表，无法完成任务 {}".format(action.expected_effect.task_id))
-            return
-        # 注册表拒绝通常表示迟到或重复任务终局，记录原因但不伪造成功。
-        transition = self._task_registry.complete(action.expected_effect.task_id)
-        if not transition.accepted:
-            self.diagnostics.append("任务完成状态转换被拒绝：{}".format(transition.reason))
-            return
-        # 任务完成后由 Coordinator 派生与任务类型对应的绝对地图事实。
-        completed_task = transition.after
-        if self._navigation_state is None or completed_task is None:
-            return
-        if completed_task.kind is TaskKind.CHECK_IN:
-            update = AbsoluteMapUpdate(
-                AbsoluteMapUpdateKind.VISIT_NODE,
-                MapUpdateAuthority.COORDINATOR,
-                node_id=completed_task.target_id,
-            )
-        elif completed_task.kind is TaskKind.CULVERT_RECON:
-            update = AbsoluteMapUpdate(
-                AbsoluteMapUpdateKind.RECON_CULVERT,
-                MapUpdateAuthority.COORDINATOR,
-                edge_id=completed_task.target_id,
-            )
-        else:
-            self.diagnostics.append("任务类型没有完成地图事实：{}".format(completed_task.kind.value))
-            return
-        # 地图自身负责前置条件和幂等性，Coordinator 只提交已校验的派生事实。
-        try:
-            self._navigation_state.apply_map_update(update)
-        except ValueError as error:
-            self.diagnostics.append("任务完成地图事实被拒绝：{}".format(error))
-
-    def _consume_perception(self, action: Optional[Action], interrupt: ExecutionInterrupt) -> None:
-        """消费观察完成中断中的唯一感知帧，并应用已确认的翻译结果。"""
-
-        if self._event_projector is not None:
-            self._event_projector.project_perception(action, interrupt)
-            return
-
-        # 非观察动作不应携带感知帧，避免把错误载荷写入地图。
-        if action is None or not isinstance(action.command, ObserveCommand):
-            if interrupt.perception_frame is not None:
-                self.diagnostics.append("非观察动作携带感知帧，已忽略")
-            return
-        # 观察成功必须有最终感知帧；缺失时记录协议诊断但不猜测事实。
-        frame = interrupt.perception_frame
-        if frame is None:
-            self.diagnostics.append("观察完成中断缺少 perception_frame")
-            return
-        # 未装配适配器时不能越过感知边界自行解释相对事实。
-        if self._perception_adapter is None:
-            self.diagnostics.append("未装配感知适配器，已忽略观察帧 {}".format(frame.frame_id))
-            return
-        # 适配器只接收一帧，内部多帧融合对 Coordinator 透明。
-        translation = self._perception_adapter.translate(frame)
-        # 翻译结果必须回显同一帧身份，防止迟到帧污染当前状态。
-        if translation.frame_id != frame.frame_id:
-            self.diagnostics.append("感知翻译 frame_id 不匹配，已忽略")
-            return
-        # 无法确认时只记录原因并继续，不写地图、不校正位置、不重试观察。
-        if translation.outcome is PerceptionOutcome.INCONCLUSIVE:
-            self.diagnostics.append("感知翻译无法确认：{}".format(translation.reason))
-            return
-        # 已确认地图事实只能由 Coordinator 逐条提交 RuntimeMap。
-        if self._navigation_state is None and translation.map_updates:
-            self.diagnostics.append("未装配 RuntimeMap，无法应用感知地图更新")
-        elif self._navigation_state is not None:
-            for update in translation.map_updates:
-                changed = self._navigation_state.apply_map_update(update)
-                if changed:
-                    # 涵洞发现属于当前路线时替换剧本，不应按道路阻塞销毁路线。
-                    if update.kind is AbsoluteMapUpdateKind.DISCOVER_CULVERT:
-                        self._task_flow.handle_map_update(update)
-                    else:
-                        self._task_flow.handle_map_update(update)
-        # 已确认位置校正交给位置投影器，Coordinator 不重复实现几何换算。
-        correction = translation.position_correction
-        if correction is not None:
-            if self._navigation_state is None or self._location_projector is None:
-                self.diagnostics.append("未装配位置投影器，无法应用感知位置校正")
-                return
-            current_state = self._navigation_state.robot_state()
-            next_state = self._location_projector.correct_from_landmark(current_state, correction)
-            self._navigation_state.replace_robot_state(next_state)
-
-    def _handle_projected_map_update(self, update: AbsoluteMapUpdate) -> None:
-        """兼容旧调用方，转交 TaskFlow 处理地图事实。"""
-
-        self._task_flow.handle_map_update(update)
-
-    def _replace_culvert_choreography(self, update: AbsoluteMapUpdate) -> None:
-        """兼容旧调用方，转交 TaskFlow 替换涵洞剧本。"""
-
-        self._task_flow._replace_culvert_choreography(update)
-
-    def _handle_map_update_impact(self, update) -> None:
-        """兼容旧调用方，转交 TaskFlow 判断地图影响。"""
-
-        self._task_flow._handle_map_update_impact(update)
-
-    def _start_retrace_turn(self, source_action_id: str) -> bool:
-        """兼容旧调用方，转交 EscapeFlow 装载撤回剧本。"""
-
-        return self._escape_flow.start_retrace_turn(source_action_id)
 
     def _mark_pending_replan(self) -> None:
         """在不改变当前位置的前提下设置待安全路口兑现的重规划标记。"""

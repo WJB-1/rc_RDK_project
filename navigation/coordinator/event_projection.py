@@ -40,6 +40,9 @@ class EventProjector:
 
         effect = action.expected_effect
         if isinstance(effect, ArriveAtNodeEffect):
+            if self._state is None:
+                self._diagnostics.append("未装配导航状态，无法投影路口到达")
+                return
             current = self._state.robot_state()
             self._state.replace_robot_state(
                 RobotState(
@@ -52,7 +55,9 @@ class EventProjector:
             return
         if not isinstance(effect, AdvanceOnTraversalEffect):
             return
-        if interrupt.odometry_delta_mm is None:
+        if self._state is None or interrupt.odometry_delta_mm is None:
+            if self._state is None:
+                self._diagnostics.append("未装配导航状态，无法投影里程增量")
             return
         current = self._state.robot_state()
         from_node_id, to_node_id = effect.traversal_id.split("->", 1)
