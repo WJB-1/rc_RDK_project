@@ -147,12 +147,6 @@ class Coordinator:
         self._return_flow = ReturnFlow(self)
         # 保存外层状态与内部阶段，供事件入口和调试面板读取。
         self._context = CoordinatorContext()
-        # 保存当前活动剧本和动作成功后才能兑现的下一指针。
-        self._plan: Optional[ChoreographyPlan] = None
-        self._progress: Optional[ChoreographyProgress] = None
-        # 保存唯一在途动作及其执行请求，直到终局到达或同步拒绝。
-        self._current_action: Optional[Action] = None
-        self._current_request: Optional[ExecutionRequest] = None
         # 记录最近成功转弯，供局部恢复引用而不要求执行器缓存历史。
         # 记录诊断信息但不把迟到事件重新解释为业务动作。
         self.diagnostics: List[str] = []
@@ -174,25 +168,25 @@ class Coordinator:
     def current_action(self) -> Optional[Action]:
         """返回当前唯一在途动作，供运行时和调试面板只读查看。"""
 
-        return self._current_action
+        return self._context.current_action
 
     @property
     def current_request(self) -> Optional[ExecutionRequest]:
         """返回当前唯一在途执行请求，未受理或已终局时为空。"""
 
-        return self._current_request
+        return self._context.current_request
 
     @property
     def active_choreography(self) -> Optional[ChoreographyPlan]:
         """返回当前活动剧本，剧本销毁或完成后返回空值。"""
 
-        return self._plan
+        return self._context.active_plan
 
     @property
     def is_waiting_interrupt(self) -> bool:
         """返回是否已经提交请求并等待同一身份的最终中断。"""
 
-        return self._current_request is not None
+        return self._context.current_request is not None
 
     @property
     def last_completed_turn(self) -> Optional[LastMotionRecord]:
@@ -243,26 +237,26 @@ class Coordinator:
         """
 
         # 异步动作未结束前不能再次推进剧本，避免下位机同时执行两项导航动作。
-        if self._current_request is not None:
+        if self._context.current_request is not None:
             self.diagnostics.append("已有在途请求，忽略重复 dispatch_next")
             return None
         # 允许首次调用装载剧本；已有活动剧本时忽略外部重复参数，保证游标所有权在协调器。
-        if self._plan is None:
+        if self._context.active_plan is None:
             if plan is None or progress is None:
                 self.diagnostics.append("首次 dispatch_next 必须提供剧本和指针")
                 return None
-            self._plan = plan
-            self._progress = progress
+            self._context.active_plan = plan
+            self._context.active_progress = progress
         elif plan is not None or progress is not None:
             self.diagnostics.append("已有活动剧本，忽略外部传入的剧本和指针")
-        if self._progress is None:
+        if self._context.active_progress is None:
             self.diagnostics.append("活动剧本缺少 resume_progress")
             return None
         # 编排器负责检查指针和运行时安全，协调器只消费其显式结果。
-        result = self._choreographer.compile_next(self._plan, self._progress)
+        result = self._choreographer.compile_next(self._context.active_plan, self._context.active_progress)
         if result.status is ChoreographyAdvanceStatus.FINISHED:
-            self._plan = None
-            self._progress = None
+            self._context.active_plan = None
+            self._context.active_progress = None
             self.diagnostics.append("活动编排流程已结束")
             return None
         if result.status is not ChoreographyAdvanceStatus.READY:
@@ -270,14 +264,14 @@ class Coordinator:
             return None
         # 在调用执行器前原子保存剧本、动作和下一指针，保证受理期间状态完整。
         action = result.action
-        self._progress = result.next_progress
-        self._current_action = action
+        self._context.active_progress = result.next_progress
+        self._context.current_action = action
         if self._context.state is CoordinatorState.DEPARTURE:
             self._context.transition(CoordinatorState.DEPARTURE, DepartureSubstate.EXECUTE)
         elif self._context.state is CoordinatorState.TASK_PROCESSING:
             self._context.transition(CoordinatorState.TASK_PROCESSING, TaskSubstate.EXECUTING)
         request = self._translate_action(action)
-        self._current_request = request
+        self._context.current_request = request
         # 任务动作只有在注册表成功占用后才能交给执行器，避免重复执行同一任务。
         if isinstance(action.expected_effect, CompleteTaskEffect) and self._task_registry is not None:
             transition = self._task_registry.begin(action.expected_effect.task_id)
@@ -299,7 +293,7 @@ class Coordinator:
         """
 
         # 在途动作尚未终局时不能替换剧本，避免旧动作与新恢复流程并行存在。
-        if self._current_request is not None:
+        if self._context.current_request is not None:
             self.diagnostics.append("已有在途请求，不能启动局部脱困剧本")
             return False
         # 侧支局部剧本属于脱困状态，但尚未开始倒车；子状态记录当前正在准备侧支转向。
@@ -314,8 +308,8 @@ class Coordinator:
             self.diagnostics.append("局部脱困剧本启动被拒绝")
             return False
         # 保存新剧本及其首个游标，后续动作仍由 dispatch_next 统一中转执行器。
-        self._plan = result.plan
-        self._progress = result.progress
+        self._context.active_plan = result.plan
+        self._context.active_progress = result.progress
         self.diagnostics.append("已装载局部脱困剧本")
         return True
 
@@ -327,7 +321,7 @@ class Coordinator:
         """
 
         # 在途动作尚未终局时不能销毁剧本或启动另一条规划流程。
-        if self._current_request is not None:
+        if self._context.current_request is not None:
             self.diagnostics.append("已有在途请求，不能开始重新规划")
             return False
         if self._context.state is CoordinatorState.ESCAPE:
@@ -345,8 +339,6 @@ class Coordinator:
         if self._route_planner is None:
             self.diagnostics.append("未装配正常规划器")
             return False
-        self._plan = None
-        self._progress = None
         self._context.active_plan = None
         self._context.active_progress = None
         result = self._route_planner.plan()
@@ -375,8 +367,6 @@ class Coordinator:
         ):
             self.diagnostics.append("编排器拒绝规划结果")
             return False
-        self._plan = start_result.plan
-        self._progress = start_result.progress
         self._context.active_plan = start_result.plan
         self._context.active_progress = start_result.progress
         if self._context.state is CoordinatorState.TASK_PROCESSING:
@@ -439,7 +429,7 @@ class Coordinator:
     def _handle_execution_interrupt_core(self, interrupt: ExecutionInterrupt) -> bool:
         """消费第一条完整匹配的终局；迟到、重复或未知身份只记录诊断。"""
 
-        request = self._current_request
+        request = self._context.current_request
         if request is None:
             self.diagnostics.append("无在途请求，忽略终局 {}".format(interrupt.request_id))
             return False
@@ -455,12 +445,12 @@ class Coordinator:
         # 同一请求的任何最终结果都只能被消费一次。
         # 阻塞终局先写入道路事实并销毁旧剧本，避免后续继续下发同一条危险路线。
         if interrupt.outcome is ExecutionOutcome.BLOCKED:
-            self._handle_blocked_action(self._current_action)
+            self._handle_blocked_action(self._context.current_action)
         # 成功终局先按动作效果投影状态，再清理在途身份，避免丢失动作语义。
         elif interrupt.outcome is ExecutionOutcome.COMPLETED:
-            self._project_success(self._current_action, interrupt)
-            self._consume_perception(self._current_action, interrupt)
-            self._consume_task(self._current_action)
+            self._project_success(self._context.current_action, interrupt)
+            self._consume_perception(self._context.current_action, interrupt)
+            self._consume_task(self._context.current_action)
         self._clear_in_flight()
         # 观察中断已经完成清理后，才允许装载撤回剧本，保持单一在途请求。
         if self._context.pending_retrace is not None:
@@ -649,11 +639,11 @@ class Coordinator:
     def _translate_action(self, action: Action) -> ExecutionRequest:
         """委托 ExecutionBridge 翻译编排动作，保留旧私有入口兼容测试。"""
 
-        choreography_id = self._plan.choreography_id if self._plan is not None else "execution:unknown"
+        choreography_id = self._context.active_plan.choreography_id if self._context.active_plan is not None else "execution:unknown"
         return ExecutionBridge.translate(action, choreography_id, self._clock())
 
     def _clear_in_flight(self) -> None:
         """清理当前动作和请求，但保留活动剧本供上层决定是否继续。"""
 
-        self._current_action = None
-        self._current_request = None
+        self._context.current_action = None
+        self._context.current_request = None

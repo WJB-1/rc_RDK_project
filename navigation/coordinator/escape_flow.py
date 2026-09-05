@@ -74,8 +74,6 @@ class EscapeFlow:
         if result.status is not ChoreographyStartStatus.STARTED or result.plan is None or result.progress is None:
             coordinator.diagnostics.append("撤回转弯剧本启动被拒绝")
             return False
-        coordinator._plan = result.plan
-        coordinator._progress = result.progress
         coordinator._context.active_plan = result.plan
         coordinator._context.active_progress = result.progress
         coordinator.diagnostics.append("已装载同轨迹撤回转弯剧本")
@@ -103,8 +101,6 @@ class EscapeFlow:
                 coordinator.diagnostics.append("阻塞巡航无法映射物理边：{}".format(error))
         else:
             coordinator.diagnostics.append("阻塞动作缺少巡航边或地图拓扑，未写入物理阻塞事实")
-        coordinator._plan = None
-        coordinator._progress = None
         coordinator._context.active_plan = None
         coordinator._context.active_progress = None
         from .states import CoordinatorState, EscapeSubstate
