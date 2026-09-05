@@ -314,21 +314,11 @@ class Coordinator:
         return ack
 
     def _on_choreography_finished(self, finished_plan: Optional[ChoreographyPlan]) -> None:
-        """把剧本结束事件投影为主状态转移，不创建任何动作。"""
+        """记录剧本结束事件；主状态转移只由当前 Analyzer 执行。"""
 
-        if self._context.state is CoordinatorState.DEPARTURE:
-            self._context.transition_main(CoordinatorState.TASK_PROCESSING)
-            return
-        if self._context.state is CoordinatorState.ESCAPE:
-            # 局部转向或倒车恢复完成后，统一回到正常任务决策。
-            self._context.transition_main(CoordinatorState.TASK_PROCESSING)
-            return
-        if self._context.state is CoordinatorState.TASK_PROCESSING:
-            if self._task_registry is not None and not self._task_registry.pending_tasks():
-                self._context.transition_main(CoordinatorState.RETURNING)
-            return
-        if self._context.state is CoordinatorState.RETURNING:
-            self._mission_finished = True
+        # 参数保留在服务边界中，便于后续诊断显示结束的是哪一个剧本。
+        if finished_plan is not None:
+            self.diagnostics.append("剧本完成：{}".format(finished_plan.choreography_id))
 
     def _dispatch_current_action(self) -> Optional[DispatchAck]:
         """由当前分析器请求一次统一的编排推进和执行提交。"""

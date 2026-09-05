@@ -19,11 +19,8 @@ class ReturningAnalyzer(BaseAnalyzer):
             previous_state = coordinator.state
             ack = coordinator._dispatch_current_action()
             if coordinator._last_choreography_status is ChoreographyAdvanceStatus.FINISHED:
-                if coordinator.mission_finished:
-                    return AnalyzerDecision(AnalyzerDecisionKind.TERMINAL, "已完成返场剧本")
-                if coordinator.state is not previous_state:
-                    return AnalyzerDecision(AnalyzerDecisionKind.TRANSITIONED, "返场剧本完成")
-                return AnalyzerDecision(AnalyzerDecisionKind.WAITING, "返场剧本已结束")
+                coordinator._mission_finished = True
+                return AnalyzerDecision(AnalyzerDecisionKind.TERMINAL, "已完成返场剧本")
             if ack is None:
                 return AnalyzerDecision(AnalyzerDecisionKind.WAITING, "返场剧本暂时没有可派发动作")
             return AnalyzerDecision(AnalyzerDecisionKind.DISPATCHED, "已派发返场动作")

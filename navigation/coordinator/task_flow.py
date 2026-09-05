@@ -17,17 +17,14 @@ class TaskFlow:
         """在规划门禁满足时请求一次正常规划。"""
 
         from .states import CoordinatorState, EscapeSubstate, TaskSubstate
-        if self._coordinator._auto_drive:
-            self._coordinator._context.transition_main(CoordinatorState.TASK_PROCESSING)
-        else:
+        if not self._coordinator._auto_drive:
             self._coordinator._context.transition(CoordinatorState.TASK_PROCESSING, TaskSubstate.PLANNING)
         if self.plan_normal_route():
             return True
-        if self._coordinator._auto_drive:
-            self._coordinator._context.transition_main(CoordinatorState.ESCAPE)
-        else:
+        if not self._coordinator._auto_drive:
             self._coordinator._context.transition(CoordinatorState.ESCAPE, EscapeSubstate.ASSESS)
-        return self._coordinator._escape_flow.assess_and_replan(retry_normal=False)
+            return self._coordinator._escape_flow.assess_and_replan(retry_normal=False)
+        return False
 
     def dispatch_next(self):
         """提交当前任务剧本的下一条异步动作。"""

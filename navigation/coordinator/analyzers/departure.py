@@ -1,6 +1,7 @@
 """出发主状态的隐式分析流程。"""
 
 from navigation.contracts import ChoreographyAdvanceStatus
+from ..states import CoordinatorState
 from .base import AnalyzerDecision, AnalyzerDecisionKind, BaseAnalyzer
 
 
@@ -15,12 +16,10 @@ class DepartureAnalyzer(BaseAnalyzer):
             return AnalyzerDecision(AnalyzerDecisionKind.WAITING, "等待出发动作终局")
         if coordinator.active_choreography is None:
             return AnalyzerDecision(AnalyzerDecisionKind.WAITING, "等待出发剧本")
-        previous_state = coordinator.state
         ack = coordinator._dispatch_current_action()
         if coordinator._last_choreography_status is ChoreographyAdvanceStatus.FINISHED:
-            if coordinator.state is not previous_state:
-                return AnalyzerDecision(AnalyzerDecisionKind.TRANSITIONED, "出发剧本完成，进入任务处理")
-            return AnalyzerDecision(AnalyzerDecisionKind.WAITING, "出发剧本已结束")
+            coordinator._context.transition_main(CoordinatorState.TASK_PROCESSING)
+            return AnalyzerDecision(AnalyzerDecisionKind.TRANSITIONED, "出发剧本完成，进入任务处理")
         if ack is None:
             return AnalyzerDecision(AnalyzerDecisionKind.WAITING, "出发剧本暂时没有可派发动作")
         return AnalyzerDecision(AnalyzerDecisionKind.DISPATCHED, "已派发出发动作")
