@@ -14,7 +14,6 @@ from navigation.contracts import (
     ChoreographyStartStatus,
     ChoreographyPlan,
     ChoreographyProgress,
-    ChoreographySourceKind,
     CompleteTaskEffect,
     DispatchAck,
     DriveDistanceCommand,
@@ -57,7 +56,7 @@ from .departure_flow import DepartureFlow
 from .escape_flow import EscapeFlow
 from .return_flow import ReturnFlow
 from .task_flow import TaskFlow
-from .context import CoordinatorContext, LastMotionRecord, PendingRetrace
+from .context import CoordinatorContext, LastMotionRecord
 from .states import CoordinatorState, DepartureSubstate, EscapeSubstate, ReturnSubstate, TaskSubstate
 
 
@@ -594,9 +593,9 @@ class Coordinator:
                 if changed:
                     # 涵洞发现属于当前路线时替换剧本，不应按道路阻塞销毁路线。
                     if update.kind is AbsoluteMapUpdateKind.DISCOVER_CULVERT:
-                        self._replace_culvert_choreography(update)
+                        self._task_flow.handle_map_update(update)
                     else:
-                        self._handle_map_update_impact(update)
+                        self._task_flow.handle_map_update(update)
         # 已确认位置校正交给位置投影器，Coordinator 不重复实现几何换算。
         correction = translation.position_correction
         if correction is not None:
@@ -608,86 +607,19 @@ class Coordinator:
             self._navigation_state.replace_robot_state(next_state)
 
     def _handle_projected_map_update(self, update: AbsoluteMapUpdate) -> None:
-        """接收投影器已写入的地图事实并处理活动路线生命周期。"""
+        """兼容旧调用方，转交 TaskFlow 处理地图事实。"""
 
-        if update.kind is AbsoluteMapUpdateKind.DISCOVER_CULVERT:
-            self._replace_culvert_choreography(update)
-        else:
-            self._handle_map_update_impact(update)
+        self._task_flow.handle_map_update(update)
 
     def _replace_culvert_choreography(self, update: AbsoluteMapUpdate) -> None:
-        """将命中活动路线的涵洞发现交给编排器替换当前剧本。"""
+        """兼容旧调用方，转交 TaskFlow 替换涵洞剧本。"""
 
-        # 缺少路线、进度或拓扑时无法安全判断涵洞属于哪条巡航边，只记录诊断。
-        if self._plan is None or self._progress is None or self._topology is None or update.edge_id is None:
-            self.diagnostics.append("涵洞发现缺少活动剧本或拓扑，未替换编排")
-            return
-        # 只有物理边属于当前游标之后的路线步骤时，才允许替换尚未执行的巡航。
-        traversal_id = None
-        for candidate in self._plan.route_steps:
-            try:
-                from_node_id, to_node_id = candidate.split("->", 1)
-                cruise_edge = self._topology.get_cruise_edge(from_node_id, to_node_id)
-            except (KeyError, ValueError):
-                continue
-            if update.edge_id in cruise_edge.physical_edge_ids:
-                traversal_id = candidate
-                break
-        if traversal_id is None:
-            # 涵洞不在活动路线，保持原剧本继续执行，不触发无关重规划。
-            return
-        # 从任务注册表中寻找指向该物理边的待执行涵洞任务，避免凭空创建任务身份。
-        task_id = None
-        if self._task_registry is not None:
-            for task in self._task_registry.pending_tasks():
-                if task.kind is TaskKind.CULVERT_RECON and task.target_id == update.edge_id:
-                    task_id = task.task_id
-                    break
-        if task_id is None:
-            self.diagnostics.append("活动路线发现涵洞但没有匹配的待办涵洞任务：{}".format(update.edge_id))
-            return
-        # 编排器直接重建不可变剧本；协调器只保存返回的剧本和游标。
-        replace_method = getattr(self._choreographer, "replace_current_traversal_with_culvert", None)
-        if replace_method is None:
-            self.diagnostics.append("编排器未提供涵洞剧本替换接口")
-            return
-        result = replace_method(self._plan, self._progress, traversal_id, task_id)
-        if result.status is not ChoreographyStartStatus.STARTED or result.plan is None or result.progress is None:
-            self.diagnostics.append("涵洞剧本替换被拒绝")
-            return
-        self._plan = result.plan
-        self._progress = result.progress
-        self.diagnostics.append("已将活动巡航替换为涵洞探索剧本：{}".format(task_id))
+        self._task_flow._replace_culvert_choreography(update)
 
     def _handle_map_update_impact(self, update) -> None:
-        """根据已生效地图事实决定保留活动剧本还是销毁并等待重规划。"""
+        """兼容旧调用方，转交 TaskFlow 判断地图影响。"""
 
-        # 确认道路安全不是路线变化，不应凭空触发重规划。
-        if update.kind is not AbsoluteMapUpdateKind.BLOCK_EDGE:
-            return
-        # 只有能够映射到活动剧本的物理边时，才需要立即废弃旧剧本。
-        if self._plan is None or self._topology is None or update.edge_id is None:
-            return
-        # 遍历活动剧本的巡航步骤，检查更新物理边是否属于任一路线组成。
-        for traversal_id in self._plan.route_steps:
-            from_node_id, to_node_id = traversal_id.split("->", 1)
-            cruise_edge = self._topology.get_cruise_edge(from_node_id, to_node_id)
-            if update.edge_id in cruise_edge.physical_edge_ids:
-                # 只有命中活动路线的阻塞才设置待重规划标记。
-                self._mark_pending_replan()
-                # 局部侧支观察确认阻塞时，先沿刚完成的真实转弯轨迹撤回。
-                if self._plan.source_kind is ChoreographySourceKind.JUNCTION_RECOVERY:
-                    if self._context.last_motion is not None and self._context.last_motion.is_turn:
-                        self._context.pending_retrace = PendingRetrace(self._context.last_motion.source_action_id)
-                    self._plan = None
-                    self._progress = None
-                    self.diagnostics.append("侧支观察发现阻塞，等待生成同轨迹撤回剧本")
-                    return
-                # 当前路线已无法保证安全，销毁路线和编排游标，禁止继续旧动作。
-                self._plan = None
-                self._progress = None
-                self.diagnostics.append("地图更新影响活动路线，已销毁剧本并等待重新规划")
-                return
+        self._task_flow._handle_map_update_impact(update)
 
     def _start_retrace_turn(self, source_action_id: str) -> bool:
         """在观察中断收口后装载编排器生成的同轨迹撤回剧本。"""
