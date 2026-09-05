@@ -16,6 +16,8 @@ from .contracts import (
 )
 # 重新导出纯编排入口，使后续协调器不依赖 choreography 内部文件路径。
 from .choreography import Choreographer, MotionProfile
+# 导出导航浅门面和只读快照，供外层 RobotRuntime 或仿真入口装配使用。
+from .runtime import NavigationRuntime, NavigationRuntimeSnapshot
 # 重新导出状态、任务、地图和静态拓扑，使后续模块只依赖一个稳定入口。
 from .domain import (
     AtNode,
@@ -52,4 +54,7 @@ __all__ = (
     # 纯编排器与其不可变经验距离配置。
     "Choreographer",
     "MotionProfile",
+    # 导航浅门面和只读调试快照。
+    "NavigationRuntime",
+    "NavigationRuntimeSnapshot",
 )

@@ -53,7 +53,7 @@ class Coordinator:
         route_planner=None,
         recovery_planner=None,
     ) -> None:
-        """保存已装配依赖；中断回调由 NavigationRuntime 负责注册。"""
+        """保存已装配依赖，并把自身注册为执行器唯一终局消费者。"""
 
         # 执行器只负责受理命令和回传终局，协调器不判断仿真或真实环境。
         self._executor = executor
@@ -102,6 +102,9 @@ class Coordinator:
             )
             
         )
+        # Coordinator 直接接收执行器终局，NavigationRuntime 不参与中断转发。
+        if self._executor is not None:
+            self._executor.on_interrupt(self.handle_execution_interrupt)
 
     @property
     def current_action(self) -> Optional[Action]:
