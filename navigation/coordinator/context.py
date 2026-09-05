@@ -78,3 +78,16 @@ class CoordinatorContext:
         self.task_substate = substate if state is CoordinatorState.TASK_PROCESSING else None
         self.escape_substate = substate if state is CoordinatorState.ESCAPE else None
         self.return_substate = substate if state is CoordinatorState.RETURNING else None
+
+    def transition_main(self, state: CoordinatorState) -> None:
+        """只切换显式主状态，不保存规划、编排、执行或分析子状态。
+
+        新的分析器模式通过上下文对象是否存在来判断隐式阶段；
+        旧的 substate 字段仅为历史调试和兼容测试保留，统一清空。
+        """
+
+        self.state = state
+        self.departure_substate = None
+        self.task_substate = None
+        self.escape_substate = None
+        self.return_substate = None

@@ -33,6 +33,13 @@ from .task_flow import TaskFlow
 from .context import CoordinatorContext, LastMotionRecord
 from .state_adapter import LegacyNavigationStateAdapter
 from .states import CoordinatorState, DepartureSubstate, EscapeSubstate, ReturnSubstate, TaskSubstate
+from .analyzers import (
+    AnalyzerDecisionKind,
+    DepartureAnalyzer,
+    EscapeAnalyzer,
+    ReturningAnalyzer,
+    TaskProcessingAnalyzer,
+)
 
 
 class Coordinator:
@@ -86,6 +93,19 @@ class Coordinator:
         self._return_flow = ReturnFlow(self)
         # 保存外层状态与内部阶段，供事件入口和调试面板读取。
         self._context = CoordinatorContext()
+        # 分析器是各主状态的业务决策者；Coordinator 只负责选择它并统一执行动作。
+        self._analyzers = {
+            CoordinatorState.DEPARTURE: DepartureAnalyzer(self),
+            CoordinatorState.TASK_PROCESSING: TaskProcessingAnalyzer(self),
+            CoordinatorState.ESCAPE: EscapeAnalyzer(self),
+            CoordinatorState.RETURNING: ReturningAnalyzer(self),
+        }
+        # 防止执行器回调在泵循环内部重入，保证一次只运行一个状态机泵。
+        self._pump_running = False
+        self._pump_requested = False
+        # 只有通过 start() 启动后的 Coordinator 才自动消费中断并继续泵循环；
+        # 直接调用旧派发接口的测试和调试代码保持手动推进兼容。
+        self._auto_drive = False
         # 记录最近成功转弯，供局部恢复引用而不要求执行器缓存历史。
         # 记录诊断信息但不把迟到事件重新解释为业务动作。
         self.diagnostics: List[str] = []
@@ -160,7 +180,62 @@ class Coordinator:
         """记录异常原因并进入异常终局，不再生成普通动作。"""
 
         self.diagnostics.append(reason)
-        self._context.transition(CoordinatorState.EXCEPTION)
+        self._context.transition_main(CoordinatorState.EXCEPTION)
+
+    def start(
+        self,
+        departure_plan: Optional[ChoreographyPlan] = None,
+        departure_progress: Optional[ChoreographyProgress] = None,
+    ) -> None:
+        """启动导航主状态机，并运行到下一个异步等待点。
+
+        外层组合根可以提供已经生成的出发剧本；Coordinator 不直接构造动作，
+        而是交给当前主状态分析器调用编排器和统一执行入口。方法不会忙等设备。
+        """
+
+        # 首次启动允许注入出发剧本，后续重复启动不得覆盖活动流程。
+        if self._context.active_plan is None and departure_plan is not None:
+            self._context.active_plan = departure_plan
+            self._context.active_progress = departure_progress
+        self._auto_drive = True
+        self._pump()
+
+    def _select_analyzer(self):
+        """按当前主状态选择唯一业务分析器。"""
+
+        return self._analyzers.get(self._context.state)
+
+    def _pump(self) -> None:
+        """运行状态机直到异步等待、无法推进或进入终局。"""
+
+        # 回调可能在泵运行期间到达，只登记一次待处理请求，避免递归调用。
+        if self._pump_running:
+            self._pump_requested = True
+            return
+        self._pump_running = True
+        try:
+            while True:
+                self._pump_requested = False
+                if self._context.state is CoordinatorState.EXCEPTION:
+                    return
+                analyzer = self._select_analyzer()
+                if analyzer is None:
+                    return
+                previous_state = self._context.state
+                decision = analyzer.run()
+                # 分析器可能在一次判断中完成主状态转移；此时立即重新选择新的分析器。
+                if self._context.state is not previous_state:
+                    continue
+                if decision.kind in (
+                    AnalyzerDecisionKind.DISPATCHED,
+                    AnalyzerDecisionKind.WAITING,
+                    AnalyzerDecisionKind.TERMINAL,
+                ):
+                    return
+                if not self._pump_requested:
+                    continue
+        finally:
+            self._pump_running = False
 
     def dispatch_next(
         self,
@@ -203,9 +278,9 @@ class Coordinator:
         action = result.action
         self._context.active_progress = result.next_progress
         self._context.current_action = action
-        if self._context.state is CoordinatorState.DEPARTURE:
+        if not self._auto_drive and self._context.state is CoordinatorState.DEPARTURE:
             self._context.transition(CoordinatorState.DEPARTURE, DepartureSubstate.EXECUTE)
-        elif self._context.state is CoordinatorState.TASK_PROCESSING:
+        elif not self._auto_drive and self._context.state is CoordinatorState.TASK_PROCESSING:
             self._context.transition(CoordinatorState.TASK_PROCESSING, TaskSubstate.EXECUTING)
         request = self._translate_action(action)
         self._context.current_request = request
@@ -256,7 +331,9 @@ class Coordinator:
             return False
         self._context.active_plan = start_result.plan
         self._context.active_progress = start_result.progress
-        if self._context.state is CoordinatorState.TASK_PROCESSING:
+        if self._auto_drive:
+            self._context.transition_main(self._context.state)
+        elif self._context.state is CoordinatorState.TASK_PROCESSING:
             self._context.transition(CoordinatorState.TASK_PROCESSING, TaskSubstate.CHOREOGRAPHING)
         elif self._context.state is CoordinatorState.ESCAPE:
             # RecoveryPlan 进入倒车编排；普通路线则表示脱困已成功，回到任务流程。
@@ -287,15 +364,17 @@ class Coordinator:
         )
 
     def handle_execution_interrupt(self, interrupt: ExecutionInterrupt) -> bool:
-        """按当前外层状态把执行中断交给对应流程处理。"""
+        """把执行器中断直接交给当前分析器，并自动继续状态机泵。"""
 
-        if self._context.state is CoordinatorState.DEPARTURE:
-            return self._departure_flow.handle_interrupt(interrupt)
-        if self._context.state is CoordinatorState.ESCAPE:
-            return self._escape_flow.handle_interrupt(interrupt)
-        if self._context.state is CoordinatorState.RETURNING:
-            return self._return_flow.handle_interrupt(interrupt)
-        return self._task_flow.handle_interrupt(interrupt)
+        analyzer = self._select_analyzer()
+        if analyzer is None:
+            self.diagnostics.append("当前主状态没有对应分析器")
+            return False
+        decision = analyzer.analyze_interrupt(interrupt)
+        # 分析器已经完成中断公共投影和业务判断；泵负责提交下一动作或重新规划。
+        if self._auto_drive and (decision.kind is not AnalyzerDecisionKind.WAITING or self._context.current_request is None):
+            self._pump()
+        return decision.kind is not AnalyzerDecisionKind.WAITING or self._context.current_request is None
 
     def _handle_execution_interrupt_core(self, interrupt: ExecutionInterrupt) -> bool:
         """消费第一条完整匹配的终局；迟到、重复或未知身份只记录诊断。"""
@@ -328,7 +407,11 @@ class Coordinator:
             source_action_id = self._context.pending_retrace.source_action_id
             self._context.pending_retrace = None
             self._escape_flow.start_retrace_turn(source_action_id)
-        elif interrupt.outcome is ExecutionOutcome.COMPLETED and self._context.state is CoordinatorState.TASK_PROCESSING:
+        elif (
+            interrupt.outcome is ExecutionOutcome.COMPLETED
+            and self._context.state is CoordinatorState.TASK_PROCESSING
+            and not self._auto_drive
+        ):
             self._context.transition(CoordinatorState.TASK_PROCESSING, TaskSubstate.ANALYZING)
         if interrupt.outcome is not ExecutionOutcome.COMPLETED:
             self.diagnostics.append("动作 {} 以 {} 结束".format(interrupt.action_id, interrupt.outcome.value))

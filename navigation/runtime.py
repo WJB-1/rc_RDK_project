@@ -77,7 +77,7 @@ class NavigationRuntime:
         self,
         plan: ChoreographyPlan,
         progress: ChoreographyProgress,
-    ) -> Optional[DispatchAck]:
+    ) -> None:
         """注入外部生成的出发剧本，并让 Coordinator 派发第一条动作。
 
         外层 RobotRuntime 或 SimulationRunner 负责创建出发剧本和初始游标；
@@ -86,10 +86,10 @@ class NavigationRuntime:
 
         # 首次业务启动前先确保导航门面处于就绪状态。
         self.start()
-        # Coordinator 保存剧本游标，并负责编排、翻译和提交首个动作。
-        return self._coordinator.dispatch_next(plan, progress)
+        # Coordinator 保存剧本游标，并由自身状态机负责编排、翻译和提交首个动作。
+        return self._coordinator.start(plan, progress)
 
-    def dispatch_next(self) -> Optional[DispatchAck]:
+    def dispatch_next(self) -> None:
         """请求 Coordinator 按当前剧本游标派发下一条异步动作。
 
         执行器完成上一条动作后，由外层事件驱动器调用本方法；
@@ -99,8 +99,8 @@ class NavigationRuntime:
         # 未完成门面启动时拒绝推进，避免外部绕过生命周期入口。
         if not self._started:
             raise RuntimeError("NavigationRuntime 尚未启动")
-        # 后续动作不再传入剧本，游标所有权始终留在 Coordinator。
-        return self._coordinator.dispatch_next()
+        # 后续动作不再传入剧本，游标所有权始终留在 Coordinator；此入口仅供调试兼容。
+        return self._coordinator._pump()
 
     def snapshot(self) -> NavigationRuntimeSnapshot:
         """汇总 Coordinator 的公开只读属性并返回不可变调试快照。"""

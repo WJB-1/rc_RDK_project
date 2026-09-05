@@ -57,7 +57,10 @@ class EscapeFlow:
         if coordinator._context.current_request is not None:
             coordinator.diagnostics.append("已有在途请求，不能启动局部脱困剧本")
             return False
-        coordinator._context.transition(CoordinatorState.ESCAPE, EscapeSubstate.TURN_SIDE)
+        if coordinator._auto_drive:
+            coordinator._context.transition_main(CoordinatorState.ESCAPE)
+        else:
+            coordinator._context.transition(CoordinatorState.ESCAPE, EscapeSubstate.TURN_SIDE)
         start_method = getattr(coordinator._choreographer, "start_junction_escape", None)
         if start_method is None:
             coordinator.diagnostics.append("编排器未提供局部脱困入口")
@@ -101,7 +104,10 @@ class EscapeFlow:
 
         coordinator = self._coordinator
         from .states import CoordinatorState, EscapeSubstate
-        coordinator._context.transition(CoordinatorState.ESCAPE, EscapeSubstate.RETRACE_TURN)
+        if coordinator._auto_drive:
+            coordinator._context.transition_main(CoordinatorState.ESCAPE)
+        else:
+            coordinator._context.transition(CoordinatorState.ESCAPE, EscapeSubstate.RETRACE_TURN)
         start_method = getattr(coordinator._choreographer, "start_retrace_turn", None)
         if start_method is None:
             coordinator.diagnostics.append("编排器未提供撤回转弯入口")
@@ -122,6 +128,9 @@ class EscapeFlow:
         coordinator._context.active_plan = None
         coordinator._context.active_progress = None
         from .states import CoordinatorState, EscapeSubstate
-        coordinator._context.transition(CoordinatorState.ESCAPE, EscapeSubstate.RESTORE_HEADING)
+        if coordinator._auto_drive:
+            coordinator._context.transition_main(CoordinatorState.ESCAPE)
+        else:
+            coordinator._context.transition(CoordinatorState.ESCAPE, EscapeSubstate.RESTORE_HEADING)
         coordinator._mark_pending_replan()
         coordinator.diagnostics.append("动作阻塞，已销毁剧本并等待重新规划")
