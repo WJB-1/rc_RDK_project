@@ -9,6 +9,10 @@ from navigation.contracts import (
     ExecuteTaskCommand,
     ObserveCommand,
     PerceptionOutcome,
+    DriveDistanceCommand,
+    ReverseDistanceCommand,
+    RetraceTurnCommand,
+    TurnAtJunctionCommand,
 )
 from navigation.domain import (
     AbsoluteMapUpdate,
@@ -20,12 +24,13 @@ from navigation.domain import (
     RobotState,
     TaskKind,
 )
+from .context import LastMotionRecord
 
 
 class EventProjector:
     """集中处理动作成功后的机器人逻辑位置投影。"""
 
-    def __init__(self, state, task_registry=None, perception_adapter=None, location_projector=None, on_map_update=None, diagnostics=None) -> None:
+    def __init__(self, state, task_registry=None, perception_adapter=None, location_projector=None, on_map_update=None, diagnostics=None, context=None) -> None:
         """保存状态、任务、感知和地图影响回调依赖。"""
 
         self._state = state
@@ -34,9 +39,12 @@ class EventProjector:
         self._location_projector = location_projector
         self._on_map_update = on_map_update
         self._diagnostics = diagnostics if diagnostics is not None else []
+        self._context = context
 
     def project_success(self, action: Action, interrupt: ExecutionInterrupt) -> None:
         """按动作预期效果把成功中断写入机器人状态。"""
+
+        self._record_motion(action)
 
         effect = action.expected_effect
         if isinstance(effect, ArriveAtNodeEffect):
@@ -52,7 +60,7 @@ class EventProjector:
                     current.pending_replan,
                 )
             )
-            return
+
         if not isinstance(effect, AdvanceOnTraversalEffect):
             return
         if self._state is None or interrupt.odometry_delta_mm is None:
@@ -81,6 +89,27 @@ class EventProjector:
                 ProgressSource.ODOMETRY,
                 current.pending_replan,
             )
+        )
+
+    def _record_motion(self, action: Action) -> None:
+        """记录成功运动动作摘要，供撤回转弯等恢复流程使用。"""
+
+        if self._context is None or action is None:
+            return
+        command = action.command
+        is_turn = isinstance(command, TurnAtJunctionCommand)
+        if not isinstance(command, (TurnAtJunctionCommand, DriveDistanceCommand, ReverseDistanceCommand, RetraceTurnCommand)):
+            return
+        trajectory_id = getattr(command, "forward_trajectory_id", None)
+        if is_turn and trajectory_id is None:
+            self._diagnostics.append("成功转弯缺少 forward_trajectory_id")
+            return
+        self._context.last_motion = LastMotionRecord(
+            action_id=action.action_id,
+            command_type=type(command).__name__,
+            is_turn=is_turn,
+            traversal_id=getattr(command, "traversal_id", None),
+            forward_trajectory_id=trajectory_id,
         )
 
     def project_task(self, action: Action) -> None:

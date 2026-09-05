@@ -16,7 +16,7 @@ class EscapeFlow:
     def assess_and_replan(self, retry_normal=True):
         """请求协调器执行当前受困分析和恢复分流。"""
 
-        if retry_normal and self._coordinator._try_normal_plan():
+        if retry_normal and self._coordinator._task_flow.plan_normal_route():
             return True
         planner = self._coordinator._route_planner
         if planner is None:
@@ -27,13 +27,13 @@ class EscapeFlow:
             self._coordinator.diagnostics.append("规划器未提供受困分析接口")
             return False
         assessment = assess_method()
-        if self._coordinator._is_worth_trying(assessment.forward):
-            if self._coordinator._try_normal_plan():
+        if self._is_worth_trying(assessment.forward):
+            if self._coordinator._task_flow.plan_normal_route():
                 return True
         for report, side in ((assessment.left, "LEFT"), (assessment.right, "RIGHT")):
-            if not self._coordinator._is_worth_trying(report):
+            if not self._is_worth_trying(report):
                 continue
-            if self.try_side(self._coordinator._turn_direction_by_name(side)):
+            if self.start_side_escape(self._turn_direction_by_name(side)):
                 return True
         recovery_planner = self._coordinator._recovery_planner
         if recovery_planner is None:
@@ -48,7 +48,44 @@ class EscapeFlow:
     def try_side(self, side):
         """请求编排器通过协调器启动指定侧支局部剧本。"""
 
-        return self._coordinator.start_junction_escape(side)
+        return self.start_side_escape(side)
+
+    def start_side_escape(self, side):
+        """请求编排器生成指定侧的局部转弯观察剧本。"""
+
+        coordinator = self._coordinator
+        from .states import CoordinatorState, EscapeSubstate
+        if coordinator._context.current_request is not None:
+            coordinator.diagnostics.append("已有在途请求，不能启动局部脱困剧本")
+            return False
+        coordinator._context.transition(CoordinatorState.ESCAPE, EscapeSubstate.TURN_SIDE)
+        start_method = getattr(coordinator._choreographer, "start_junction_escape", None)
+        if start_method is None:
+            coordinator.diagnostics.append("编排器未提供局部脱困入口")
+            return False
+        result = start_method(side)
+        if result.status is not ChoreographyStartStatus.STARTED or result.plan is None or result.progress is None:
+            coordinator.diagnostics.append("局部脱困剧本启动被拒绝")
+            return False
+        coordinator._context.active_plan = result.plan
+        coordinator._context.active_progress = result.progress
+        coordinator.diagnostics.append("已装载局部脱困剧本")
+        return True
+
+    @staticmethod
+    def _is_worth_trying(report):
+        """判断规划器返回的方向是否值得尝试。"""
+
+        if hasattr(report, "worth_trying"):
+            return bool(report.worth_trying)
+        return report.name in ("CLEAR", "OPEN", "UNOBSERVED")
+
+    @staticmethod
+    def _turn_direction_by_name(name):
+        """将固定优先级名称转换为公开转向枚举。"""
+
+        from navigation.contracts import TurnDirection
+        return TurnDirection.LEFT if name == "LEFT" else TurnDirection.RIGHT
 
     def dispatch_next(self):
         """提交脱困剧本的下一条异步动作。"""

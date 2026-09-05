@@ -12,7 +12,7 @@ class ReturnFlow:
     def plan(self):
         """请求协调器装载返回阶段的规划结果。"""
 
-        return self._coordinator._plan_return_route()
+        return self._coordinator._task_flow.plan_normal_route()
 
     def dispatch_next(self):
         """提交返回剧本的下一条异步动作。"""

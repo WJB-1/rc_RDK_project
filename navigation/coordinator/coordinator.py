@@ -14,20 +14,16 @@ from navigation.contracts import (
     ChoreographyProgress,
     CompleteTaskEffect,
     DispatchAck,
-    DriveDistanceCommand,
     ExecutionInterrupt,
     ExecutionOutcome,
     ExecutionRequest,
     IAsyncExecutor,
-    RetraceTurnCommand,
-    ReverseDistanceCommand,
-    TurnAtJunctionCommand,
 )
 from navigation.domain import (
     RobotState,
 )
 from navigation.domain import TrackTopology
-from navigation.planning import RecoveryPlan, RoutePlanOutcome
+from navigation.planning import RecoveryPlan
 from .execution_bridge import ExecutionBridge
 from .event_projection import EventProjector
 from .departure_flow import DepartureFlow
@@ -102,6 +98,7 @@ class Coordinator:
                 location_projector=self._location_projector,
                 on_map_update=self._task_flow.handle_map_update,
                 diagnostics=self.diagnostics,
+                context=self._context,
             )
             
         )
@@ -155,11 +152,6 @@ class Coordinator:
         if self._context.state is CoordinatorState.RETURNING:
             return self._context.return_substate
         return None
-
-    def enter_returning(self) -> None:
-        """切换到返回状态机的首个规划阶段。"""
-
-        self._context.transition(CoordinatorState.RETURNING, ReturnSubstate.PLAN_TO_START)
 
     def enter_exception(self, reason: str) -> None:
         """记录异常原因并进入异常终局，不再生成普通动作。"""
@@ -227,34 +219,6 @@ class Coordinator:
             self._clear_in_flight()
         return ack
 
-    def start_junction_escape(self, side) -> bool:
-        """接收恢复策略选定的侧支方向并保存编排器生成的局部剧本。
-
-        本入口只做协调器中转，不自动提交第一条动作；调用方应在确认状态后
-        再调用 `dispatch_next()`，从而保留异步执行的单一入口。
-        """
-
-        # 在途动作尚未终局时不能替换剧本，避免旧动作与新恢复流程并行存在。
-        if self._context.current_request is not None:
-            self.diagnostics.append("已有在途请求，不能启动局部脱困剧本")
-            return False
-        # 侧支局部剧本属于脱困状态，但尚未开始倒车；子状态记录当前正在准备侧支转向。
-        self._context.transition(CoordinatorState.ESCAPE, EscapeSubstate.TURN_SIDE)
-        # 侧支剧本由编排器生成，Coordinator 不自行构造阶段或运动命令。
-        start_method = getattr(self._choreographer, "start_junction_escape", None)
-        if start_method is None:
-            self.diagnostics.append("编排器未提供局部脱困入口")
-            return False
-        result = start_method(side)
-        if result.status is not ChoreographyStartStatus.STARTED or result.plan is None or result.progress is None:
-            self.diagnostics.append("局部脱困剧本启动被拒绝")
-            return False
-        # 保存新剧本及其首个游标，后续动作仍由 dispatch_next 统一中转执行器。
-        self._context.active_plan = result.plan
-        self._context.active_progress = result.progress
-        self.diagnostics.append("已装载局部脱困剧本")
-        return True
-
     def replan(self) -> bool:
         """在安全路口触发一次无参规划，并按结果装载正常或恢复剧本。
 
@@ -271,28 +235,6 @@ class Coordinator:
         if self._context.state is CoordinatorState.RETURNING:
             return self._return_flow.plan()
         return self._task_flow.plan()
-
-    def _try_normal_plan(self) -> bool:
-        """在当前安全路口尝试一次普通规划并交给编排器。"""
-
-        if self._navigation_state is not None and not self._navigation_state.robot_state().is_at_safe_node:
-            self.diagnostics.append("当前位置不是安全路口，暂不兑现重新规划")
-            return False
-        if self._route_planner is None:
-            self.diagnostics.append("未装配正常规划器")
-            return False
-        self._context.active_plan = None
-        self._context.active_progress = None
-        result = self._route_planner.plan()
-        if result.outcome is RoutePlanOutcome.PLANNED and result.plan is not None:
-            return self._load_planning_result(result.plan)
-        return False
-
-    def _plan_return_route(self) -> bool:
-        """请求返场路线；返场仍使用规划器的无参共享状态接口。"""
-
-        self._context.transition(CoordinatorState.RETURNING, ReturnSubstate.PLAN_TO_START)
-        return self._try_normal_plan()
 
     def _load_planning_result(self, planning_plan) -> bool:
         """把规划器返回的路线或恢复路线交给编排器并保存新游标。"""
@@ -323,22 +265,6 @@ class Coordinator:
             self._context.transition(CoordinatorState.RETURNING, ReturnSubstate.CHOREOGRAPH_TO_START)
         self._clear_pending_replan()
         return True
-
-    @staticmethod
-    def _is_worth_trying(report) -> bool:
-        """读取方向报告的 worth_trying；兼容旧版单枚举状态报告。"""
-
-        if hasattr(report, "worth_trying"):
-            return bool(report.worth_trying)
-        return report.name in ("CLEAR", "OPEN", "UNOBSERVED")
-
-    @staticmethod
-    def _turn_direction_by_name(name: str):
-        """将协调器的固定优先级名称映射为公开转向枚举。"""
-
-        from navigation.contracts import TurnDirection
-
-        return TurnDirection.LEFT if name == "LEFT" else TurnDirection.RIGHT
 
     def _clear_pending_replan(self) -> None:
         """新剧本成功装载后清除已经兑现的待重规划标记。"""
@@ -390,7 +316,7 @@ class Coordinator:
             self._escape_flow.handle_blocked_action(self._context.current_action)
         # 成功终局先按动作效果投影状态，再清理在途身份，避免丢失动作语义。
         elif interrupt.outcome is ExecutionOutcome.COMPLETED:
-            self._project_success(self._context.current_action, interrupt)
+            self._event_projector.project_success(self._context.current_action, interrupt)
             self._event_projector.project_perception(self._context.current_action, interrupt)
             self._event_projector.project_task(self._context.current_action)
         self._clear_in_flight()
@@ -422,38 +348,6 @@ class Coordinator:
                 current_state.progress_source,
                 True,
             )
-        )
-
-    def _project_success(self, action: Optional[Action], interrupt: ExecutionInterrupt) -> None:
-        """记录成功转弯并委托投影器更新机器人逻辑位置。"""
-
-        if action is None:
-            return
-        self._record_completed_turn(action)
-        if self._event_projector is not None:
-            self._event_projector.project_success(action, interrupt)
-
-    def _record_completed_turn(self, action: Action) -> None:
-        """从成功运动动作记录最小摘要，不读取执行器角度或历史。"""
-
-        command = action.command
-        is_turn = isinstance(command, TurnAtJunctionCommand)
-        is_motion = isinstance(
-            command,
-            (TurnAtJunctionCommand, DriveDistanceCommand, ReverseDistanceCommand, RetraceTurnCommand),
-        )
-        if not is_motion:
-            return
-        trajectory_id = getattr(command, "forward_trajectory_id", None)
-        if is_turn and trajectory_id is None:
-            self.diagnostics.append("成功转弯缺少 forward_trajectory_id")
-            return
-        self._context.last_motion = LastMotionRecord(
-            action_id=action.action_id,
-            command_type=type(command).__name__,
-            is_turn=is_turn,
-            traversal_id=getattr(command, "traversal_id", None),
-            forward_trajectory_id=trajectory_id,
         )
 
     def _translate_action(self, action: Action) -> ExecutionRequest:

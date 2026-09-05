@@ -2,6 +2,7 @@
 
 from navigation.contracts import ChoreographyStartStatus
 from navigation.domain import AbsoluteMapUpdateKind, TaskKind
+from navigation.planning import RoutePlanOutcome
 
 
 class TaskFlow:
@@ -17,7 +18,7 @@ class TaskFlow:
 
         from .states import CoordinatorState, EscapeSubstate, TaskSubstate
         self._coordinator._context.transition(CoordinatorState.TASK_PROCESSING, TaskSubstate.PLANNING)
-        if self._coordinator._try_normal_plan():
+        if self.plan_normal_route():
             return True
         self._coordinator._context.transition(CoordinatorState.ESCAPE, EscapeSubstate.ASSESS)
         return self._coordinator._escape_flow.assess_and_replan(retry_normal=False)
@@ -26,6 +27,23 @@ class TaskFlow:
         """提交当前任务剧本的下一条异步动作。"""
 
         return self._coordinator.dispatch_next()
+
+    def plan_normal_route(self):
+        """在安全路口执行一次普通规划并装载编排剧本。"""
+
+        coordinator = self._coordinator
+        if coordinator._navigation_state is not None and not coordinator._navigation_state.robot_state().is_at_safe_node:
+            coordinator.diagnostics.append("当前位置不是安全路口，暂不兑现重新规划")
+            return False
+        if coordinator._route_planner is None:
+            coordinator.diagnostics.append("未装配正常规划器")
+            return False
+        coordinator._context.active_plan = None
+        coordinator._context.active_progress = None
+        result = coordinator._route_planner.plan()
+        if result.outcome is RoutePlanOutcome.PLANNED and result.plan is not None:
+            return coordinator._load_planning_result(result.plan)
+        return False
 
     def handle_interrupt(self, interrupt):
         """把任务动作终局交回协调器统一投影和分流。"""
