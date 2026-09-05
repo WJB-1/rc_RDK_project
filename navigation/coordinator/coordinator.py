@@ -106,6 +106,10 @@ class Coordinator:
         # 只有通过 start() 启动后的 Coordinator 才自动消费中断并继续泵循环；
         # 直接调用旧派发接口的测试和调试代码保持手动推进兼容。
         self._auto_drive = False
+        # 记录最近一次编排推进结果，供分析器区分“已派发”和“剧本已结束”。
+        self._last_choreography_status = None
+        # 记录返场剧本完成后的终局，避免继续尝试生成普通路线。
+        self._mission_finished = False
         # 记录最近成功转弯，供局部恢复引用而不要求执行器缓存历史。
         # 记录诊断信息但不把迟到事件重新解释为业务动作。
         self.diagnostics: List[str] = []
@@ -161,6 +165,12 @@ class Coordinator:
         """返回协调器当前外层有限状态。"""
 
         return self._context.state
+
+    @property
+    def mission_finished(self) -> bool:
+        """返回返场动作是否已经完成。"""
+
+        return self._mission_finished
 
     @property
     def substate(self):
@@ -250,12 +260,14 @@ class Coordinator:
 
         # 异步动作未结束前不能再次推进剧本，避免下位机同时执行两项导航动作。
         if self._context.current_request is not None:
+            self._last_choreography_status = ChoreographyAdvanceStatus.REJECTED
             self.diagnostics.append("已有在途请求，忽略重复 dispatch_next")
             return None
         # 允许首次调用装载剧本；已有活动剧本时忽略外部重复参数，保证游标所有权在协调器。
         if self._context.active_plan is None:
             if plan is None or progress is None:
                 self.diagnostics.append("首次 dispatch_next 必须提供剧本和指针")
+                self._last_choreography_status = ChoreographyAdvanceStatus.REJECTED
                 return None
             self._context.active_plan = plan
             self._context.active_progress = progress
@@ -263,13 +275,17 @@ class Coordinator:
             self.diagnostics.append("已有活动剧本，忽略外部传入的剧本和指针")
         if self._context.active_progress is None:
             self.diagnostics.append("活动剧本缺少 resume_progress")
+            self._last_choreography_status = ChoreographyAdvanceStatus.REJECTED
             return None
         # 编排器负责检查指针和运行时安全，协调器只消费其显式结果。
         result = self._choreographer.compile_next(self._context.active_plan, self._context.active_progress)
+        self._last_choreography_status = result.status
         if result.status is ChoreographyAdvanceStatus.FINISHED:
+            finished_plan = self._context.active_plan
             self._context.active_plan = None
             self._context.active_progress = None
             self.diagnostics.append("活动编排流程已结束")
+            self._on_choreography_finished(finished_plan)
             return None
         if result.status is not ChoreographyAdvanceStatus.READY:
             self.diagnostics.append("编排器未返回 READY：{}".format(result.status.value))
@@ -296,6 +312,28 @@ class Coordinator:
         if not ack.accepted:
             self._clear_in_flight()
         return ack
+
+    def _on_choreography_finished(self, finished_plan: Optional[ChoreographyPlan]) -> None:
+        """把剧本结束事件投影为主状态转移，不创建任何动作。"""
+
+        if self._context.state is CoordinatorState.DEPARTURE:
+            self._context.transition_main(CoordinatorState.TASK_PROCESSING)
+            return
+        if self._context.state is CoordinatorState.ESCAPE:
+            # 局部转向或倒车恢复完成后，统一回到正常任务决策。
+            self._context.transition_main(CoordinatorState.TASK_PROCESSING)
+            return
+        if self._context.state is CoordinatorState.TASK_PROCESSING:
+            if self._task_registry is not None and not self._task_registry.pending_tasks():
+                self._context.transition_main(CoordinatorState.RETURNING)
+            return
+        if self._context.state is CoordinatorState.RETURNING:
+            self._mission_finished = True
+
+    def _dispatch_current_action(self) -> Optional[DispatchAck]:
+        """由当前分析器请求一次统一的编排推进和执行提交。"""
+
+        return self.dispatch_next()
 
     def replan(self) -> bool:
         """在安全路口触发一次无参规划，并按结果装载正常或恢复剧本。

@@ -1,5 +1,6 @@
 """任务处理主状态的隐式分析流程。"""
 
+from navigation.contracts import ChoreographyAdvanceStatus
 from .base import AnalyzerDecision, AnalyzerDecisionKind, BaseAnalyzer
 
 
@@ -10,15 +11,27 @@ class TaskProcessingAnalyzer(BaseAnalyzer):
         """优先推进活动剧本，没有剧本时请求一次普通规划。"""
 
         coordinator = self._coordinator
+        if coordinator.mission_finished:
+            return AnalyzerDecision(AnalyzerDecisionKind.TERMINAL, "导航任务已经完成")
         if coordinator.current_request is not None:
             return AnalyzerDecision(AnalyzerDecisionKind.WAITING, "等待任务动作终局")
         if coordinator.active_choreography is not None:
-            ack = coordinator.dispatch_next()
+            previous_state = coordinator.state
+            ack = coordinator._dispatch_current_action()
+            if coordinator._last_choreography_status is ChoreographyAdvanceStatus.FINISHED:
+                if coordinator.state is not previous_state:
+                    return AnalyzerDecision(AnalyzerDecisionKind.TRANSITIONED, "任务剧本完成，进入下一主状态")
+                return AnalyzerDecision(AnalyzerDecisionKind.TRANSITIONED, "任务剧本完成，等待下一次规划")
             if ack is None:
                 return AnalyzerDecision(AnalyzerDecisionKind.WAITING, "任务剧本暂时没有可派发动作")
             return AnalyzerDecision(AnalyzerDecisionKind.DISPATCHED, "已派发任务动作")
+        previous_state = coordinator.state
         if coordinator._task_flow.plan():
-            return self.run()
+            if coordinator.state is not previous_state:
+                return AnalyzerDecision(AnalyzerDecisionKind.TRANSITIONED, "任务规划完成并装载剧本")
+            return AnalyzerDecision(AnalyzerDecisionKind.TRANSITIONED, "任务规划完成")
+        if coordinator.state is not previous_state:
+            return AnalyzerDecision(AnalyzerDecisionKind.TRANSITIONED, "任务规划不可达，进入脱困")
         return AnalyzerDecision(AnalyzerDecisionKind.WAITING, "普通规划暂未产生可执行剧本")
 
     def analyze_interrupt(self, interrupt) -> AnalyzerDecision:

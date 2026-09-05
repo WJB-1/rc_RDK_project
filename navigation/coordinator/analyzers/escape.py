@@ -1,5 +1,6 @@
 """脱困主状态的隐式分析流程。"""
 
+from navigation.contracts import ChoreographyAdvanceStatus
 from .base import AnalyzerDecision, AnalyzerDecisionKind, BaseAnalyzer
 
 
@@ -13,12 +14,22 @@ class EscapeAnalyzer(BaseAnalyzer):
         if coordinator.current_request is not None:
             return AnalyzerDecision(AnalyzerDecisionKind.WAITING, "等待脱困动作终局")
         if coordinator.active_choreography is not None:
-            ack = coordinator.dispatch_next()
+            previous_state = coordinator.state
+            ack = coordinator._dispatch_current_action()
+            if coordinator._last_choreography_status is ChoreographyAdvanceStatus.FINISHED:
+                if coordinator.state is not previous_state:
+                    return AnalyzerDecision(AnalyzerDecisionKind.TRANSITIONED, "脱困剧本完成，回到任务处理")
+                return AnalyzerDecision(AnalyzerDecisionKind.WAITING, "脱困剧本已结束")
             if ack is None:
                 return AnalyzerDecision(AnalyzerDecisionKind.WAITING, "脱困剧本暂时没有可派发动作")
             return AnalyzerDecision(AnalyzerDecisionKind.DISPATCHED, "已派发脱困动作")
+        previous_state = coordinator.state
         if coordinator._escape_flow.assess_and_replan():
-            return self.run()
+            if coordinator.state is not previous_state:
+                return AnalyzerDecision(AnalyzerDecisionKind.TRANSITIONED, "脱困决策完成并装载剧本")
+            return AnalyzerDecision(AnalyzerDecisionKind.TRANSITIONED, "脱困决策完成")
+        if coordinator.state is not previous_state:
+            return AnalyzerDecision(AnalyzerDecisionKind.TRANSITIONED, "脱困不可继续")
         return AnalyzerDecision(AnalyzerDecisionKind.WAITING, "脱困分析暂未产生可执行剧本")
 
     def analyze_interrupt(self, interrupt) -> AnalyzerDecision:
