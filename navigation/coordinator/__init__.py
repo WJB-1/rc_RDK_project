@@ -2,7 +2,7 @@
 
 # 导出 Coordinator，调用方不依赖内部实现文件路径。
 from .coordinator import Coordinator
-from .context import CoordinatorContext
+from .context import CoordinatorContext, LastMotionRecord, PendingRetrace
 from .execution_bridge import ExecutionBridge
 from .ports import ChoreographerPort, RecoveryPlannerPort, RoutePlannerPort
 from .states import CoordinatorState, DepartureSubstate, EscapeSubstate, ReturnSubstate, TaskSubstate
@@ -10,6 +10,8 @@ from .states import CoordinatorState, DepartureSubstate, EscapeSubstate, ReturnS
 __all__ = (
     "Coordinator",
     "CoordinatorContext",
+    "LastMotionRecord",
+    "PendingRetrace",
     "ExecutionBridge",
     "CoordinatorState",
     "DepartureSubstate",

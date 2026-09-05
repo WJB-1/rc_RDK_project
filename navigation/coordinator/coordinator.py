@@ -57,18 +57,8 @@ from .departure_flow import DepartureFlow
 from .escape_flow import EscapeFlow
 from .return_flow import ReturnFlow
 from .task_flow import TaskFlow
-from .context import CoordinatorContext
+from .context import CoordinatorContext, LastMotionRecord, PendingRetrace
 from .states import CoordinatorState, DepartureSubstate, EscapeSubstate, ReturnSubstate, TaskSubstate
-
-
-class LastCompletedTurn:
-    """记录最近一次成功前向转弯，供同轨迹撤回使用。"""
-
-    def __init__(self, source_action_id: str, forward_trajectory_id: str) -> None:
-        """保存动作身份和已标定的前向轨迹身份。"""
-
-        self.source_action_id = source_action_id
-        self.forward_trajectory_id = forward_trajectory_id
 
 
 class _LegacyNavigationStateAdapter:
@@ -165,9 +155,6 @@ class Coordinator:
         self._current_action: Optional[Action] = None
         self._current_request: Optional[ExecutionRequest] = None
         # 记录最近成功转弯，供局部恢复引用而不要求执行器缓存历史。
-        self._last_completed_turn: Optional[LastCompletedTurn] = None
-        # 记录侧支观察发现阻塞后，待当前观察中断收口再生成的撤回来源动作。
-        self._pending_retrace_source_action_id: Optional[str] = None
         # 记录诊断信息但不把迟到事件重新解释为业务动作。
         self.diagnostics: List[str] = []
         # 投影器集中处理执行反馈写入，地图影响仍回调 Coordinator 做路线生命周期分流。
@@ -209,10 +196,10 @@ class Coordinator:
         return self._current_request is not None
 
     @property
-    def last_completed_turn(self) -> Optional[LastCompletedTurn]:
+    def last_completed_turn(self) -> Optional[LastMotionRecord]:
         """返回最近一次成功前向转弯记录。"""
 
-        return self._last_completed_turn
+        return self._context.last_motion if self._context.last_motion and self._context.last_motion.is_turn else None
 
     @property
     def state(self) -> CoordinatorState:
@@ -477,9 +464,9 @@ class Coordinator:
             self._consume_task(self._current_action)
         self._clear_in_flight()
         # 观察中断已经完成清理后，才允许装载撤回剧本，保持单一在途请求。
-        if self._pending_retrace_source_action_id is not None:
-            source_action_id = self._pending_retrace_source_action_id
-            self._pending_retrace_source_action_id = None
+        if self._context.pending_retrace is not None:
+            source_action_id = self._context.pending_retrace.source_action_id
+            self._context.pending_retrace = None
             self._start_retrace_turn(source_action_id)
         elif interrupt.outcome is ExecutionOutcome.COMPLETED and self._context.state is CoordinatorState.TASK_PROCESSING:
             self._context.transition(CoordinatorState.TASK_PROCESSING, TaskSubstate.ANALYZING)
@@ -690,8 +677,8 @@ class Coordinator:
                 self._mark_pending_replan()
                 # 局部侧支观察确认阻塞时，先沿刚完成的真实转弯轨迹撤回。
                 if self._plan.source_kind is ChoreographySourceKind.JUNCTION_RECOVERY:
-                    if self._last_completed_turn is not None:
-                        self._pending_retrace_source_action_id = self._last_completed_turn.source_action_id
+                    if self._context.last_motion is not None and self._context.last_motion.is_turn:
+                        self._context.pending_retrace = PendingRetrace(self._context.last_motion.source_action_id)
                     self._plan = None
                     self._progress = None
                     self.diagnostics.append("侧支观察发现阻塞，等待生成同轨迹撤回剧本")
@@ -748,15 +735,27 @@ class Coordinator:
             self._event_projector.project_success(action, interrupt)
 
     def _record_completed_turn(self, action: Action) -> None:
-        """从成功动作记录前向转弯，不读取执行器角度或历史。"""
+        """从成功运动动作记录最小摘要，不读取执行器角度或历史。"""
 
-        if not isinstance(action.command, TurnAtJunctionCommand):
+        command = action.command
+        is_turn = isinstance(command, TurnAtJunctionCommand)
+        is_motion = isinstance(
+            command,
+            (TurnAtJunctionCommand, DriveDistanceCommand, ReverseDistanceCommand, RetraceTurnCommand),
+        )
+        if not is_motion:
             return
-        trajectory_id = getattr(action.command, "forward_trajectory_id", None)
-        if trajectory_id is None:
+        trajectory_id = getattr(command, "forward_trajectory_id", None)
+        if is_turn and trajectory_id is None:
             self.diagnostics.append("成功转弯缺少 forward_trajectory_id")
             return
-        self._last_completed_turn = LastCompletedTurn(action.action_id, trajectory_id)
+        self._context.last_motion = LastMotionRecord(
+            action_id=action.action_id,
+            command_type=type(command).__name__,
+            is_turn=is_turn,
+            traversal_id=getattr(command, "traversal_id", None),
+            forward_trajectory_id=trajectory_id,
+        )
 
     def _translate_action(self, action: Action) -> ExecutionRequest:
         """委托 ExecutionBridge 翻译编排动作，保留旧私有入口兼容测试。"""

@@ -1,5 +1,6 @@
 """保存 Coordinator 分层状态机运行期间的可变上下文。"""
 
+from dataclasses import dataclass
 from typing import Any, Optional
 
 from .states import (
@@ -9,6 +10,35 @@ from .states import (
     ReturnSubstate,
     TaskSubstate,
 )
+
+
+@dataclass(frozen=True)
+class LastMotionRecord:
+    """记录最近一次成功运动的最小摘要，供跨流程恢复判断。"""
+
+    # 成功动作的稳定标识。
+    action_id: str
+    # 动作命令类型名称，避免上下文依赖完整 Action 对象。
+    command_type: str
+    # 当前动作是否属于转弯动作。
+    is_turn: bool
+    # 动作关联的巡航边；非边运动时为空。
+    traversal_id: Optional[str] = None
+    # 前向转弯使用的标定轨迹；非转弯时为空。
+    forward_trajectory_id: Optional[str] = None
+
+    @property
+    def source_action_id(self) -> str:
+        """返回兼容旧接口的转弯来源动作标识。"""
+
+        return self.action_id
+
+
+@dataclass(frozen=True)
+class PendingRetrace:
+    """记录等待生成撤回转弯剧本的来源动作。"""
+
+    source_action_id: str
 
 
 class CoordinatorContext:
@@ -26,6 +56,8 @@ class CoordinatorContext:
         self.active_progress: Any = None
         self.current_action: Any = None
         self.current_request: Any = None
+        self.last_motion: Optional[LastMotionRecord] = None
+        self.pending_retrace: Optional[PendingRetrace] = None
         self.diagnostics = []
 
     def transition(self, state: CoordinatorState, substate=None) -> None:
@@ -46,4 +78,3 @@ class CoordinatorContext:
         self.task_substate = substate if state is CoordinatorState.TASK_PROCESSING else None
         self.escape_substate = substate if state is CoordinatorState.ESCAPE else None
         self.return_substate = substate if state is CoordinatorState.RETURNING else None
-
