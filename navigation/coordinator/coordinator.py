@@ -361,6 +361,8 @@ class Coordinator:
             return False
         self._plan = None
         self._progress = None
+        self._context.active_plan = None
+        self._context.active_progress = None
         result = self._route_planner.plan()
         if result.outcome is RoutePlanOutcome.PLANNED and result.plan is not None:
             return self._load_planning_result(result.plan)
