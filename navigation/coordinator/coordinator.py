@@ -8,8 +8,6 @@ from typing import Callable, List, Optional
 # 导入执行层类型化请求和命令。
 from navigation.contracts import (
     Action,
-    AdvanceOnTraversalEffect,
-    ArriveAtNodeEffect,
     ChoreographyAdvanceStatus,
     ChoreographyStartStatus,
     ChoreographyPlan,
@@ -17,39 +15,19 @@ from navigation.contracts import (
     CompleteTaskEffect,
     DispatchAck,
     DriveDistanceCommand,
-    DriveExecutionCommand,
-    ExecuteTaskCommand,
-    ExecuteTaskExecutionCommand,
     ExecutionInterrupt,
     ExecutionOutcome,
     ExecutionRequest,
-    ExecutionTarget,
     IAsyncExecutor,
-    ObserveCommand,
-    ObserveExecutionCommand,
-    PerceptionOutcome,
     RetraceTurnCommand,
-    RetraceTurnExecutionCommand,
     ReverseDistanceCommand,
-    ReverseExecutionCommand,
-    StopCommand,
-    StopExecutionCommand,
     TurnAtJunctionCommand,
-    TurnExecutionCommand,
 )
 from navigation.domain import (
-    AbsoluteMapUpdate,
-    AbsoluteMapUpdateKind,
-    AtNode,
-    MapUpdateAuthority,
-    OnCruiseEdge,
-    ProgressSource,
     RobotState,
-    NavigationStateStore,
-    TaskKind,
 )
 from navigation.domain import TrackTopology
-from navigation.planning import RecoveryPlan, RecoveryPlanOutcome, RoutePlanOutcome
+from navigation.planning import RecoveryPlan, RoutePlanOutcome
 from .execution_bridge import ExecutionBridge
 from .event_projection import EventProjector
 from .departure_flow import DepartureFlow
