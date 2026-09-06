@@ -48,6 +48,10 @@ class BaseAnalyzer:
 
         raise NotImplementedError
 
+    def handle_map_update(self, update):
+        """默认忽略不属于当前状态业务范围的地图更新。"""
+        return None
+
     def analyze_interrupt(self, interrupt: "ExecutionInterrupt") -> AnalyzerDecision:
         """分析执行器终局，并把通用身份校验交给 Coordinator。
 

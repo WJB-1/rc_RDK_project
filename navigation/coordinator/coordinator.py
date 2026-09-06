@@ -26,10 +26,6 @@ from navigation.domain import TrackTopology
 from navigation.planning import RecoveryPlan
 from .execution_bridge import ExecutionBridge
 from .event_projection import EventProjector
-from .departure_flow import DepartureFlow
-from .escape_flow import EscapeFlow
-from .return_flow import ReturnFlow
-from .task_flow import TaskFlow
 from .context import CoordinatorContext, LastMotionRecord
 from .state_adapter import LegacyNavigationStateAdapter
 from .states import CoordinatorState, DepartureSubstate, EscapeSubstate, ReturnSubstate, TaskSubstate
@@ -87,10 +83,6 @@ class Coordinator:
         # 恢复规划器负责自行选择倒车目标，Coordinator 不传入安全路口参数。
         self._recovery_planner = recovery_planner
         # 四个内部流程对象按外层状态承载阶段业务，公共执行入口仍由本类统一维护。
-        self._departure_flow = DepartureFlow(self)
-        self._task_flow = TaskFlow(self)
-        self._escape_flow = EscapeFlow(self)
-        self._return_flow = ReturnFlow(self)
         # 保存外层状态与内部阶段，供事件入口和调试面板读取。
         self._context = CoordinatorContext()
         # 分析器是各主状态的业务决策者；Coordinator 只负责选择它并统一执行动作。
@@ -120,7 +112,7 @@ class Coordinator:
                 task_registry=self._task_registry,
                 perception_adapter=self._perception_adapter,
                 location_projector=self._location_projector,
-                on_map_update=self._task_flow.handle_map_update,
+                on_map_update=self.handle_map_update,
                 diagnostics=self.diagnostics,
                 context=self._context,
             )
@@ -336,11 +328,35 @@ class Coordinator:
         if self._context.current_request is not None:
             self.diagnostics.append("已有在途请求，不能开始重新规划")
             return False
-        if self._context.state is CoordinatorState.ESCAPE:
-            return self._escape_flow.assess_and_replan()
-        if self._context.state is CoordinatorState.RETURNING:
-            return self._return_flow.plan()
-        return self._task_flow.plan()
+        analyzer = self._select_analyzer()
+        plan_method = None
+        if analyzer is not None:
+            plan_method = getattr(analyzer, "plan_return_route", None) or getattr(analyzer, "plan", None)
+        if plan_method is None:
+            analyzer = self._analyzers.get(CoordinatorState.TASK_PROCESSING)
+            plan_method = getattr(analyzer, "plan", None) if analyzer is not None else None
+        if plan_method is None:
+            return False
+        planned = plan_method()
+        if planned:
+            return True
+        escape_analyzer = self._analyzers.get(CoordinatorState.ESCAPE)
+        assess_method = getattr(escape_analyzer, "assess_and_replan", None)
+        if assess_method is not None and analyzer is not escape_analyzer:
+            return assess_method(retry_normal=False)
+        return False
+
+    def handle_map_update(self, update):
+        """把地图更新交给当前状态分析器处理。"""
+        analyzer = self._analyzers.get(self._context.state)
+        handler = getattr(analyzer, "handle_map_update", None) if analyzer is not None else None
+        result = handler(update) if handler is not None else None
+        if result is None and self._context.state is not CoordinatorState.TASK_PROCESSING:
+            task_analyzer = self._analyzers.get(CoordinatorState.TASK_PROCESSING)
+            task_handler = getattr(task_analyzer, "handle_map_update", None)
+            if task_handler is not None:
+                return task_handler(update)
+        return result
 
     def _load_planning_result(self, planning_plan) -> bool:
         """把规划器返回的路线或恢复路线交给编排器并保存新游标。"""
@@ -434,7 +450,9 @@ class Coordinator:
         if self._context.pending_retrace is not None:
             source_action_id = self._context.pending_retrace.source_action_id
             self._context.pending_retrace = None
-            self._escape_flow.start_retrace_turn(source_action_id)
+            escape_analyzer = self._analyzers.get(CoordinatorState.ESCAPE)
+            if escape_analyzer is not None:
+                escape_analyzer.start_retrace_turn(source_action_id)
         elif (
             interrupt.outcome is ExecutionOutcome.COMPLETED
             and self._context.state is CoordinatorState.TASK_PROCESSING
