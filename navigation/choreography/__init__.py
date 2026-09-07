@@ -8,6 +8,7 @@
 
 # 重新导出纯编排器，调用方无需依赖内部实现文件路径。
 from .choreographer import Choreographer
+from .departure_factory import DepartureChoreographyFactory
 # 重新导出不可变运动标定参数，调用方可在运行时装配阶段统一创建。
 from .profile import MotionProfile
 

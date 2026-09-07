@@ -184,11 +184,7 @@ class Coordinator:
         self.diagnostics.append(reason)
         self._context.transition_main(CoordinatorState.EXCEPTION)
 
-    def start(
-        self,
-        departure_plan: Optional[ChoreographyPlan] = None,
-        departure_progress: Optional[ChoreographyProgress] = None,
-    ) -> None:
+    def start(self, departure_plan=None, departure_progress=None) -> None:
         """启动导航主状态机，并运行到下一个异步等待点。
 
         外层组合根可以提供已经生成的出发剧本；Coordinator 不直接构造动作，
@@ -300,6 +296,10 @@ class Coordinator:
                 self._clear_in_flight()
                 return DispatchAck(request.request_id, False, transition.reason or "任务无法开始")
         # 同步拒绝表示动作从未开始，必须撤销刚才预保存的在途记录。
+        if self._executor is None:
+            self.diagnostics.append("未装配执行器，动作仅完成编排未下发")
+            self._clear_in_flight()
+            return None
         ack = self._executor.submit(request)
         if not ack.accepted:
             self._clear_in_flight()
@@ -366,6 +366,11 @@ class Coordinator:
             self.diagnostics.append("编排器未提供 start 入口")
             return False
         start_result = start_method(planning_plan)
+        return self._load_choreography_result(start_result, planning_plan)
+
+    def _load_choreography_result(self, start_result, source_plan=None) -> bool:
+        """保存编排器返回的剧本与游标，供各分析器复用同一装载边界。"""
+
         if (
             start_result.status is not ChoreographyStartStatus.STARTED
             or start_result.plan is None
@@ -381,7 +386,7 @@ class Coordinator:
             self._context.transition(CoordinatorState.TASK_PROCESSING, TaskSubstate.CHOREOGRAPHING)
         elif self._context.state is CoordinatorState.ESCAPE:
             # RecoveryPlan 进入倒车编排；普通路线则表示脱困已成功，回到任务流程。
-            if isinstance(planning_plan, RecoveryPlan):
+            if isinstance(source_plan, RecoveryPlan):
                 self._context.transition(CoordinatorState.ESCAPE, EscapeSubstate.BACKTRACK_CHOREOGRAPHING)
             else:
                 self._context.transition(CoordinatorState.TASK_PROCESSING, TaskSubstate.CHOREOGRAPHING)

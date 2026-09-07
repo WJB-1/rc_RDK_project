@@ -71,6 +71,8 @@ class Choreographer:
         self._profile = profile
         # 保存最小只读查询口，为下一任务的逐步动作生成预留状态读取边界。
         self._state_query = state_query
+        from .departure_factory import DepartureChoreographyFactory
+        self.departure_factory = DepartureChoreographyFactory(self)
 
     def start(self, route_or_recovery: Union[RoutePlan, RecoveryPlan]) -> ChoreographyStartResult:
         """将已验证的正常路线或倒车恢复语义展开为流程剧本与首个指针。
@@ -89,6 +91,47 @@ class Choreographer:
             return self._start_recovery(route_or_recovery)
         # 其他对象不是规划层冻结的输入类型，直接拒绝可避免错误的隐式解释。
         raise TypeError("start 只接受 RoutePlan 或 RecoveryPlan")
+
+    def start_departure(self) -> ChoreographyStartResult:
+        """创建固定的出发剧本；出发分析器首次运行时调用，不由外层注入。"""
+
+        return self._start_departure("J_START->N12", "departure:right", include_bridge=True)
+
+    def start_departure_left_turn(self) -> ChoreographyStartResult:
+        """创建右侧受阻后的左转替代出发剧本。"""
+
+        return self._start_departure("J_START->N1", "departure:left", include_bridge=False)
+
+    def _start_departure(self, first_traversal_id: str, source_id: str, include_bridge: bool) -> ChoreographyStartResult:
+        """按固定启动桥、转弯和转后观察顺序构造出发剧本。"""
+
+        bridge = "START->J_START"
+        from_node_id, to_node_id = self._split_traversal_id(first_traversal_id)
+        stage_list = []
+        if include_bridge:
+            stage_list.append(self._stage(0, "bridge", ChoreographyStageKind.DRIVE_TO_NEXT_CENTER, bridge, "J_START"))
+        offset = len(stage_list)
+        stage_list.extend(
+            (
+                self._stage(offset, "turn", ChoreographyStageKind.TURN_AT_JUNCTION, first_traversal_id, from_node_id),
+                self._stage(offset + 1, "observe", ChoreographyStageKind.OBSERVE_POST_TURN, first_traversal_id, from_node_id),
+            )
+        )
+        stages = tuple(stage_list)
+        choreography_id = self._choreography_id(source_id, tuple(stage.stage_id for stage in stages))
+        plan = ChoreographyPlan(
+            choreography_id,
+            source_id,
+            ChoreographySourceKind.DEPARTURE,
+            0,
+            tuple(([bridge] if include_bridge else []) + [first_traversal_id]),
+            stages,
+        )
+        return ChoreographyStartResult(
+            ChoreographyStartStatus.STARTED,
+            plan,
+            ChoreographyProgress(choreography_id, 0),
+        )
 
     def replace_current_traversal_with_culvert(
         self,

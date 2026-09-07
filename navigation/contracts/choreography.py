@@ -20,6 +20,8 @@ class ChoreographySourceKind(Enum):
     RECOVERY = "recovery"
     # 表示源路线来自路口局部撤回决定。
     JUNCTION_RECOVERY = "junction_recovery"
+    # 表示由出发分析器请求、用于 START 到 J_START 的固定启动流程。
+    DEPARTURE = "departure"
 
 
 class ChoreographyStageKind(Enum):

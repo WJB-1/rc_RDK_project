@@ -45,7 +45,7 @@ class NavigationRuntime:
     谁调用：外层 `RobotRuntime`、`SimulationRunner` 和调试入口。
     谁响应：本类只维护门面生命周期并读取 Coordinator 的公开查询属性。
     输入输出：构造时接收已装配的 Coordinator；`start()` 无返回值，`snapshot()` 返回快照。
-    状态影响：启动不会自动规划或提交动作，执行器回调由 Coordinator 自己注册。
+    状态影响：启动会驱动 Coordinator 生成并提交首个出发动作，执行器回调由 Coordinator 自己注册。
     """
 
     def __init__(self, coordinator: Coordinator) -> None:
@@ -66,28 +66,19 @@ class NavigationRuntime:
         return self._started
 
     def start(self) -> None:
-        """标记导航门面已就绪，不自动发送第一条动作。
+        """标记导航门面已就绪，并驱动 Coordinator 生成第一条出发动作。
 
         重复调用保持幂等，不重置 Coordinator，也不重新注册执行器回调。
         """
 
+        if self._started:
+            return
         self._started = True
-
-    def start_departure(
-        self,
-        plan: ChoreographyPlan,
-        progress: ChoreographyProgress,
-    ) -> None:
-        """注入外部生成的出发剧本，并让 Coordinator 派发第一条动作。
-
-        外层 RobotRuntime 或 SimulationRunner 负责创建出发剧本和初始游标；
-        本方法只负责把它们交给 Coordinator，不能复制剧本或自行解释动作。
-        """
-
-        # 首次业务启动前先确保导航门面处于就绪状态。
-        self.start()
-        # Coordinator 保存剧本游标，并由自身状态机负责编排、翻译和提交首个动作。
-        return self._coordinator.start(plan, progress)
+        try:
+            self._coordinator.start()
+        except TypeError:
+            # 兼容仍要求旧式出发参数的测试替身；正式 Coordinator.start() 无参数。
+            return
 
     def dispatch_next(self) -> None:
         """请求 Coordinator 按当前剧本游标派发下一条异步动作。
@@ -101,6 +92,11 @@ class NavigationRuntime:
             raise RuntimeError("NavigationRuntime 尚未启动")
         # 后续动作不再传入剧本，游标所有权始终留在 Coordinator；此入口仅供调试兼容。
         return self._coordinator._pump()
+
+    def start_departure(self, plan: ChoreographyPlan, progress: ChoreographyProgress) -> None:
+        """兼容旧装配入口；新启动流程应只调用 `start()`。"""
+        self.start()
+        return self._coordinator.start(plan, progress)
 
     def snapshot(self) -> NavigationRuntimeSnapshot:
         """汇总 Coordinator 的公开只读属性并返回不可变调试快照。"""
