@@ -51,5 +51,7 @@ class ChoreographerPort(Protocol):
 
     def replace_current_traversal_with_culvert(self, plan, progress, traversal_id: str, task_id: str):
         """把当前巡航剩余阶段替换为涵洞探索剧本。"""
+    def handle_map_update(self, plan, progress, update):
+        """判断已落图事实对剩余剧本的影响，并按需返回新的涵洞剧本。"""
     def start(self, plan):
         """接收规划器返回的正常或恢复路线并创建新剧本。"""

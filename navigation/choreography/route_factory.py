@@ -1,12 +1,14 @@
 """路线相关剧本工厂，负责构造所有非出发的不可变剧本。"""
 
 # 导入路口位置类型，局部脱困和撤回转弯必须从路口中心开始。
-from navigation.domain import AtNode
+from navigation.domain import AbsoluteMapUpdateKind, AtNode, TaskKind
 # 导入规划层公开计划类型，用于在工厂边界拒绝未知输入。
 from navigation.planning import RecoveryPlan, RecoveryStepKind, RoutePlan
 # 导入所有剧本构造契约；工厂只创建这些不可变数据。
 from navigation.contracts import (
     ChoreographyPlan,
+    ChoreographyMapUpdateImpact,
+    ChoreographyMapUpdateResult,
     ChoreographyProgress,
     ChoreographyRejection,
     ChoreographyRejectionCode,
@@ -38,6 +40,56 @@ class RouteChoreographyFactory:
             return self._build_recovery(route_or_recovery)
         raise TypeError("start 只接受 RoutePlan 或 RecoveryPlan")
 
+    def handle_map_update(self, plan, progress, update):
+        """检查新增地图事实是否命中尚未执行的路线，并在涵洞命中时内部替换剧本。"""
+
+        if not self._choreographer._is_valid_progress(plan, progress) or update.edge_id is None:
+            return ChoreographyMapUpdateResult(ChoreographyMapUpdateImpact.UNAFFECTED)
+        traversal_id = self._find_remaining_traversal_for_edge(plan, progress, update.edge_id)
+        if traversal_id is None:
+            return ChoreographyMapUpdateResult(ChoreographyMapUpdateImpact.UNAFFECTED)
+        if update.kind is AbsoluteMapUpdateKind.BLOCK_EDGE:
+            return ChoreographyMapUpdateResult(ChoreographyMapUpdateImpact.ROUTE_BLOCKED)
+        if update.kind is not AbsoluteMapUpdateKind.DISCOVER_CULVERT:
+            return ChoreographyMapUpdateResult(ChoreographyMapUpdateImpact.UNAFFECTED)
+        task_id = self._find_pending_culvert_task_id(update.edge_id)
+        if task_id is None:
+            return ChoreographyMapUpdateResult(ChoreographyMapUpdateImpact.UNAFFECTED)
+        replacement = self.replace_current_traversal_with_culvert(plan, progress, traversal_id, task_id)
+        if replacement.status is not ChoreographyStartStatus.STARTED:
+            return ChoreographyMapUpdateResult(ChoreographyMapUpdateImpact.UNAFFECTED)
+        return ChoreographyMapUpdateResult(
+            ChoreographyMapUpdateImpact.CULVERT_REPLACED,
+            replacement.plan,
+            replacement.progress,
+        )
+
+    def _find_remaining_traversal_for_edge(self, plan, progress, edge_id):
+        """在未完成阶段中查找包含指定物理边的第一条有向巡航边。"""
+
+        checked = set()
+        for stage in plan.stages[progress.stage_index:]:
+            traversal_id = stage.traversal_id
+            if traversal_id is None or traversal_id in checked:
+                continue
+            checked.add(traversal_id)
+            from_node_id, to_node_id = self._choreographer._split_traversal_id(traversal_id)
+            cruise_edge = self._choreographer._topology.get_cruise_edge(from_node_id, to_node_id)
+            if edge_id in cruise_edge.physical_edge_ids:
+                return traversal_id
+        return None
+
+    def _find_pending_culvert_task_id(self, edge_id):
+        """从只读任务注册表找到该物理边唯一尚未执行的涵洞任务。"""
+
+        task_registry = self._choreographer._task_registry
+        if task_registry is None:
+            return None
+        for task in task_registry.pending_tasks():
+            if task.kind is TaskKind.CULVERT_RECON and task.target_id == edge_id:
+                return task.task_id
+        return None
+
     def replace_current_traversal_with_culvert(self, plan, progress, traversal_id, task_id):
         """将活动路线指定巡航边替换为涵洞探索剧本。"""
 
@@ -52,6 +104,7 @@ class RouteChoreographyFactory:
         from_node_id, to_node_id = self._choreographer._split_traversal_id(traversal_id)
         # 校验替换边存在于静态拓扑，禁止借替换接口伪造赛道道路。
         self._choreographer._topology.get_cruise_edge(from_node_id, to_node_id)
+        # 只替换当前游标之后的阶段，保留当前边已经成功完成的观察或转弯阶段。
         completed_stages = list(plan.stages[:progress.stage_index])
         remaining_stages = [
             stage for stage in plan.stages[progress.stage_index:]
@@ -89,7 +142,8 @@ class RouteChoreographyFactory:
             to_node_id,
             task_id,
         ))
-        insertion_index = len(completed_stages)
+        # 新指针指向替换段首个阶段，且此前已完成阶段的数量保持不变。
+        insertion_index = progress.stage_index
         new_stages = tuple(completed_stages + replacements + remaining_stages)
         choreography_id = self._choreographer._choreography_id(
             plan.source_plan_id, tuple(stage.stage_id for stage in new_stages)

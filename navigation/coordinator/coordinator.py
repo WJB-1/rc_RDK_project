@@ -9,6 +9,7 @@ from typing import Callable, List, Optional
 from navigation.contracts import (
     Action,
     ChoreographyAdvanceStatus,
+    ChoreographyMapUpdateImpact,
     ChoreographyStartStatus,
     ChoreographyPlan,
     ChoreographyProgress,
@@ -256,6 +257,7 @@ class Coordinator:
             finished_plan = self._context.active_plan
             self._context.active_plan = None
             self._context.active_progress = None
+            self._context.active_planning_result = None
             self.diagnostics.append("活动编排流程已结束")
             self._on_choreography_finished(finished_plan)
             return None
@@ -331,16 +333,58 @@ class Coordinator:
         return False
 
     def handle_map_update(self, update):
-        """把地图更新交给当前状态分析器处理。"""
+        """调用编排器消费地图事实，并只执行其返回的剧本生命周期决定。"""
+
+        # 涵洞和阻塞是否命中尚未执行路线，由编排器依据阶段游标和静态拓扑判断；
+        # Coordinator 不再遍历 RouteStep 或反查物理道路。
+        impact = self._handle_active_choreography_map_update(update)
+        if impact is not None:
+            return impact
+        # 出发阶段的固定右侧观察属于出发分析器自己的非规划剧本规则；其余业务无需感知地图细节。
         analyzer = self._analyzers.get(self._context.state)
         handler = getattr(analyzer, "handle_map_update", None) if analyzer is not None else None
         result = handler(update) if handler is not None else None
-        if result is None and self._context.state is not CoordinatorState.TASK_PROCESSING:
-            task_analyzer = self._analyzers.get(CoordinatorState.TASK_PROCESSING)
-            task_handler = getattr(task_analyzer, "handle_map_update", None)
-            if task_handler is not None:
-                return task_handler(update)
         return result
+
+    def _handle_active_choreography_map_update(self, update):
+        """消费编排器路线影响结果；阻塞只登记，到安全路口才同时销毁路线与剧本。"""
+
+        if self._context.active_plan is None or self._context.active_progress is None:
+            return None
+        handle_method = getattr(self._choreographer, "handle_map_update", None)
+        if handle_method is None:
+            return None
+        result = handle_method(self._context.active_plan, self._context.active_progress, update)
+        if result.impact is ChoreographyMapUpdateImpact.UNAFFECTED:
+            return None
+        if result.impact is ChoreographyMapUpdateImpact.CULVERT_REPLACED:
+            self._context.active_plan = result.plan
+            self._context.active_progress = result.progress
+            self.diagnostics.append("涵洞命中活动路线，编排器已替换为探索剧本")
+            return True
+        if result.impact is ChoreographyMapUpdateImpact.ROUTE_BLOCKED:
+            self._mark_pending_replan()
+            self.diagnostics.append("阻塞命中待行走路线，等待安全路口撤销旧规划与剧本")
+            self._consume_pending_replan_at_safe_node()
+            return True
+        self.diagnostics.append("编排器返回未知地图影响")
+        return None
+
+    def _consume_pending_replan_at_safe_node(self) -> bool:
+        """仅在安全路口同时撤销活动路线和剧本，避免边中无队列可执行的死锁。"""
+
+        if self._navigation_state is None:
+            return False
+        robot_state = self._navigation_state.robot_state()
+        if robot_state is None:
+            return False
+        if not robot_state.pending_replan or not robot_state.is_at_safe_node:
+            return False
+        self._context.active_plan = None
+        self._context.active_progress = None
+        self._context.active_planning_result = None
+        self.diagnostics.append("已到达安全路口，撤销受阻路线及其编排剧本")
+        return True
 
     def _load_planning_result(self, planning_plan) -> bool:
         """把规划器返回的路线或恢复路线交给编排器并保存新游标。"""
@@ -364,6 +408,7 @@ class Coordinator:
             return False
         self._context.active_plan = start_result.plan
         self._context.active_progress = start_result.progress
+        self._context.active_planning_result = source_plan
         if self._auto_drive:
             self._context.transition_main(self._context.state)
         elif self._context.state is CoordinatorState.TASK_PROCESSING:
@@ -435,6 +480,10 @@ class Coordinator:
             self._event_projector.project_perception(self._context.current_action, interrupt)
             self._event_projector.project_task(self._context.current_action)
         self._clear_in_flight()
+        # 边中记录的路线失效只有在本次成功投影为路口中心后才能兑现；
+        # 这样既不会在巡航边上销毁唯一动作队列，也不会抵达安全路口后继续使用旧路线。
+        if interrupt.outcome is ExecutionOutcome.COMPLETED:
+            self._consume_pending_replan_at_safe_node()
         # 观察中断已经完成清理后，才允许装载撤回剧本，保持单一在途请求。
         if self._context.pending_retrace is not None:
             source_action_id = self._context.pending_retrace.source_action_id

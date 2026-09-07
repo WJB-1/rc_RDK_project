@@ -96,6 +96,17 @@ class ChoreographyStartStatus(Enum):
     REJECTED = "rejected"
 
 
+class ChoreographyMapUpdateImpact(Enum):
+    """编排器判定一条已写入地图的事实对活动剧本产生的影响。"""
+
+    # 更新不命中任何尚未执行的巡航阶段，当前剧本可以保持不变。
+    UNAFFECTED = "unaffected"
+    # 新发现的涵洞命中尚未执行路线，已生成替换后的涵洞探索剧本。
+    CULVERT_REPLACED = "culvert_replaced"
+    # 新确认的阻塞命中尚未执行路线，协调器必须在安全路口撤销旧结果。
+    ROUTE_BLOCKED = "route_blocked"
+
+
 class ChoreographyRejectionCode(Enum):
     """编排器拒绝生成动作的明确原因，协调器据此分流而不猜测。"""
 
@@ -371,6 +382,28 @@ class ChoreographyStartResult:
             return
         # 枚举之外的状态没有安全语义，必须显式失败。
         raise ValueError("未知的编排启动结果状态")
+
+
+@dataclass(frozen=True)
+class ChoreographyMapUpdateResult:
+    """编排器消费已落图事实后的剧本影响结果。"""
+
+    # 编排器对当前活动剧本得出的唯一影响类型。
+    impact: ChoreographyMapUpdateImpact
+    # 仅涵洞替换成功时返回的新剧本，其余影响保持为空。
+    plan: Optional[ChoreographyPlan] = None
+    # 仅涵洞替换成功时返回的新剧本首个待执行指针，其余影响保持为空。
+    progress: Optional[ChoreographyProgress] = None
+
+    def __post_init__(self) -> None:
+        """约束影响类型与剧本载荷的组合，避免协调器猜测空字段。"""
+
+        if self.impact is ChoreographyMapUpdateImpact.CULVERT_REPLACED:
+            if self.plan is None or self.progress is None:
+                raise ValueError("涵洞替换结果必须同时包含新剧本和新指针")
+            return
+        if self.plan is not None or self.progress is not None:
+            raise ValueError("非涵洞替换结果不能携带剧本或指针")
 
 
 @dataclass(frozen=True)

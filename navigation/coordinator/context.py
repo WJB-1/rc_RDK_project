@@ -54,6 +54,8 @@ class CoordinatorContext:
         self.return_substate: Optional[ReturnSubstate] = None
         self.active_plan: Any = None
         self.active_progress: Any = None
+        # 保存与活动剧本同生共死的规划结果，安全路口撤销时必须同时清空。
+        self.active_planning_result: Any = None
         self.current_action: Any = None
         self.current_request: Any = None
         self.last_motion: Optional[LastMotionRecord] = None

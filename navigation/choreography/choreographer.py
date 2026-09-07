@@ -45,7 +45,7 @@ class Choreographer:
     状态影响：只读取拓扑、标定与导航状态查询口，不写机器人、地图、任务或执行器。
     """
 
-    def __init__(self, topology: TrackTopology, profile: MotionProfile, state_query: NavigationStateQuery) -> None:
+    def __init__(self, topology: TrackTopology, profile: MotionProfile, state_query: NavigationStateQuery, task_registry=None) -> None:
         """保存纯编排所需的静态拓扑、经验标定与只读运行时查询口。
 
         谁调用：导航系统的装配代码创建编排器时调用一次。
@@ -60,6 +60,8 @@ class Choreographer:
         self._profile = profile
         # 保存最小只读查询口，为下一任务的逐步动作生成预留状态读取边界。
         self._state_query = state_query
+        # 保存任务只读查询，供涵洞发现时自行找到对应待办任务，不要求协调器筛选任务身份。
+        self._task_registry = task_registry
         self.departure_factory = DepartureChoreographyFactory(self)
         self.route_factory = RouteChoreographyFactory(self)
         self.stage_compiler = StageCompiler(self)
@@ -104,6 +106,11 @@ class Choreographer:
         return self.route_factory.replace_current_traversal_with_culvert(
             plan, progress, traversal_id, task_id
         )
+
+    def handle_map_update(self, plan: ChoreographyPlan, progress: ChoreographyProgress, update):
+        """判断已写入地图的道路事实是否影响剩余剧本，并按需生成涵洞替换结果。"""
+
+        return self.route_factory.handle_map_update(plan, progress, update)
 
     def start_junction_escape(self, side: TurnDirection) -> ChoreographyStartResult:
         """按协调器指定的左侧或右侧支路创建局部脱困剧本。

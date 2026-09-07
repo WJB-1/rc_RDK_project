@@ -1,7 +1,6 @@
 """任务处理状态的业务分析器。"""
 
-from navigation.contracts import ChoreographyAdvanceStatus, ChoreographyStartStatus
-from navigation.domain import AbsoluteMapUpdateKind, TaskKind
+from navigation.contracts import ChoreographyAdvanceStatus
 from navigation.planning import RoutePlanOutcome
 from ..states import CoordinatorState
 from .base import AnalyzerDecision, AnalyzerDecisionKind, BaseAnalyzer
@@ -52,69 +51,15 @@ class TaskProcessingAnalyzer(BaseAnalyzer):
         if coordinator._route_planner is None:
             coordinator.diagnostics.append("未装配正常规划器")
             return False
-        coordinator._context.active_plan = None
-        coordinator._context.active_progress = None
         result = coordinator._route_planner.plan()
         if getattr(result, "outcome", None) is RoutePlanOutcome.PLANNED and result.plan is not None:
             return coordinator._load_planning_result(result.plan)
         return False
 
     def handle_map_update(self, update):
-        """处理地图事实对任务路线的影响。"""
-        if update.kind is AbsoluteMapUpdateKind.DISCOVER_CULVERT:
-            return self._replace_culvert_choreography(update)
-        return self._handle_map_update_impact(update)
+        """任务分析器不再判断路线影响；该业务统一由编排器返回明确结果。"""
 
-    def _replace_culvert_choreography(self, update):
-        """把当前路线中的巡航边替换为涵洞探索剧本。"""
-        coordinator = self._coordinator
-        if (coordinator._context.active_plan is None or coordinator._context.active_progress is None
-                or coordinator._topology is None or update.edge_id is None):
-            return
-        traversal_id = None
-        for candidate in coordinator._context.active_plan.route_steps:
-            try:
-                from_node_id, to_node_id = candidate.split("->", 1)
-                cruise_edge = coordinator._topology.get_cruise_edge(from_node_id, to_node_id)
-            except (KeyError, ValueError):
-                continue
-            if update.edge_id in cruise_edge.physical_edge_ids:
-                traversal_id = candidate
-                break
-        if traversal_id is None or coordinator._task_registry is None:
-            return
-        task_id = next((task.task_id for task in coordinator._task_registry.pending_tasks()
-                        if task.kind is TaskKind.CULVERT_RECON and task.target_id == update.edge_id), None)
-        if task_id is None:
-            return
-        replace_method = getattr(coordinator._choreographer, "replace_current_traversal_with_culvert", None)
-        if replace_method is None:
-            coordinator.diagnostics.append("编排器未提供涵洞剧本替换接口")
-            return
-        result = replace_method(coordinator._context.active_plan, coordinator._context.active_progress, traversal_id, task_id)
-        if result.status is not ChoreographyStartStatus.STARTED or result.plan is None or result.progress is None:
-            coordinator.diagnostics.append("涵洞剧本替换被拒绝")
-            return
-        coordinator._context.active_plan = result.plan
-        coordinator._context.active_progress = result.progress
-
-    def _handle_map_update_impact(self, update):
-        """阻塞当前路线时销毁剧本并标记等待重规划。"""
-        coordinator = self._coordinator
-        if update.kind is not AbsoluteMapUpdateKind.BLOCK_EDGE:
-            return
-        if coordinator._context.active_plan is None or coordinator._topology is None or update.edge_id is None:
-            return
-        for traversal_id in coordinator._context.active_plan.route_steps:
-            from_node_id, to_node_id = traversal_id.split("->", 1)
-            cruise_edge = coordinator._topology.get_cruise_edge(from_node_id, to_node_id)
-            if update.edge_id not in cruise_edge.physical_edge_ids:
-                continue
-            coordinator._mark_pending_replan()
-            coordinator._context.active_plan = None
-            coordinator._context.active_progress = None
-            coordinator.diagnostics.append("地图更新影响活动路线，已销毁剧本并等待重规划")
-            return
+        return None
 
     def analyze_interrupt(self, interrupt) -> AnalyzerDecision:
         """处理任务动作终局并继续任务分析。"""
