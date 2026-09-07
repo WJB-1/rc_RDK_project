@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Optional, Tuple
 
 from .coordinator import Coordinator
-from .contracts import ChoreographyPlan, ChoreographyProgress, DispatchAck
+from .contracts import DispatchAck
 
 
 @dataclass(frozen=True)
@@ -74,29 +74,7 @@ class NavigationRuntime:
         if self._started:
             return
         self._started = True
-        try:
-            self._coordinator.start()
-        except TypeError:
-            # 兼容仍要求旧式出发参数的测试替身；正式 Coordinator.start() 无参数。
-            return
-
-    def dispatch_next(self) -> None:
-        """请求 Coordinator 按当前剧本游标派发下一条异步动作。
-
-        执行器完成上一条动作后，由外层事件驱动器调用本方法；
-        Runtime 不保存游标，也不判断下一步业务。
-        """
-
-        # 未完成门面启动时拒绝推进，避免外部绕过生命周期入口。
-        if not self._started:
-            raise RuntimeError("NavigationRuntime 尚未启动")
-        # 后续动作不再传入剧本，游标所有权始终留在 Coordinator；此入口仅供调试兼容。
-        return self._coordinator._pump()
-
-    def start_departure(self, plan: ChoreographyPlan, progress: ChoreographyProgress) -> None:
-        """兼容旧装配入口；新启动流程应只调用 `start()`。"""
-        self.start()
-        return self._coordinator.start(plan, progress)
+        self._coordinator.start()
 
     def snapshot(self) -> NavigationRuntimeSnapshot:
         """汇总 Coordinator 的公开只读属性并返回不可变调试快照。"""

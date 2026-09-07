@@ -184,7 +184,7 @@ class Coordinator:
         self.diagnostics.append(reason)
         self._context.transition_main(CoordinatorState.EXCEPTION)
 
-    def start(self, departure_plan=None, departure_progress=None) -> None:
+    def start(self) -> None:
         """启动导航主状态机，并运行到下一个异步等待点。
 
         外层组合根可以提供已经生成的出发剧本；Coordinator 不直接构造动作，
@@ -192,9 +192,6 @@ class Coordinator:
         """
 
         # 首次启动允许注入出发剧本，后续重复启动不得覆盖活动流程。
-        if self._context.active_plan is None and departure_plan is not None:
-            self._context.active_plan = departure_plan
-            self._context.active_progress = departure_progress
         self._auto_drive = True
         self._pump()
 
@@ -235,11 +232,7 @@ class Coordinator:
         finally:
             self._pump_running = False
 
-    def dispatch_next(
-        self,
-        plan: Optional[ChoreographyPlan] = None,
-        progress: Optional[ChoreographyProgress] = None,
-    ) -> Optional[DispatchAck]:
+    def dispatch_next(self) -> Optional[DispatchAck]:
         """解释并提交下一动作；已有在途请求时保持串行并拒绝重复提交。
 
         首次调用可提供剧本和指针；后续调用直接使用协调器保存的活动剧本与
@@ -252,15 +245,6 @@ class Coordinator:
             self.diagnostics.append("已有在途请求，忽略重复 dispatch_next")
             return None
         # 允许首次调用装载剧本；已有活动剧本时忽略外部重复参数，保证游标所有权在协调器。
-        if self._context.active_plan is None:
-            if plan is None or progress is None:
-                self.diagnostics.append("首次 dispatch_next 必须提供剧本和指针")
-                self._last_choreography_status = ChoreographyAdvanceStatus.REJECTED
-                return None
-            self._context.active_plan = plan
-            self._context.active_progress = progress
-        elif plan is not None or progress is not None:
-            self.diagnostics.append("已有活动剧本，忽略外部传入的剧本和指针")
         if self._context.active_progress is None:
             self.diagnostics.append("活动剧本缺少 resume_progress")
             self._last_choreography_status = ChoreographyAdvanceStatus.REJECTED
