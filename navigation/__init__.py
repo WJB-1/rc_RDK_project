@@ -18,6 +18,7 @@ from .contracts import (
 from .choreography import Choreographer, MotionProfile
 # 导出导航浅门面和只读快照，供外层 RobotRuntime 或仿真入口装配使用。
 from .runtime import NavigationRuntime, NavigationRuntimeSnapshot
+from .perception_adapter import PerceptionAdapter, PerceptionVisibilityProfile
 # 重新导出状态、任务、地图和静态拓扑，使后续模块只依赖一个稳定入口。
 from .domain import (
     AtNode,
@@ -57,4 +58,6 @@ __all__ = (
     # 导航浅门面和只读调试快照。
     "NavigationRuntime",
     "NavigationRuntimeSnapshot",
+    "PerceptionAdapter",
+    "PerceptionVisibilityProfile",
 )

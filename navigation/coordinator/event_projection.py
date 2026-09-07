@@ -9,6 +9,7 @@ from navigation.contracts import (
     ExecuteTaskCommand,
     ObserveCommand,
     PerceptionOutcome,
+    EdgePassability,
     DriveDistanceCommand,
     ReverseDistanceCommand,
     RetraceTurnCommand,
@@ -19,6 +20,7 @@ from navigation.domain import (
     AbsoluteMapUpdateKind,
     AtNode,
     MapUpdateAuthority,
+    MapObservationScope,
     OnCruiseEdge,
     ProgressSource,
     RobotState,
@@ -110,6 +112,11 @@ class EventProjector:
             is_turn=is_turn,
             traversal_id=getattr(command, "traversal_id", None),
             forward_trajectory_id=trajectory_id,
+            junction_id=(
+                getattr(command, "target_traversal_id", "").split("->", 1)[0]
+                if is_turn and getattr(command, "target_traversal_id", None)
+                else None
+            ),
         )
 
     def project_task(self, action: Action) -> None:
@@ -165,13 +172,24 @@ class EventProjector:
         if translation.outcome is PerceptionOutcome.INCONCLUSIVE:
             self._diagnostics.append("感知翻译无法确认：{}".format(translation.reason))
             return
-        if self._state is None and translation.map_updates:
+        if self._state is None and translation.edge_observations:
             self._diagnostics.append("未装配 RuntimeMap，无法应用感知地图更新")
         elif self._state is not None:
-            for update in translation.map_updates:
-                changed = self._state.apply_map_update(update)
-                if changed and self._on_map_update is not None:
-                    self._on_map_update(update)
+            for observation in translation.edge_observations:
+                updates = []
+                if observation.passability is EdgePassability.BLOCKED:
+                    updates.append(AbsoluteMapUpdate(AbsoluteMapUpdateKind.BLOCK_EDGE, MapUpdateAuthority.PERCEPTION_ADAPTER, edge_id=observation.edge_id))
+                elif observation.passability is EdgePassability.CLEAR:
+                    scope = MapObservationScope.JUNCTION_FULL if observation.observation_scope == "junction_full" else MapObservationScope.OBSERVATION_ZONE
+                    updates.append(AbsoluteMapUpdate(AbsoluteMapUpdateKind.CONFIRM_EDGE_CLEAR, MapUpdateAuthority.PERCEPTION_ADAPTER, edge_id=observation.edge_id, observation_scope=scope))
+                if observation.culvert_found:
+                    updates.append(AbsoluteMapUpdate(AbsoluteMapUpdateKind.DISCOVER_CULVERT, MapUpdateAuthority.PERCEPTION_ADAPTER, edge_id=observation.edge_id))
+                if observation.no_culvert_coverage:
+                    updates.append(AbsoluteMapUpdate(AbsoluteMapUpdateKind.CONFIRM_NO_CULVERT, MapUpdateAuthority.PERCEPTION_ADAPTER, edge_id=observation.edge_id, coverage_intervals=observation.no_culvert_coverage))
+                for update in updates:
+                    changed = self._state.apply_map_update(update)
+                    if changed and self._on_map_update is not None:
+                        self._on_map_update(update)
         correction = translation.position_correction
         if correction is None:
             return

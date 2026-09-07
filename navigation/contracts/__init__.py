@@ -29,6 +29,9 @@ from .execution import (
 )
 # 重新导出感知契约，使调用方不依赖 `perception.py` 的内部文件路径。
 from .perception import (
+    CoverageInterval,
+    EdgeObservation,
+    EdgePassability,
     PerceptionFrame,
     PerceptionOutcome,
     PerceptionTranslation,
@@ -103,6 +106,9 @@ __all__ = (
     "PerceptionOutcome",
     "PositionCorrection",
     "PerceptionTranslation",
+    "CoverageInterval",
+    "EdgeObservation",
+    "EdgePassability",
     # 编排流程、类型化动作、状态投影和只读查询端口类型。
     "ChoreographySourceKind",
     "ChoreographyStageKind",

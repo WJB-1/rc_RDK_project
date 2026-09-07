@@ -5,7 +5,9 @@ from dataclasses import dataclass
 # 导入枚举基类，限制地图事实类型和写入权限来源。
 from enum import Enum
 # 导入 Python 3.8 兼容的集合与可选值类型注解。
-from typing import FrozenSet, Optional, Set
+from typing import FrozenSet, Optional, Set, Tuple
+
+from navigation.contracts.perception import CoverageInterval
 
 
 class MapObservationScope(Enum):
@@ -28,6 +30,14 @@ class EdgeKnowledgeStatus(Enum):
     BLOCKED = "blocked"
 
 
+class CulvertKnowledgeStatus(Enum):
+    """运行时地图对单条边涵洞存在性的证据状态。"""
+
+    UNKNOWN = "unknown"
+    DISCOVERED = "discovered"
+    CONFIRMED_ABSENT = "confirmed_absent"
+
+
 class MapUpdateAuthority(Enum):
     """绝对地图事实的业务授权来源，防止外部模块越权宣告任务完成。"""
 
@@ -48,6 +58,7 @@ class AbsoluteMapUpdateKind(Enum):
     CONFIRM_EDGE_CLEAR = "confirm_edge_clear"
     # 确认某条道路上存在待侦查涵洞。
     DISCOVER_CULVERT = "discover_culvert"
+    CONFIRM_NO_CULVERT = "confirm_no_culvert"
     # 确认某个已发现涵洞已经由匹配任务成功中断确认侦查完成。
     RECON_CULVERT = "recon_culvert"
     # 确认机器人已由匹配打卡任务成功中断确认访问节点。
@@ -76,6 +87,7 @@ class AbsoluteMapUpdate:
     timestamp: float = 0.0
     # 产生道路观察事实的范围；非观察类更新保持为空。
     observation_scope: Optional[MapObservationScope] = None
+    coverage_intervals: Tuple[CoverageInterval, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -94,6 +106,8 @@ class RuntimeMapSnapshot:
     visited_node_ids: FrozenSet[str]
     # 已由可靠观察确认当前可通行的物理边集合。
     confirmed_clear_edge_ids: FrozenSet[str] = frozenset()
+    confirmed_no_culvert_edge_ids: FrozenSet[str] = frozenset()
+    culvert_coverage_by_edge: Tuple[Tuple[str, Tuple[CoverageInterval, ...]], ...] = ()
 
     def edge_status(self, edge_id: str) -> EdgeKnowledgeStatus:
         """返回单条物理边当前的确定/不确定状态。"""
@@ -103,6 +117,21 @@ class RuntimeMapSnapshot:
         if edge_id in self.confirmed_clear_edge_ids:
             return EdgeKnowledgeStatus.CLEAR
         return EdgeKnowledgeStatus.UNKNOWN
+
+    def culvert_status(self, edge_id: str) -> CulvertKnowledgeStatus:
+        """返回单条边当前涵洞证据状态。"""
+        if edge_id in self.discovered_culvert_edge_ids:
+            return CulvertKnowledgeStatus.DISCOVERED
+        if edge_id in self.confirmed_no_culvert_edge_ids:
+            return CulvertKnowledgeStatus.CONFIRMED_ABSENT
+        return CulvertKnowledgeStatus.UNKNOWN
+
+    def culvert_coverage(self, edge_id: str) -> Tuple[CoverageInterval, ...]:
+        """返回指定边已合并的涵洞可见区间。"""
+        for known_edge_id, intervals in self.culvert_coverage_by_edge:
+            if known_edge_id == edge_id:
+                return intervals
+        return ()
 
 
 class RuntimeMap:
@@ -121,6 +150,7 @@ class RuntimeMap:
             AbsoluteMapUpdateKind.UNBLOCK_EDGE,
             AbsoluteMapUpdateKind.CONFIRM_EDGE_CLEAR,
             AbsoluteMapUpdateKind.DISCOVER_CULVERT,
+            AbsoluteMapUpdateKind.CONFIRM_NO_CULVERT,
         )
     )
     # 协调器只能在校验完成中断后写入任务完成、打卡或运动阻塞派生事实。
@@ -153,6 +183,8 @@ class RuntimeMap:
         self._recon_culvert_edge_ids: Set[str] = set()
         # 保存已经由协调器确认到达或打卡的节点标识。
         self._visited_node_ids: Set[str] = set()
+        self._confirmed_no_culvert_edge_ids: Set[str] = set()
+        self._culvert_coverage_by_edge = {}
 
     def apply(self, update: AbsoluteMapUpdate) -> bool:
         """验证来源与前置条件后，幂等写入一条绝对动态地图事实。
@@ -203,6 +235,17 @@ class RuntimeMap:
             changed = edge_id not in self._discovered_culvert_edge_ids
             # 写入发现事实，供后续任务选择器读取。
             self._discovered_culvert_edge_ids.add(edge_id)
+        elif update.kind is AbsoluteMapUpdateKind.CONFIRM_NO_CULVERT:
+            edge_id = self._require_edge_id(update)
+            if edge_id in self._discovered_culvert_edge_ids:
+                changed = False
+            else:
+                intervals = self._merge_coverage(edge_id, update.coverage_intervals)
+                changed = intervals != self._culvert_coverage_by_edge.get(edge_id, ())
+                self._culvert_coverage_by_edge[edge_id] = intervals
+                if self._covers_entire_edge(intervals) and edge_id not in self._confirmed_no_culvert_edge_ids:
+                    self._confirmed_no_culvert_edge_ids.add(edge_id)
+                    changed = True
         elif update.kind is AbsoluteMapUpdateKind.RECON_CULVERT:
             # 涵洞完成事实必须引用一条物理边。
             edge_id = self._require_edge_id(update)
@@ -247,7 +290,24 @@ class RuntimeMap:
             discovered_culvert_edge_ids=frozenset(self._discovered_culvert_edge_ids),
             recon_culvert_edge_ids=frozenset(self._recon_culvert_edge_ids),
             visited_node_ids=frozenset(self._visited_node_ids),
+            confirmed_no_culvert_edge_ids=frozenset(self._confirmed_no_culvert_edge_ids),
+            culvert_coverage_by_edge=tuple(sorted((edge_id, intervals) for edge_id, intervals in self._culvert_coverage_by_edge.items())),
         )
+
+    def _merge_coverage(self, edge_id: str, additions: Tuple[CoverageInterval, ...]) -> Tuple[CoverageInterval, ...]:
+        """合并同一物理边的重叠或相邻可见区间。"""
+        intervals = sorted(self._culvert_coverage_by_edge.get(edge_id, ()) + tuple(additions), key=lambda item: item.start_ratio)
+        merged = []
+        for interval in intervals:
+            if not merged or interval.start_ratio > merged[-1].end_ratio:
+                merged.append(interval)
+            else:
+                merged[-1] = CoverageInterval(merged[-1].start_ratio, max(merged[-1].end_ratio, interval.end_ratio))
+        return tuple(merged)
+
+    @staticmethod
+    def _covers_entire_edge(intervals: Tuple[CoverageInterval, ...]) -> bool:
+        return bool(intervals) and intervals[0].start_ratio <= 0.0 and intervals[-1].end_ratio >= 1.0
 
     def _validate_authority(self, update: AbsoluteMapUpdate) -> None:
         """拒绝不具备业务授权来源的地图事实。"""

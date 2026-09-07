@@ -8,7 +8,52 @@ from enum import Enum
 from typing import Optional, Tuple
 
 # 导入绝对地图更新类型，保证适配器输出不会重新发明地图数据结构。
-from navigation.domain.runtime_map import AbsoluteMapUpdate
+
+
+class EdgePassability(Enum):
+    """一次观察对道路通行性的结论。"""
+
+    UNKNOWN = "unknown"
+    CLEAR = "clear"
+    BLOCKED = "blocked"
+
+
+@dataclass(frozen=True)
+class CoverageInterval:
+    """涵洞可见区间，使用道路起点到终点的归一化比例表示。"""
+
+    start_ratio: float
+    end_ratio: float
+
+    def __post_init__(self) -> None:
+        if not 0.0 <= self.start_ratio <= self.end_ratio <= 1.0:
+            raise ValueError("涵洞覆盖区间必须位于 [0.0, 1.0] 且起点不晚于终点")
+
+
+@dataclass(frozen=True)
+class EdgeObservation:
+    """感知适配器完成绝对映射后的单边独立观察事实。"""
+
+    edge_id: str
+    passability: EdgePassability
+    culvert_found: bool = False
+    no_culvert_coverage: Tuple[CoverageInterval, ...] = ()
+    observation_scope: str = "observation_zone"
+    obstacle_distance_mm: Optional[float] = None
+    culvert_distance_mm: Optional[float] = None
+
+    def __post_init__(self) -> None:
+        if not self.edge_id:
+            raise ValueError("edge_id 不能为空")
+        object.__setattr__(self, "no_culvert_coverage", tuple(self.no_culvert_coverage))
+        if any(not isinstance(item, CoverageInterval) for item in self.no_culvert_coverage):
+            raise TypeError("no_culvert_coverage 必须全部是 CoverageInterval")
+        if self.observation_scope not in ("junction_full", "observation_zone"):
+            raise ValueError("observation_scope 必须是 junction_full 或 observation_zone")
+        if self.obstacle_distance_mm is not None and self.obstacle_distance_mm < 0:
+            raise ValueError("obstacle_distance_mm 不能为负数")
+        if self.culvert_distance_mm is not None and self.culvert_distance_mm < 0:
+            raise ValueError("culvert_distance_mm 不能为负数")
 
 
 class PerceptionOutcome(Enum):
@@ -106,8 +151,8 @@ class PerceptionTranslation:
     frame_id: str
     # 本帧翻译是否已经足够可靠。
     outcome: PerceptionOutcome
-    # 已映射的绝对地图事实，由协调器逐条提交 RuntimeMap。
-    map_updates: Tuple[AbsoluteMapUpdate, ...] = ()
+    # 已完成绝对映射的道路观察事实，由 EventProjector 转成地图更新。
+    edge_observations: Tuple[EdgeObservation, ...] = ()
     # 可选的视觉位置校正，由协调器交给位置投影器。
     position_correction: Optional[PositionCorrection] = None
     # 无法翻译时的诊断原因；已确认结果必须为空。
@@ -120,11 +165,10 @@ class PerceptionTranslation:
         if not self.frame_id:
             raise ValueError("frame_id 不能为空")
         # 即使调用方传入列表，也立即冻结成元组，避免结果在异步处理中被修改。
-        updates = tuple(self.map_updates)
-        object.__setattr__(self, "map_updates", updates)
-        # 地图更新集合只能包含正式绝对更新对象。
-        if any(not isinstance(update, AbsoluteMapUpdate) for update in updates):
-            raise TypeError("map_updates 必须全部是 AbsoluteMapUpdate")
+        observations = tuple(self.edge_observations)
+        object.__setattr__(self, "edge_observations", observations)
+        if any(not isinstance(observation, EdgeObservation) for observation in observations):
+            raise TypeError("edge_observations 必须全部是 EdgeObservation")
         # 已确认结果表示翻译完成，不应同时携带失败原因。
         if self.outcome is PerceptionOutcome.CONFIRMED:
             if self.reason is not None:
@@ -135,8 +179,8 @@ class PerceptionTranslation:
             if self.reason is None or not self.reason.strip():
                 raise ValueError("INCONCLUSIVE 结果必须提供 reason")
             # 不确定时不能伪造任何绝对地图事实。
-            if updates:
-                raise ValueError("INCONCLUSIVE 结果不能携带 map_updates")
+            if observations:
+                raise ValueError("INCONCLUSIVE 结果不能携带 edge_observations")
             # 不确定时也不能把不可靠位置送入状态投影器。
             if self.position_correction is not None:
                 raise ValueError("INCONCLUSIVE 结果不能携带 position_correction")

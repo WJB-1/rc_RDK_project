@@ -16,6 +16,7 @@ from .runtime_map import (
     AbsoluteMapUpdate,
     AbsoluteMapUpdateKind,
     EdgeKnowledgeStatus,
+    CulvertKnowledgeStatus,
     MapObservationScope,
     MapUpdateAuthority,
     RuntimeMap,
@@ -23,6 +24,7 @@ from .runtime_map import (
 )
 # 重新导出静态拓扑类型和工厂，使调用方不依赖 `topology.py` 的内部文件路径。
 from .topology import CruiseEdge, MapNode, PhysicalEdge, TrackTopology, build_default_topology
+from navigation.contracts.perception import CoverageInterval
 
 # 声明阶段 0 当前允许外部依赖的领域类型，后续类型将在对应任务完成后补充。
 __all__ = (
@@ -51,10 +53,12 @@ __all__ = (
     "RuntimeMap",
     "MapObservationScope",
     "EdgeKnowledgeStatus",
+    "CulvertKnowledgeStatus",
     # 静态端口拓扑、物理边、巡航视图和工厂类型。
     "MapNode",
     "PhysicalEdge",
     "CruiseEdge",
     "TrackTopology",
     "build_default_topology",
+    "CoverageInterval",
 )
