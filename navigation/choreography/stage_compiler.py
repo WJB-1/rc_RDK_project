@@ -21,6 +21,8 @@ from navigation.contracts import (
     RetraceTurnCommand,
     RetraceTurnEffect,
     ReverseDistanceCommand,
+    StopCommand,
+    StopEffect,
     TurnAtJunctionCommand,
     TurnDirection,
 )
@@ -69,6 +71,8 @@ class StageCompiler:
             return self._ready_retrace_turn(plan, progress, stage)
         if stage.kind is ChoreographyStageKind.EXECUTE_TASK:
             return self._ready_execute_task(plan, progress, stage)
+        if stage.kind is ChoreographyStageKind.STOP_AT_START:
+            return self._ready_stop_at_start(plan, progress, stage)
         return self._choreographer._rejected(
             ChoreographyRejectionCode.INVALID_PROGRESS,
             "当前流程阶段尚未实现动作翻译：{}".format(stage.kind.value),
@@ -85,6 +89,22 @@ class StageCompiler:
             self._choreographer._action_id(plan, progress.stage_index),
             ExecuteTaskCommand(stage.task_id),
             CompleteTaskEffect(stage.task_id),
+        )
+        return self._choreographer._ready(action, plan, progress.stage_index + 1)
+
+    def _ready_stop_at_start(self, plan, progress, stage):
+        """确认机器人已经抵达 START 中心后生成最终停车动作。"""
+
+        location = self._choreographer._state_query.robot_state().location
+        if not isinstance(location, AtNode) or location.node_id != "START":
+            return self._choreographer._rejected(
+                ChoreographyRejectionCode.INVALID_PROGRESS,
+                "最终停车必须在 START 中心执行",
+            )
+        action = Action(
+            self._choreographer._action_id(plan, progress.stage_index),
+            StopCommand("已驶入 START 中心，结束返场"),
+            StopEffect(),
         )
         return self._choreographer._ready(action, plan, progress.stage_index + 1)
 
@@ -122,7 +142,12 @@ class StageCompiler:
             )
         action = Action(
             self._choreographer._action_id(plan, progress.stage_index),
-            TurnAtJunctionCommand(direction, stage.traversal_id),
+            TurnAtJunctionCommand(
+                direction,
+                stage.traversal_id,
+                forward_trajectory_id="turn:{}:forward".format(direction.value),
+                retrace_trajectory_id="turn:{}:retrace".format(direction.value),
+            ),
             AlignToTraversalEffect(stage.traversal_id),
         )
         return self._choreographer._ready(action, plan, progress.stage_index + 1)

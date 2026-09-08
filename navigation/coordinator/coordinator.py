@@ -29,6 +29,7 @@ from .execution_bridge import ExecutionBridge
 from .event_projection import EventProjector
 from .context import CoordinatorContext, LastMotionRecord
 from .state_adapter import LegacyNavigationStateAdapter
+from .planning_state_adapter import CoordinatorPlanningReadAdapter
 from .states import CoordinatorState, DepartureSubstate, EscapeSubstate, ReturnSubstate, TaskSubstate
 from .analyzers import (
     AnalyzerDecisionKind,
@@ -81,6 +82,17 @@ class Coordinator:
         self._task_registry = task_registry
         # 正常规划器负责自行选目标和生成路线，Coordinator 只消费其结果。
         self._route_planner = route_planner
+        if self._route_planner is not None and self._navigation_state is not None:
+            bind_read_state = getattr(self._route_planner, "bind_read_state", None)
+            if bind_read_state is not None:
+                bind_read_state(
+                    CoordinatorPlanningReadAdapter(
+                        self._navigation_state,
+                        self._task_registry,
+                        lambda: self._context.state,
+                        self._topology,
+                    )
+                )
         # 恢复规划器负责自行选择倒车目标，Coordinator 不传入安全路口参数。
         self._recovery_planner = recovery_planner
         # 四个内部流程对象按外层状态承载阶段业务，公共执行入口仍由本类统一维护。

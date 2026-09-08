@@ -65,6 +65,12 @@ class NavigationRuntime:
 
         return self._started
 
+    @property
+    def state_store(self):
+        """返回导航状态只读入口，供仿真快照装配层使用。"""
+
+        return getattr(self._coordinator, "_navigation_state", None)
+
     def start(self) -> None:
         """标记导航门面已就绪，并驱动 Coordinator 生成第一条出发动作。
 

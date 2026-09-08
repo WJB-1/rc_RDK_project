@@ -6,6 +6,8 @@ from .ports import SimMotionPort, SimPerceptionPort, SimTaskPort
 from .snapshot import SimWorldSnapshot, SimMotionResult, SimTaskResult, SimulationSnapshot
 from .world import SimWorld
 from .runner import SimulationRunner
+from .composition import build_simulation_runner
 
 __all__ = ("SimExecutor", "SimMotionPort", "SimPerceptionPort", "SimTaskPort",
-           "SimWorld", "SimWorldSnapshot", "SimMotionResult", "SimTaskResult", "SimulationSnapshot", "SimulationRunner")
+           "SimWorld", "SimWorldSnapshot", "SimMotionResult", "SimTaskResult", "SimulationSnapshot", "SimulationRunner",
+           "build_simulation_runner")

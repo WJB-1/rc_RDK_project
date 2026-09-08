@@ -42,6 +42,12 @@ class SimulationRunner:
         return self._executor
 
     @property
+    def navigation_runtime(self):
+        """返回已装配的导航门面，供调试工具读取其公共快照。"""
+
+        return self._navigation_runtime
+
+    @property
     def state_store(self):
         """返回导航状态存储（若装配根提供），供仿真验收读取。"""
 
