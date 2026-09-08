@@ -1,6 +1,13 @@
 """启动 Navigation 2.0 仿真器与可视化 Dashboard。"""
 
 import argparse
+import sys
+from pathlib import Path
+
+# 允许从仓库根目录外直接执行 ``python tools/run_navigation_web.py``。
+_PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
 
 from navigation.simulation.composition import build_simulation_runner
 from web.app import create_app
