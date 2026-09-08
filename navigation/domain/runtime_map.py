@@ -52,8 +52,6 @@ class AbsoluteMapUpdateKind(Enum):
 
     # 将一条物理道路标记为当前不可通行。
     BLOCK_EDGE = "block_edge"
-    # 将此前阻塞的道路恢复为可通行。
-    UNBLOCK_EDGE = "unblock_edge"
     # 由一次可靠观察确认道路当前没有障碍。
     CONFIRM_EDGE_CLEAR = "confirm_edge_clear"
     # 确认某条道路上存在待侦查涵洞。
@@ -88,6 +86,14 @@ class AbsoluteMapUpdate:
     # 产生道路观察事实的范围；非观察类更新保持为空。
     observation_scope: Optional[MapObservationScope] = None
     coverage_intervals: Tuple[CoverageInterval, ...] = ()
+    # 视觉估计的涵洞距离，未来可用于亚边级定位；非涵洞更新保持为空。
+    culvert_distance_mm: Optional[float] = None
+
+    def __post_init__(self) -> None:
+        """校验可选距离，避免把非法视觉测距写入地图事实。"""
+
+        if self.culvert_distance_mm is not None and self.culvert_distance_mm < 0:
+            raise ValueError("culvert_distance_mm 不能为负数")
 
 
 @dataclass(frozen=True)
@@ -108,6 +114,7 @@ class RuntimeMapSnapshot:
     confirmed_clear_edge_ids: FrozenSet[str] = frozenset()
     confirmed_no_culvert_edge_ids: FrozenSet[str] = frozenset()
     culvert_coverage_by_edge: Tuple[Tuple[str, Tuple[CoverageInterval, ...]], ...] = ()
+    culvert_distance_by_edge: Tuple[Tuple[str, float], ...] = ()
 
     def edge_status(self, edge_id: str) -> EdgeKnowledgeStatus:
         """返回单条物理边当前的确定/不确定状态。"""
@@ -133,6 +140,14 @@ class RuntimeMapSnapshot:
                 return intervals
         return ()
 
+    def culvert_distance_mm(self, edge_id: str) -> Optional[float]:
+        """返回指定边最近一次视觉估计的涵洞距离。"""
+
+        for known_edge_id, distance_mm in self.culvert_distance_by_edge:
+            if known_edge_id == edge_id:
+                return distance_mm
+        return None
+
 
 class RuntimeMap:
     """动态地图事实与版本的唯一所有者。
@@ -147,7 +162,6 @@ class RuntimeMap:
     _PERCEPTION_ALLOWED_KINDS = frozenset(
         (
             AbsoluteMapUpdateKind.BLOCK_EDGE,
-            AbsoluteMapUpdateKind.UNBLOCK_EDGE,
             AbsoluteMapUpdateKind.CONFIRM_EDGE_CLEAR,
             AbsoluteMapUpdateKind.DISCOVER_CULVERT,
             AbsoluteMapUpdateKind.CONFIRM_NO_CULVERT,
@@ -185,6 +199,7 @@ class RuntimeMap:
         self._visited_node_ids: Set[str] = set()
         self._confirmed_no_culvert_edge_ids: Set[str] = set()
         self._culvert_coverage_by_edge = {}
+        self._culvert_distance_by_edge = {}
 
     def apply(self, update: AbsoluteMapUpdate) -> bool:
         """验证来源与前置条件后，幂等写入一条绝对动态地图事实。
@@ -207,15 +222,6 @@ class RuntimeMap:
             self._blocked_edge_ids.add(edge_id)
             # 新阻塞事实会使此前的安全确认失效，避免快照同时表达矛盾状态。
             self._confirmed_clear_edge_ids.discard(edge_id)
-        elif update.kind is AbsoluteMapUpdateKind.UNBLOCK_EDGE:
-            # 解除阻塞事实必须引用一条物理边。
-            edge_id = self._require_edge_id(update)
-            # 只有此前已阻塞的道路会改变地图。
-            changed = edge_id in self._blocked_edge_ids
-            # 移除阻塞事实；不存在时保持集合不变。
-            self._blocked_edge_ids.discard(edge_id)
-            # 解除阻塞本身不等于新的视觉确认，清除旧的安全事实等待重新观察。
-            self._confirmed_clear_edge_ids.discard(edge_id)
         elif update.kind is AbsoluteMapUpdateKind.CONFIRM_EDGE_CLEAR:
             # 安全事实必须引用一条物理边。
             edge_id = self._require_edge_id(update)
@@ -232,9 +238,13 @@ class RuntimeMap:
             # 涵洞发现事实必须引用一条物理边。
             edge_id = self._require_edge_id(update)
             # 只有此前未知的涵洞会改变地图。
+            previous_distance = self._culvert_distance_by_edge.get(edge_id)
             changed = edge_id not in self._discovered_culvert_edge_ids
             # 写入发现事实，供后续任务选择器读取。
             self._discovered_culvert_edge_ids.add(edge_id)
+            if update.culvert_distance_mm is not None and update.culvert_distance_mm != previous_distance:
+                self._culvert_distance_by_edge[edge_id] = update.culvert_distance_mm
+                changed = True
         elif update.kind is AbsoluteMapUpdateKind.CONFIRM_NO_CULVERT:
             edge_id = self._require_edge_id(update)
             if edge_id in self._discovered_culvert_edge_ids:
@@ -292,6 +302,7 @@ class RuntimeMap:
             visited_node_ids=frozenset(self._visited_node_ids),
             confirmed_no_culvert_edge_ids=frozenset(self._confirmed_no_culvert_edge_ids),
             culvert_coverage_by_edge=tuple(sorted((edge_id, intervals) for edge_id, intervals in self._culvert_coverage_by_edge.items())),
+            culvert_distance_by_edge=tuple(sorted(self._culvert_distance_by_edge.items())),
         )
 
     def _merge_coverage(self, edge_id: str, additions: Tuple[CoverageInterval, ...]) -> Tuple[CoverageInterval, ...]:

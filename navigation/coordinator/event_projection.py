@@ -183,7 +183,7 @@ class EventProjector:
                     scope = MapObservationScope.JUNCTION_FULL if observation.observation_scope == "junction_full" else MapObservationScope.OBSERVATION_ZONE
                     updates.append(AbsoluteMapUpdate(AbsoluteMapUpdateKind.CONFIRM_EDGE_CLEAR, MapUpdateAuthority.PERCEPTION_ADAPTER, edge_id=observation.edge_id, observation_scope=scope))
                 if observation.culvert_found:
-                    updates.append(AbsoluteMapUpdate(AbsoluteMapUpdateKind.DISCOVER_CULVERT, MapUpdateAuthority.PERCEPTION_ADAPTER, edge_id=observation.edge_id))
+                    updates.append(AbsoluteMapUpdate(AbsoluteMapUpdateKind.DISCOVER_CULVERT, MapUpdateAuthority.PERCEPTION_ADAPTER, edge_id=observation.edge_id, culvert_distance_mm=observation.culvert_distance_mm))
                 if observation.no_culvert_coverage:
                     updates.append(AbsoluteMapUpdate(AbsoluteMapUpdateKind.CONFIRM_NO_CULVERT, MapUpdateAuthority.PERCEPTION_ADAPTER, edge_id=observation.edge_id, coverage_intervals=observation.no_culvert_coverage))
                 for update in updates:
