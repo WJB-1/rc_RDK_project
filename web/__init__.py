@@ -1,4 +1,6 @@
 """
+
+# Navigation 2.0 快照桥接和受控应用工厂；旧版 WebPushServer 保持兼容。
 Web 可视化模块 (Web Dashboard Module)
 
 统一管理所有 Web 推送、HTML 模板、页面生成。
@@ -32,6 +34,11 @@ from typing import Dict, List, Optional, Callable
 
 import cv2
 import numpy as np
+
+# Navigation 2.0 快照桥接和受控应用工厂；旧版 WebPushServer 保持兼容。
+from .app import create_app
+from .commands import CommandDispatcher, CommandResult, SimulationCommand
+from .state_bridge import WebStateBridge
 
 # HTML 模板路径
 _WEB_DIR = Path(__file__).parent
