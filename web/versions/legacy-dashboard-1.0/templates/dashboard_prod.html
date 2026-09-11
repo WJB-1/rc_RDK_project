@@ -492,6 +492,11 @@ let sim = {
     trajectory: [],
     events: [],
     approachingUntil: 0,
+    // 当前段（currentNode → targetNode）几何信息，用于沿路边直线插值
+    segFrom: null,
+    segTo: null,
+    segLen: 0,
+    segDist: 0,
 };
 
 // 初始化
@@ -645,17 +650,8 @@ function onWsMessage(event) {
         document.getElementById('segImage').src = 'data:image/jpeg;base64,' + data.seg_image;
     }
 
-    // 同步小车位置到 sim.pos（拖拽期间不覆盖）
-    if (data.position && !carDragging) {
-        sim.pos.x = data.position[0];
-        sim.pos.y = data.position[1];
-        sim.pos.yaw = data.position[2];
-
-        // 边界检测（线上模式）
-        if (!checkBoundary(sim.pos)) {
-            logCmd('⚠ 小车超出场地边界！请检查里程计/视觉定位', 'error');
-        }
-    }
+    // 小车位置统一由前端模拟器 simTick 维护（唯一写入者），
+    // 后端 WS 的 position 不再写入 sim.pos，避免多来源争抢导致瞬移/卡顿。
 
     // 更新地图数据（首次或变化时）
     if (data.map_data && data.map_data.nodes) {
@@ -663,9 +659,9 @@ function onWsMessage(event) {
         gEdges = data.map_data.edges || [];
     }
 
-    // 只要有位置或地图数据就渲染（小车 + 轨迹不依赖 map_data）
-    if (data.position || data.map_data) {
-        renderMap(data);
+    // 只有地图数据变化时才重绘，小车位置用 renderMapFromSim 绘制（读 sim.pos）
+    if (data.map_data) {
+        renderMapFromSim();
     }
 
     updateTelemetry(data);
@@ -725,6 +721,9 @@ function startSimulation() {
     }
     sim.targetNode = sim.path.length > 1 ? sim.path[1] : null;
 
+    // 建立首段（START → targetNode）几何信息，供沿边直线插值
+    _updateSegGeometry();
+
     // 如果起始是 mission 节点，直接标记已访问
     if (startNode.type === 'mission') {
         sim.visited.push(startName);
@@ -763,39 +762,51 @@ function simTick() {
     if (!simRunning) return;
     if (!sim.targetNode || !gNodes[sim.targetNode]) return;
 
-    const tgt = gNodes[sim.targetNode];
     const dt = 0.05;          // 50ms tick
     const speed = 300;        // mm/s
     const step = speed * dt;  // 15mm per tick
 
-    const dx = tgt.x - sim.pos.x;
-    const dy = tgt.y - sim.pos.y;
-    const dist = Math.hypot(dx, dy);
+    // 沿当前段（currentNode → targetNode）直线插值：位置由 segDist / segLen 精确决定
+    if (sim.segFrom && sim.segTo && sim.segLen > 0) {
+        const fn = sim.segFrom, tn = sim.segTo;
+        sim.segDist += step;
+        const ratio = Math.min(1.0, sim.segDist / sim.segLen);
 
-    if (dist < 5) {
-        // 精确到达目标节点
-        sim.pos.x = tgt.x;
-        sim.pos.y = tgt.y;
-        handleNodeArrival();
-        updateTelemetryFromSim();
-        renderMapFromSim();
-        return;
-    }
+        sim.pos.x = fn.x + (tn.x - fn.x) * ratio;
+        sim.pos.y = fn.y + (tn.y - fn.y) * ratio;
 
-    // 移动：先横后纵（模拟车道约束走直角弯）
-    const ax = Math.abs(dx), ay = Math.abs(dy);
-    let moveX = 0, moveY = 0;
-    if (ax > ay) {
-        moveX = Math.sign(dx) * Math.min(step, ax);
-        sim.pos.yaw = dx > 0 ? 90 : -90;
+        // yaw 对齐行驶方向
+        const ddx = tn.x - fn.x, ddy = tn.y - fn.y;
+        sim.pos.yaw = (Math.atan2(ddx, ddy) * 180) / Math.PI;
+        sim.odom += step;
+
+        if (ratio >= 1.0) {
+            // 精确到达目标节点
+            sim.pos.x = tn.x;
+            sim.pos.y = tn.y;
+            handleNodeArrival();
+            updateTelemetryFromSim();
+            renderMapFromSim();
+            return;
+        }
     } else {
-        moveY = Math.sign(dy) * Math.min(step, ay);
-        sim.pos.yaw = dy > 0 ? 0 : 180;
+        // 无段几何信息时退化：朝目标节点直线推进
+        const tgt = gNodes[sim.targetNode];
+        const dx = tgt.x - sim.pos.x;
+        const dy = tgt.y - sim.pos.y;
+        const dist = Math.hypot(dx, dy);
+        if (dist < 5) {
+            sim.pos.x = tgt.x;
+            sim.pos.y = tgt.y;
+            handleNodeArrival();
+            updateTelemetryFromSim();
+            renderMapFromSim();
+            return;
+        }
+        sim.pos.x += (dx / dist) * step;
+        sim.pos.y += (dy / dist) * step;
+        sim.odom += step;
     }
-
-    sim.pos.x += moveX;
-    sim.pos.y += moveY;
-    sim.odom += Math.abs(moveX) + Math.abs(moveY);
 
     // 边界碰撞检测
     if (!checkBoundary(sim.pos, /* stopOnOut */ true)) {
@@ -813,6 +824,23 @@ function simTick() {
 
     updateTelemetryFromSim();
     renderMapFromSim();
+}
+
+// 更新当前段（sim.currentNode → sim.targetNode）的几何信息 + 清零段已走距离
+function _updateSegGeometry() {
+    const c = gNodes[sim.currentNode];
+    const t = gNodes[sim.targetNode];
+    if (!c || !t) {
+        sim.segFrom = null;
+        sim.segTo = null;
+        sim.segLen = 0;
+        sim.segDist = 0;
+        return;
+    }
+    sim.segFrom = { x: c.x, y: c.y };
+    sim.segTo = { x: t.x, y: t.y };
+    sim.segLen = Math.hypot(t.x - c.x, t.y - c.y) || 1;
+    sim.segDist = 0;
 }
 
 function handleNodeArrival() {
@@ -858,9 +886,12 @@ function advanceToNextNode() {
     }
 
     if (sim.pathIndex < path.length) {
-        sim.targetNode = path[sim.pathIndex];
+        // 刚到达的节点成为新的 current，目标是下一个节点
         sim.currentNode = sim.targetNode;
+        sim.targetNode = path[sim.pathIndex];
         sim.state = 'CRUISING';
+        // 刷新段几何，保证下一段从刚到达的节点开始直线插值（连续无跳变）
+        _updateSegGeometry();
     }
 }
 
@@ -1193,7 +1224,7 @@ function drawMap(nodes, edges, position, visitedNodes, currentNode, targetNode, 
     if (position) {
         const [x, y, yaw] = position;
         const p = toCanvas(x, y);
-        const yawRad = ((90 - yaw) * Math.PI) / 180;
+        const yawRad = (-yaw * Math.PI) / 180;
 
         // 小车物理尺寸: 宽 115mm × 长 170mm, 按 scale 换算
         const carW = 115 * s;
@@ -1398,16 +1429,9 @@ window.addEventListener('resize', () => {
 
 // 小车拖拽
 function setupCarDrag() {
-    if (!canvas) canvas = document.getElementById('mapCanvas');
-    if (!canvas) return;
-
-    canvas.addEventListener('mousedown', onCarMouseDown);
-    canvas.addEventListener('mousemove', onCarMouseMove);
-    canvas.addEventListener('mouseup', onCarMouseUp);
-    canvas.addEventListener('mouseleave', onCarMouseUp);
-    canvas.addEventListener('touchstart', onCarTouchStart, { passive: false });
-    canvas.addEventListener('touchmove', onCarTouchMove, { passive: false });
-    canvas.addEventListener('touchend', onCarMouseUp);
+    // 拖拽已禁用：sim.pos 唯一写入者是前端模拟器 simTick。
+    // 拖拽定位会与 simTick 争抢同一位置变量，按需移除。
+    return;
 }
 
 function getCarRect() {
@@ -1423,7 +1447,7 @@ function getCarRect() {
         cx: tf.ox + sim.pos.x * tf.scale,
         cy: tf.oy + sim.pos.y * tf.scale,
         halfW, halfL,
-        yawRad: (90 - sim.pos.yaw) * Math.PI / 180,
+        yawRad: -sim.pos.yaw * Math.PI / 180,
     };
 }
 
@@ -1459,10 +1483,8 @@ function hitTestRotationHandle(mx, my) {
 }
 
 function updateCarYaw(mx, my) {
-    const r = getCarRect();
-    if (!r) return;
-    const canvasAngle = Math.atan2(my - r.cy, mx - r.cx) * 180 / Math.PI;
-    sim.pos.yaw = ((90 - canvasAngle + 540) % 360) - 180;
+    // 拖拽旋转已禁用，不再写 sim.pos.yaw（位置唯一写入者是 simTick）
+    return;
 }
 
 function canvasToWorld(mx, my) {
@@ -1502,19 +1524,9 @@ function onCarMouseMove(e) {
     const my = e.clientY - rect.top;
 
     if (carDragging) {
-        if (carDragMode === 'rotate') {
-            updateCarYaw(mx, my);
-            updateTelemetryFromSim();
-            renderMapFromSim();
-        } else {
-            const world = canvasToWorld(mx, my);
-            if (!world) return;
-            sim.pos.x = world.x;
-            sim.pos.y = world.y;
-            snapToNearestNode();
-            updateTelemetryFromSim();
-            renderMapFromSim();
-        }
+        // 拖拽已禁用，不再写 sim.pos
+        updateTelemetryFromSim();
+        renderMapFromSim();
         return;
     }
 
@@ -1570,38 +1582,21 @@ function onCarTouchMove(e) {
     const mx = e.touches[0].clientX - rect.left;
     const my = e.touches[0].clientY - rect.top;
     if (carDragMode === 'rotate') {
-        updateCarYaw(mx, my);
         updateTelemetryFromSim();
         renderMapFromSim();
     } else {
-        const world = canvasToWorld(mx, my);
-        if (!world) return;
-        sim.pos.x = world.x;
-        sim.pos.y = world.y;
-        snapToNearestNode();
         updateTelemetryFromSim();
         renderMapFromSim();
     }
 }
 
 function snapToNearestNode() {
-    let bestDist = Infinity;
-    let bestNode = null;
-    for (const [name, node] of Object.entries(gNodes)) {
-        const d = Math.hypot(sim.pos.x - node.x, sim.pos.y - node.y);
-        if (d < bestDist) {
-            bestDist = d;
-            bestNode = name;
-        }
-    }
-    if (bestNode && bestDist < 400) {  // 400mm 内自动吸附
-        sim.pos.x = gNodes[bestNode].x;
-        sim.pos.y = gNodes[bestNode].y;
-        sim.currentNode = bestNode;
-    }
+    // 拖拽吸附已禁用，不再写 sim.pos（位置唯一写入者是 simTick）
+    return;
 }
 
 </script>
 
+<script src="{{ url_for('static', filename='js/navigation2-legacy-adapter.js') }}"></script>
 </body>
 </html>

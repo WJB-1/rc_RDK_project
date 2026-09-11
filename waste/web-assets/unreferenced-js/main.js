@@ -35,6 +35,7 @@ let simInterval = null;
 let sim = {
     pos: { x: 0, y: 0, yaw: 0 },
     odom: 0,
+    edgeDist: 0,          // 当前边已走距离(mm)，用于沿边直线插值
     state: 'IDLE',
     currentNode: 'START',
     targetNode: null,
@@ -44,6 +45,10 @@ let sim = {
     trajectory: [],
     events: [],
     approachingUntil: 0,
+    scene: null,
+    showGroundTruth: false,
+    speedMultiplier: 1.0,
+    visibleRange: 400,
 };
 
 // 初始化
@@ -56,8 +61,9 @@ function initDashboard() {
     }
     updateStats();
 
-    // 启用小车拖拽
-    setupCarDrag();
+    // 小车位置由前端模拟器唯一维护；拖拽(另一个 sim.pos 写入者)已按需禁用。
+    // 如需恢复拖拽定位，取消下行注释即可，但拖拽期间会与 simTick 争抢位置。
+    // setupCarDrag();
 
     // 填充起始位置下拉框
     const startSelect = document.getElementById('simStartNode');

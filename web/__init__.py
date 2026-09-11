@@ -42,9 +42,16 @@ from .state_bridge import WebStateBridge
 
 # HTML 模板路径
 _WEB_DIR = Path(__file__).parent
+_VERSIONS_DIR = _WEB_DIR / "versions"
+_NAVIGATION_2_TEMPLATES = _VERSIONS_DIR / "navigation-2.0" / "templates"
+_LEGACY_DASHBOARD_TEMPLATES = _VERSIONS_DIR / "legacy-dashboard-1.0" / "templates"
+_LEGACY_SIMULATOR_TEMPLATES = _VERSIONS_DIR / "legacy-simulator-1.0" / "templates"
+_LEGACY_SIMULATOR_STATIC = _VERSIONS_DIR / "legacy-simulator-1.0" / "static"
 _TEMPLATES = _WEB_DIR / "templates"
 _PROD_HTML = _TEMPLATES / "dashboard_prod.html"   # 自包含单文件 (生产)
 _DEV_HTML = _TEMPLATES / "dashboard_dev.html"      # 引用外部 CSS/JS (开发)
+_PROD_HTML = _LEGACY_DASHBOARD_TEMPLATES / "dashboard_prod.html"
+_DEV_HTML = _LEGACY_DASHBOARD_TEMPLATES / "dashboard_dev.html"
 _DEBUG_FRONTEND = _WEB_DIR.parent.parent / "debug_frontend"
 
 
@@ -108,8 +115,9 @@ class WebPushServer:
             raise ImportError("缺少 Flask: pip install flask flask-sock") from e
 
         self.app = Flask(__name__,
-                         static_folder=str(_WEB_DIR / "static"),
-                         template_folder=str(_TEMPLATES))
+                         static_folder=str(_LEGACY_SIMULATOR_STATIC),
+                         static_url_path="/legacy-static",
+                         template_folder=str(_NAVIGATION_2_TEMPLATES))
         self.render_template_string = render_template_string
         self.jsonify = jsonify
         self.request = request
@@ -357,7 +365,7 @@ class WebPushServer:
             @self.app.route("/simulator")
             def simulator():
                 """独立模拟器页面（仅仿真/调试模式）"""
-                path = _TEMPLATES / "simulator.html"
+                path = _LEGACY_SIMULATOR_TEMPLATES / "simulator.html"
                 if path.exists():
                     return path.read_text(encoding='utf-8')
                 return "<h1>simulator.html not found</h1>"

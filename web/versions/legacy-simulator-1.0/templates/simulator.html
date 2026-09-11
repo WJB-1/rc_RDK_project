@@ -1,0 +1,782 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>仿真模拟器 - SimEngine</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #0a0a0a; color: #eee; font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif; height: 100vh; display: flex; flex-direction: column; }
+
+.header { height: 40px; background: #1a1a2e; border-bottom: 2px solid #16213e; display: flex; align-items: center; padding: 0 16px; font-size: 14px; font-weight: bold; gap: 12px; flex-shrink: 0; }
+.header a { color: #3498db; text-decoration: none; font-size: 12px; margin-left: auto; }
+
+.main { display: flex; flex: 1; overflow: hidden; min-height: 0; }
+.left { width: 360px; min-width: 360px; padding: 10px; display: flex; flex-direction: column; gap: 10px; border-right: 2px solid #16213e; overflow-y: auto; }
+.right { flex: 1; position: relative; min-width: 0; min-height: 0; display: flex; align-items: center; justify-content: center; background: #080808; }
+canvas { width: 100%; height: 100%; display: block; }
+
+.panel { background: #111; border: 1px solid #333; border-radius: 4px; padding: 12px; }
+.panel-title { font-size: 13px; color: #3498db; font-weight: bold; margin-bottom: 8px; }
+
+.btn { padding: 6px 12px; border: none; border-radius: 4px; font-size: 12px; font-weight: bold; cursor: pointer; color: #fff; }
+.btn:hover { opacity: 0.8; }
+.btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.btn-green  { background: #27ae60; }
+.btn-red    { background: #e74c3c; }
+.btn-blue   { background: #3498db; }
+.btn-orange { background: #e67e22; }
+.btn-gray   { background: #555; }
+.btn-rows { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 6px; }
+
+input[type="number"], input[type="range"] { background: #1a1a2e; color: #eee; border: 1px solid #1a4a8a; border-radius: 3px; padding: 4px 6px; font-size: 12px; }
+input[type="number"] { width: 100%; }
+input[type="range"] { width: 100%; margin-top: 4px; }
+label { font-size: 11px; color: #888; }
+
+.progress-bar { height: 6px; background: #1a1a2e; border-radius: 3px; margin-top: 4px; overflow: hidden; }
+.progress-fill { height: 100%; background: #27ae60; transition: width 0.1s; }
+
+table { width: 100%; font-size: 12px; border-collapse: collapse; margin-top: 4px; }
+td { padding: 3px 4px; }
+td.label { color: #888; width: 75px; }
+td.value { font-family: Consolas, monospace; color: #3498db; }
+
+.event-log { background: #050505; border: 1px solid #222; border-radius: 3px; padding: 6px; font-family: Consolas, monospace; font-size: 10px; line-height: 1.6; max-height: 160px; overflow-y: auto; margin-top: 4px; }
+.event-item { border-bottom: 1px solid #1a1a1a; padding: 1px 0; }
+.event-time { color: #666; margin-right: 6px; }
+.event-msg  { color: #bbb; }
+
+.status-badge { display: inline-block; padding: 2px 8px; border-radius: 3px; font-size: 11px; font-weight: bold; }
+.status-running { background: #27ae60; color: #fff; }
+.status-paused  { background: #e67e22; color: #fff; }
+.status-stopped { background: #555; color: #ccc; }
+.status-done    { background: #2980b9; color: #fff; }
+
+.seed-row { display: flex; gap: 6px; align-items: center; }
+.seed-row input { flex: 1; }
+
+.stat-row { display: flex; justify-content: space-between; align-items: center; margin-top: 6px; }
+.stat-label { font-size: 11px; color: #888; }
+.stat-value { font-size: 11px; color: #3498db; font-family: Consolas, monospace; }
+.stat-value.good { color: #27ae60; }
+
+.ws-indicator { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 4px; }
+.ws-connected { background: #27ae60; }
+.ws-disconnected { background: #e74c3c; }
+</style>
+</head>
+<body>
+
+<div class="header">
+    <span>仿真模拟器 - SimEngine</span>
+    <span style="font-size:11px;" id="statusLabel">
+        <span class="ws-indicator ws-disconnected" id="wsDot"></span>
+        <span id="statusText">就绪</span>
+    </span>
+    <span class="status-badge status-stopped" id="simBadge">未运行</span>
+    <a href="/">返回控制面板</a>
+</div>
+
+<div class="main">
+    <!-- ====== 左侧控制面板 ====== -->
+    <div class="left">
+
+        <!-- 控制面板 -->
+        <div class="panel">
+            <div class="panel-title">仿真控制</div>
+
+            <!-- Seed -->
+            <label>随机种子</label>
+            <div class="seed-row" style="margin-top:4px;">
+                <input type="number" id="simSeed" value="42" min="0" max="999999">
+                <button class="btn btn-gray" id="btnRandomSeed" style="flex-shrink:0;">随机</button>
+            </div>
+
+            <!-- 生成场景 & 启动 -->
+            <div class="btn-rows" style="margin-top:8px;">
+                <button class="btn btn-blue" id="btnGenScene">生成场景</button>
+                <button class="btn btn-green" id="btnStartSim" disabled>启动模拟</button>
+            </div>
+
+            <!-- 控制按钮 -->
+            <div class="btn-rows">
+                <button class="btn btn-red" id="btnStopSim" disabled>停止</button>
+                <button class="btn btn-orange" id="btnPauseSim" disabled>暂停</button>
+                <button class="btn btn-green" id="btnResumeSim" disabled>恢复</button>
+                <button class="btn btn-blue" id="btnStepSim" disabled>单步</button>
+            </div>
+
+            <!-- 速度 -->
+            <label>仿真速度</label>
+            <div style="display:flex;align-items:center;gap:8px;">
+                <span style="font-size:10px;color:#888;">0.1x</span>
+                <input type="range" id="speedSlider" min="0.1" max="10" step="0.1" value="1.0" style="flex:1;">
+                <span style="font-size:10px;color:#888;">10x</span>
+                <span id="speedVal" style="font-size:12px;color:#3498db;width:36px;text-align:right;">1.0x</span>
+            </div>
+
+            <!-- 视角切换 -->
+            <div style="margin-top:8px;">
+                <label style="color:#ccc;">视角</label>
+                <div style="display:flex;gap:6px;margin-top:4px;">
+                    <button class="btn btn-blue" id="btnViewGod" style="flex:1;">上帝视角</button>
+                    <button class="btn" id="btnViewCar" style="flex:1;">小车视角</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- 遥测面板 -->
+        <div class="panel">
+            <div class="panel-title">遥测数据</div>
+            <table>
+                <tr><td class="label">当前位置</td><td class="value" id="pos">--</td></tr>
+                <tr><td class="label">朝向</td><td class="value" id="yawVal">--</td></tr>
+                <tr><td class="label">累计里程</td><td class="value" id="odom">0 mm</td></tr>
+                <tr><td class="label">当前节点</td><td class="value" id="curNode">--</td></tr>
+                <tr><td class="label">目标节点</td><td class="value" id="tgtNode">--</td></tr>
+                <tr><td class="label">打卡进度</td><td class="value" id="mission">0/0</td></tr>
+                <tr><td class="label">当前状态</td><td class="value" id="agentState">--</td></tr>
+            </table>
+            <div class="progress-bar"><div class="progress-fill" id="progressBar" style="width:0%"></div></div>
+        </div>
+
+        <!-- 探索统计 -->
+        <div class="panel">
+            <div class="panel-title">发现统计</div>
+            <div class="stat-row">
+                <span class="stat-label">已发现障碍物</span>
+                <span class="stat-value" id="statObstacles">--</span>
+            </div>
+            <div class="stat-row">
+                <span class="stat-label">已发现涵洞</span>
+                <span class="stat-value good" id="statCulverts">--</span>
+            </div>
+            <div class="stat-row">
+                <span class="stat-label">已探索涵洞</span>
+                <span class="stat-value good" id="statReconCulverts">--</span>
+            </div>
+            <div class="stat-row">
+                <span class="stat-label">场景 Seed</span>
+                <span class="stat-value" id="statSeed">--</span>
+            </div>
+        </div>
+
+        <!-- 事件日志 -->
+        <div class="panel">
+            <div class="panel-title">事件日志</div>
+            <div class="event-log" id="eventLog">
+                <div style="color:#555;">等待仿真启动...</div>
+            </div>
+        </div>
+
+    </div>
+
+    <!-- ====== 右侧地图 ====== -->
+    <div class="right">
+        <canvas id="mapCanvas"></canvas>
+        <div id="hoverTooltip" style="display:none;position:absolute;pointer-events:none;background:rgba(20,20,30,0.95);border:1px solid #3498db;border-radius:4px;padding:6px 10px;font-size:12px;z-index:100;white-space:nowrap;"></div>
+        <div id="detailPanel" style="display:none;position:absolute;top:10px;right:10px;width:240px;background:rgba(20,20,30,0.95);border:1px solid #3498db;border-radius:4px;padding:12px;font-size:12px;z-index:99;max-height:80%;overflow-y:auto;">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+                <span style="font-weight:bold;color:#3498db;">详情</span>
+                <button id="btnCloseDetail" style="background:none;border:none;color:#888;cursor:pointer;font-size:16px;">×</button>
+            </div>
+            <div id="detailPanelBody"></div>
+        </div>
+    </div>
+</div>
+
+<script src="/legacy-static/js/map_renderer.js"></script>
+<script src="/legacy-static/js/map_interaction.js"></script>
+<script type="text/plain">
+// =============================================================
+// 保存原始 drawMap，后续包装加入地面真相覆盖层
+// =============================================================
+const _origDrawMap = drawMap;
+
+// =============================================================
+// 全局状态
+// =============================================================
+window.__MAP_DATA__ = window.__MAP_DATA__ || { lane_width_mm: 200, field_size_mm: [3200, 4400] };
+
+let gNodes = {};
+let gEdges = [];
+
+let sim = {
+    running: false,
+    paused: false,
+    seed: 42,
+    scene: null,
+    sceneEdges: [],          // [{edge_id, is_obstacle, is_culvert, obstacle_offset, culvert_offset}, ...]
+    discoveredObstacles: [],
+    discoveredCulverts: [],
+    reconCulverts: [],
+    // 遥测 (来自 WS)
+    agentState: '',
+    position: null,          // [x, y, yaw]
+    currentNode: '',
+    targetNode: '',
+    plannedPath: [],
+    visitedNodes: [],
+    trajectory: [],
+    progress: null,          // {visited, total}
+    events: [],
+};
+
+let ws = null;
+let wsReconnectTimer = null;
+let wsReconnectDelay = 1000;
+let _lastDrawEventLogLen = 0;
+
+// =============================================================
+// 初始化
+// =============================================================
+window.addEventListener('DOMContentLoaded', async () => {
+    // 加载地图数据
+    try {
+        const resp = await fetch('/snapshot');
+        const data = await resp.json();
+        if (data.map_data && data.map_data.nodes) {
+            gNodes = data.map_data.nodes;
+            gEdges = data.map_data.edges || [];
+        }
+    } catch (e) {
+        console.log('[Sim] /snapshot failed, trying inline data');
+    }
+    if (Object.keys(gNodes).length === 0) {
+        if (window.__MAP_DATA__ && window.__MAP_DATA__.nodes) {
+            gNodes = window.__MAP_DATA__.nodes;
+            gEdges = window.__MAP_DATA__.edges || [];
+        }
+    }
+
+    // 初始化地图
+    sim.position = null;
+    setTimeout(() => drawMap(), 100);
+    setTimeout(() => drawMap(), 300);  // 二次确保 canvas 尺寸正确
+
+    // 绑定事件
+    bindEvents();
+
+    // 初始化交互层（hover tooltip + 点击详情）
+    if (typeof initMapInteraction === 'function') {
+        initMapInteraction();
+    }
+
+    // 连接 WebSocket
+    connectWS();
+});
+
+// =============================================================
+// 事件绑定
+// =============================================================
+function bindEvents() {
+    document.getElementById('btnRandomSeed').addEventListener('click', () => {
+        document.getElementById('simSeed').value = Math.floor(Math.random() * 100000);
+    });
+
+    document.getElementById('btnGenScene').addEventListener('click', genScene);
+
+    document.getElementById('btnStartSim').addEventListener('click', startSim);
+    document.getElementById('btnStopSim').addEventListener('click', stopSim);
+    document.getElementById('btnPauseSim').addEventListener('click', pauseSim);
+    document.getElementById('btnResumeSim').addEventListener('click', resumeSim);
+    document.getElementById('btnStepSim').addEventListener('click', stepSim);
+
+    document.getElementById('speedSlider').addEventListener('input', function() {
+        document.getElementById('speedVal').textContent = this.value + 'x';
+    });
+
+    function setViewMode(mode) {
+        window.__simViewMode__ = mode;
+        window.__simShowGroundTruth__ = (mode === 'god');
+        const g = document.getElementById('btnViewGod');
+        const c = document.getElementById('btnViewCar');
+        if (g && c) {
+            g.className = 'btn ' + (mode === 'god' ? 'btn-blue' : '');
+            c.className = 'btn ' + (mode === 'car' ? 'btn-blue' : '');
+        }
+        drawMap();
+    }
+
+    document.getElementById('btnViewGod').addEventListener('click', function() { setViewMode('god'); });
+    document.getElementById('btnViewCar').addEventListener('click', function() { setViewMode('car'); });
+
+    // 关闭详情面板
+    const btnClose = document.getElementById('btnCloseDetail');
+    if (btnClose) {
+        btnClose.addEventListener('click', function() {
+            document.getElementById('detailPanel').style.display = 'none';
+            window.__selectedEntity__ = null;
+        });
+    }
+
+    // 默认上帝视角
+    setViewMode('god');
+}
+
+// =============================================================
+// WebSocket
+// =============================================================
+function connectWS() {
+    if (ws && ws.readyState === WebSocket.OPEN) return;
+
+    const url = 'ws://' + location.host + '/ws';
+    console.log('[Sim] WebSocket connecting:', url);
+    try {
+        ws = new WebSocket(url);
+    } catch (e) {
+        console.error('[Sim] WebSocket creation failed:', e);
+        scheduleReconnect();
+        return;
+    }
+
+    ws.onopen = function() {
+        console.log('[Sim] WebSocket connected');
+        document.getElementById('wsDot').className = 'ws-indicator ws-connected';
+        updateStatusText();
+        wsReconnectDelay = 1000;
+    };
+
+    ws.onmessage = function(event) {
+        try {
+            const data = JSON.parse(event.data);
+            handleWsMessage(data);
+        } catch (e) {
+            console.error('[Sim] WS parse error:', e);
+        }
+    };
+
+    ws.onclose = function() {
+        console.log('[Sim] WebSocket closed');
+        document.getElementById('wsDot').className = 'ws-indicator ws-disconnected';
+        updateStatusText();
+        scheduleReconnect();
+    };
+
+    ws.onerror = function(e) {
+        console.error('[Sim] WebSocket error:', e);
+    };
+}
+
+function scheduleReconnect() {
+    if (wsReconnectTimer) return;
+    wsReconnectTimer = setTimeout(() => {
+        wsReconnectTimer = null;
+        wsReconnectDelay = Math.min(wsReconnectDelay * 2, 10000);
+        console.log('[Sim] Reconnecting in', wsReconnectDelay, 'ms');
+        connectWS();
+    }, wsReconnectDelay);
+}
+
+// =============================================================
+// WebSocket 消息处理
+// =============================================================
+function handleWsMessage(data) {
+    // 更新 WS 地图数据
+    if (data.map_data) {
+        if (data.map_data.nodes && Object.keys(data.map_data.nodes).length > 0) {
+            gNodes = data.map_data.nodes;
+        }
+        if (data.map_data.edges) {
+            gEdges = data.map_data.edges;
+        }
+    }
+
+    // 更新遥测
+    if (data.position) {
+        sim.position = data.position;
+    }
+    if (data.agent_state !== undefined) {
+        sim.agentState = data.agent_state;
+    }
+    if (data.current_node !== undefined) {
+        sim.currentNode = data.current_node;
+    }
+    if (data.target_node !== undefined) {
+        sim.targetNode = data.target_node;
+    }
+    if (data.planned_path !== undefined) {
+        sim.plannedPath = data.planned_path;
+    }
+    if (data.visited_nodes !== undefined) {
+        sim.visitedNodes = data.visited_nodes;
+    }
+    if (data.trajectory !== undefined) {
+        sim.trajectory = data.trajectory;
+    }
+    if (data.progress !== undefined) {
+        sim.progress = data.progress;
+    }
+
+    // 更新事件
+    if (data.events && data.events.length > _lastDrawEventLogLen) {
+        const newEvents = data.events.slice(_lastDrawEventLogLen);
+        newEvents.forEach(e => addEventToLog(e));
+        _lastDrawEventLogLen = data.events.length;
+    }
+
+    // 更新仿真状态
+    if (data.sim) {
+        const wasRunning = sim.running;
+        sim.running = data.sim.running;
+        if (data.sim.seed !== undefined) sim.seed = data.sim.seed;
+
+        if (data.sim.scene) {
+            sim.scene = data.sim.scene;
+            // 从 scene 提取已发现信息
+            sim.discoveredObstacles = data.sim.scene.discovered_obstacles || [];
+            sim.discoveredCulverts = data.sim.scene.discovered_culverts || [];
+            sim.reconCulverts = data.sim.scene.recon_culverts || [];
+        }
+
+        updateSimUI();
+        updateDiscoveryStats();
+        // 重建地面真值覆盖层（否则 __simGroundTruthData__ 冻结在生成场景时的旧值，
+        // 详情面板「是否被发现/探索」永远不更新）
+        updateGroundTruthData();
+
+        // 仿真刚完成
+        if (wasRunning && !sim.running) {
+            addEventToLog({ time: now(), msg: '仿真完成' });
+        }
+    }
+
+    // 触发重绘
+    drawMap();
+    updateTelemetry();
+}
+
+// =============================================================
+// API 调用
+// =============================================================
+async function genScene() {
+    const seed = parseInt(document.getElementById('simSeed').value) || 42;
+    sim.seed = seed;
+
+    try {
+        const resp = await fetch('/api/sim/scene/generate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ seed: seed }),
+        });
+        const data = await resp.json();
+        if (!data.ok) {
+            alert('场景生成失败: ' + (data.error || '未知错误'));
+            return;
+        }
+
+        // 保存场景数据
+        sim.scene = data.scene;
+        sim.sceneEdges = data.scene_edges || [];
+        sim.discoveredObstacles = [];
+        sim.discoveredCulverts = [];
+        sim.reconCulverts = [];
+        sim.running = false;
+        sim.paused = false;
+
+        // 更新地面真相覆盖层
+        updateGroundTruthData();
+
+        // 更新 UI
+        document.getElementById('btnStartSim').disabled = false;
+        document.getElementById('statSeed').textContent = seed;
+        updateDiscoveryStats();
+        addEventToLog({ time: now(), msg: '场景已生成 (seed=' + seed + ')' });
+        updateSimUI();
+        drawMap();
+
+        console.log('[Sim] Scene generated, seed=' + seed,
+            'obstacles:', sim.scene.obstacle_edge_ids,
+            'culverts:', sim.scene.culvert_edge_ids);
+    } catch (e) {
+        alert('场景生成失败: ' + e.message);
+    }
+}
+
+async function startSim() {
+    if (!sim.scene) {
+        alert('请先生成场景');
+        return;
+    }
+
+    const seed = sim.seed;
+    const speedMultiplier = parseFloat(document.getElementById('speedSlider').value) || 1.0;
+
+    _lastDrawEventLogLen = 0;
+    document.getElementById('eventLog').innerHTML = '';
+
+    try {
+        const resp = await fetch('/api/sim/start', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                seed: seed,
+                speed_multiplier: speedMultiplier,
+            }),
+        });
+        const data = await resp.json();
+        if (!data.ok) {
+            alert('仿真启动失败: ' + (data.error || '未知错误'));
+            return;
+        }
+
+        sim.running = true;
+        sim.paused = false;
+        if (data.scene) {
+            sim.scene = data.scene;
+            updateGroundTruthData();
+        }
+
+        updateSimUI();
+        updateDiscoveryStats();
+        addEventToLog({ time: now(), msg: '仿真已启动 (seed=' + seed + ', speed=' + speedMultiplier + 'x)' });
+        console.log('[Sim] Started, seed=' + seed);
+    } catch (e) {
+        alert('仿真启动失败: ' + e.message);
+    }
+}
+
+async function stopSim() {
+    try {
+        await fetch('/api/sim/stop', { method: 'POST' });
+        sim.running = false;
+        sim.paused = false;
+        updateSimUI();
+        addEventToLog({ time: now(), msg: '仿真已停止' });
+    } catch (e) {
+        console.error('[Sim] Stop failed:', e);
+    }
+}
+
+async function pauseSim() {
+    try {
+        await fetch('/api/sim/pause', { method: 'POST' });
+        sim.paused = true;
+        updateSimUI();
+        addEventToLog({ time: now(), msg: '仿真已暂停' });
+    } catch (e) {
+        console.error('[Sim] Pause failed:', e);
+    }
+}
+
+async function resumeSim() {
+    try {
+        await fetch('/api/sim/resume', { method: 'POST' });
+        sim.paused = false;
+        updateSimUI();
+        addEventToLog({ time: now(), msg: '仿真已恢复' });
+    } catch (e) {
+        console.error('[Sim] Resume failed:', e);
+    }
+}
+
+async function stepSim() {
+    try {
+        const resp = await fetch('/api/sim/step', { method: 'POST' });
+        const data = await resp.json();
+        if (data.ok) {
+            if (!data.has_next) {
+                sim.running = false;
+                addEventToLog({ time: now(), msg: '仿真执行完毕' });
+            }
+            updateSimUI();
+            if (data.snapshot) {
+                // 应用快照数据
+                const snap = data.snapshot;
+                if (snap.pose) {
+                    sim.position = [snap.pose.x_mm, snap.pose.y_mm, snap.pose.yaw_deg];
+                }
+                if (snap.current_node) sim.currentNode = snap.current_node;
+                if (snap.target_node) sim.targetNode = snap.target_node;
+                if (snap.planned_path) sim.plannedPath = snap.planned_path;
+                if (snap.visited_nodes) sim.visitedNodes = snap.visited_nodes;
+                if (snap.mission_progress) sim.progress = snap.mission_progress;
+                updateTelemetry();
+                drawMap();
+            }
+        }
+    } catch (e) {
+        console.error('[Sim] Step failed:', e);
+    }
+}
+
+// =============================================================
+// 地面真相数据
+// =============================================================
+function updateGroundTruthData() {
+    if (!sim.scene) {
+        window.__simGroundTruthData__ = null;
+        return;
+    }
+
+    const allObs = sim.scene.obstacle_edge_ids || [];
+    const allCul = sim.scene.culvert_edge_ids || [];
+    const discoveredObs = sim.discoveredObstacles;
+    const discoveredCul = sim.discoveredCulverts;
+
+    // 构建 edge_id → offset 查找表
+    const obsOffsets = {};
+    const culOffsets = {};
+    if (sim.sceneEdges) {
+        sim.sceneEdges.forEach(function(se) {
+            if (se.is_obstacle && se.obstacle_offset != null) {
+                obsOffsets[se.edge_id] = se.obstacle_offset;
+            }
+            if (se.is_culvert && se.culvert_offset != null) {
+                culOffsets[se.edge_id] = se.culvert_offset;
+            }
+        });
+    }
+
+    // 用对象数组传递 offset 信息，map_renderer.js 据此精确定位绘制
+    window.__simGroundTruthData__ = {
+        hidden_obstacles: allObs.filter(function(id) { return discoveredObs.indexOf(id) === -1; })
+            .map(function(id) { return { edge_id: id, offset_mm: obsOffsets[id] || 400 }; }),
+        hidden_culverts: allCul.filter(function(id) { return discoveredCul.indexOf(id) === -1; })
+            .map(function(id) { return { edge_id: id, offset_mm: culOffsets[id] || 400 }; }),
+        found_obstacles: allObs.filter(function(id) { return discoveredObs.indexOf(id) !== -1; })
+            .map(function(id) { return { edge_id: id, offset_mm: obsOffsets[id] || 400 }; }),
+        found_culverts: allCul.filter(function(id) { return discoveredCul.indexOf(id) !== -1; })
+            .map(function(id) { return { edge_id: id, offset_mm: culOffsets[id] || 400 }; }),
+        recon_culverts: sim.reconCulverts || [],
+    };
+}
+
+// =============================================================
+// drawMap 包装 — 委托给 map_renderer.js，地面真相通过全局变量
+// =============================================================
+drawMap = function() {
+    _origDrawMap(
+        gNodes, gEdges,
+        sim.position,
+        sim.visitedNodes,
+        sim.currentNode,
+        sim.targetNode,
+        sim.plannedPath,
+        sim.trajectory
+    );
+};
+
+// =============================================================
+// UI 更新
+// =============================================================
+function updateTelemetry() {
+    if (sim.position) {
+        const [x, y, yaw] = sim.position;
+        document.getElementById('pos').textContent = x.toFixed(0) + ', ' + y.toFixed(0);
+        document.getElementById('yawVal').textContent = (yaw || 0).toFixed(1) + '°';
+    }
+    if (sim.currentNode) {
+        document.getElementById('curNode').textContent = sim.currentNode;
+    }
+    if (sim.targetNode) {
+        document.getElementById('tgtNode').textContent = sim.targetNode;
+    }
+    if (sim.progress) {
+        const v = sim.progress.visited || 0;
+        const t = sim.progress.total || 12;
+        document.getElementById('mission').textContent = v + '/' + t;
+        document.getElementById('progressBar').style.width = t > 0 ? (v / t * 100) + '%' : '0%';
+    }
+    if (sim.agentState) {
+        document.getElementById('agentState').textContent = sim.agentState;
+    }
+}
+
+function updateDiscoveryStats() {
+    if (!sim.scene) {
+        document.getElementById('statObstacles').textContent = '--';
+        document.getElementById('statCulverts').textContent = '--';
+        document.getElementById('statReconCulverts').textContent = '--';
+        return;
+    }
+    const discoveredObs = sim.discoveredObstacles.length;
+    const totalObs = (sim.scene.obstacle_edge_ids || []).length;
+    document.getElementById('statObstacles').textContent = discoveredObs + '/' + totalObs;
+
+    const discoveredCul = sim.discoveredCulverts.length;
+    const totalCul = (sim.scene.culvert_edge_ids || []).length;
+    document.getElementById('statCulverts').textContent = discoveredCul + '/' + totalCul;
+
+    const reconCul = (sim.reconCulverts || []).length;
+    document.getElementById('statReconCulverts').textContent = reconCul + '/' + totalCul;
+}
+
+function updateSimUI() {
+    const running = sim.running;
+    const paused = sim.paused;
+    const hasScene = sim.scene !== null;
+
+    document.getElementById('btnGenScene').disabled = running;
+    document.getElementById('btnStartSim').disabled = running || !hasScene;
+    document.getElementById('btnStopSim').disabled = !running;
+    document.getElementById('btnPauseSim').disabled = !running || paused;
+    document.getElementById('btnResumeSim').disabled = !running || !paused;
+    document.getElementById('btnStepSim').disabled = running && !paused;
+
+    // 状态标识
+    const badge = document.getElementById('simBadge');
+    if (!running && !hasScene) {
+        badge.textContent = '未就绪';
+        badge.className = 'status-badge status-stopped';
+    } else if (!running) {
+        badge.textContent = '场景就绪';
+        badge.className = 'status-badge status-stopped';
+    } else if (paused) {
+        badge.textContent = '已暂停';
+        badge.className = 'status-badge status-paused';
+    } else {
+        badge.textContent = '运行中';
+        badge.className = 'status-badge status-running';
+    }
+
+    // 速度值
+    document.getElementById('speedVal').textContent = document.getElementById('speedSlider').value + 'x';
+}
+
+function updateStatusText() {
+    const connected = ws && ws.readyState === WebSocket.OPEN;
+    document.getElementById('statusText').textContent = connected ? '已连接' : '断开连接';
+}
+
+function addEventToLog(e) {
+    const el = document.getElementById('eventLog');
+    // 移除占位文字
+    if (el.children.length === 1 && el.children[0].textContent.includes('等待仿真启动')) {
+        el.innerHTML = '';
+    }
+    const item = document.createElement('div');
+    item.className = 'event-item';
+    const timeStr = typeof e === 'object' ? (e.timestamp ? formatTimestamp(e.timestamp) : (e.time || '')) : '';
+    const msgStr = typeof e === 'object' ? (e.msg || JSON.stringify(e)) : e;
+    item.innerHTML = '<span class="event-time">' + timeStr + '</span><span class="event-msg">' + msgStr + '</span>';
+    el.prepend(item);
+    while (el.children.length > 100) { el.removeChild(el.lastChild); }
+}
+
+function formatTimestamp(ts) {
+    const d = new Date(ts);
+    return d.getHours().toString().padStart(2, '0') + ':' +
+           d.getMinutes().toString().padStart(2, '0') + ':' +
+           d.getSeconds().toString().padStart(2, '0') + '.' +
+           d.getMilliseconds().toString().padStart(3, '0');
+}
+
+function now() {
+    const d = new Date();
+    return d.getHours().toString().padStart(2, '0') + ':' +
+           d.getMinutes().toString().padStart(2, '0') + ':' +
+           d.getSeconds().toString().padStart(2, '0');
+}
+
+// =============================================================
+// 窗口尺寸变化时重绘
+// =============================================================
+window.addEventListener('resize', () => {
+    drawMap();
+});
+</script>
+<script src="/legacy-static/js/simulator-page.js"></script>
+</body>
+</html>

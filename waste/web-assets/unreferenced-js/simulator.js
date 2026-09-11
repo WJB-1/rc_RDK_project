@@ -83,6 +83,16 @@ function _loadEdge(index) {
     sim.state = 'EDGE_EXECUTING';
     sim.edgeOdomStart = sim.odom;
 
+    // 沿边直线插值：记录边的几何起点/终点/长度，位置由 edgeDist 精确决定
+    const fn = gNodes[task.from_node];
+    const tn = gNodes[task.to_node];
+    if (fn && tn) {
+        sim.edgeFrom = { x: fn.x, y: fn.y };
+        sim.edgeTo = { x: tn.x, y: tn.y };
+        sim.edgeLen = Math.hypot(tn.x - fn.x, tn.y - fn.y) || task.distance_mm || 1;
+    }
+    sim.edgeDist = 0;  // 进入新边，已走距离清零
+
     // 隧道减速
     _simCurrentEdgeSpeed = task.is_tunnel ? 150 : 300;
     addSimEvent('edge_start',
@@ -127,38 +137,55 @@ function updateSimButton() {
 function simTick() {
     if (!simRunning || !sim.targetNode || !gNodes[sim.targetNode]) return;
 
-    const tgt = gNodes[sim.targetNode];
     const dt = 0.05;
     const step = _simCurrentEdgeSpeed * dt;
 
-    const dx = tgt.x - sim.pos.x;
-    const dy = tgt.y - sim.pos.y;
-    const dist = Math.hypot(dx, dy);
+    // 沿当前边直线插值：位置由 edgeDist / edgeLen 精确决定，车始终贴边、不漂移
+    if (sim.edgeFrom && sim.edgeTo) {
+        sim.edgeDist += step;  // 已走距离单调递增
 
-    if (dist < 5) {
-        sim.pos.x = tgt.x;
-        sim.pos.y = tgt.y;
-        _handleNodeArrival();
-        updateTelemetryFromSim();
-        renderMapFromSim();
-        return;
-    }
+        const fn = sim.edgeFrom, tn = sim.edgeTo;
+        const len = sim.edgeLen;
+        const ratio = Math.min(1.0, sim.edgeDist / len);
 
-    // 移动：先横后纵（模拟车道直角转弯）
-    const ax = Math.abs(dx), ay = Math.abs(dy);
-    let moveX = 0, moveY = 0;
-    if (ax > ay) {
-        moveX = Math.sign(dx) * Math.min(step, ax);
-        sim.pos.yaw = dx > 0 ? 90 : -90;
+        sim.pos.x = fn.x + (tn.x - fn.x) * ratio;
+        sim.pos.y = fn.y + (tn.y - fn.y) * ratio;
+
+        // yaw 对齐边方向（沿边前进方向）
+        const dx = tn.x - fn.x, dy = tn.y - fn.y;
+        sim.pos.yaw = (Math.atan2(dx, dy) * 180) / Math.PI;
+
+        // 已走满整条边 → 吸附到精确端点，进入节点处理
+        if (ratio >= 1.0) {
+            sim.pos.x = tn.x;
+            sim.pos.y = tn.y;
+            sim.edgeDist = len;
+            _handleNodeArrival();
+            updateTelemetryFromSim();
+            renderMapFromSim();
+            return;
+        }
     } else {
-        moveY = Math.sign(dy) * Math.min(step, ay);
-        sim.pos.yaw = dy > 0 ? 0 : 180;
+        // 无边几何信息时退化：朝目标节点直线推进（保证不静止）
+        const tgt = gNodes[sim.targetNode];
+        const dx = tgt.x - sim.pos.x;
+        const dy = tgt.y - sim.pos.y;
+        const dist = Math.hypot(dx, dy);
+        if (dist < 5) {
+            sim.pos.x = tgt.x;
+            sim.pos.y = tgt.y;
+            _handleNodeArrival();
+            updateTelemetryFromSim();
+            renderMapFromSim();
+            return;
+        }
+        sim.pos.x += (dx / dist) * step;
+        sim.pos.y += (dy / dist) * step;
     }
-    sim.pos.x += moveX;
-    sim.pos.y += moveY;
-    sim.odom += Math.abs(moveX) + Math.abs(moveY);
 
-    if (!checkBoundary(sim.pos, true)) {
+    sim.odom += step;
+
+    if (typeof checkBoundary === 'function' && !checkBoundary(sim.pos, true)) {
         stopSimulation();
         addSimEvent('error', '小车超出场地边界，模拟已停止');
         logCmd('错误: 小车超出场地边界，模拟已停止', 'error');

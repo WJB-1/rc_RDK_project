@@ -2,6 +2,7 @@
 
 import json
 import time
+from pathlib import Path
 from typing import Any
 
 from flask import Flask, jsonify, render_template, request
@@ -9,12 +10,20 @@ from flask import Flask, jsonify, render_template, request
 from .commands import CommandDispatcher
 from .state_bridge import WebStateBridge
 
+_WEB_DIR = Path(__file__).parent
+_NAVIGATION_2_TEMPLATE_DIR = _WEB_DIR / "versions" / "navigation-2.0" / "templates"
+_NAVIGATION_2_STATIC_DIR = _WEB_DIR / "versions" / "navigation-2.0" / "static"
+
 
 def create_app(runner: Any) -> Flask:
     """创建绑定指定仿真 Runner 的无全局状态 Flask 应用。"""
     bridge = WebStateBridge(runner)
     dispatcher = CommandDispatcher(runner)
-    app = Flask(__name__, static_folder="static", template_folder="templates")
+    app = Flask(
+        __name__,
+        static_folder=str(_NAVIGATION_2_STATIC_DIR),
+        template_folder=str(_NAVIGATION_2_TEMPLATE_DIR),
+    )
 
     @app.get("/")
     def index():
@@ -45,4 +54,3 @@ def create_app(runner: Any) -> Flask:
     except ImportError:
         pass
     return app
-

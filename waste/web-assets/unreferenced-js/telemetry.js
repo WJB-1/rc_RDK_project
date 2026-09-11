@@ -48,6 +48,22 @@ function updateTelemetryFromSim() {
         target_node: sim.targetNode,
     });
     updateEventLog(sim.events);
+    // 涵洞/障碍物发现进度
+    if (sim.scene) {
+        const culvertEl = document.getElementById('culvertProgress');
+        const obstacleEl = document.getElementById('obstacleProgress');
+        if (culvertEl) {
+            const found = (sim.scene.discovered_culverts || []).length;
+            const total = (sim.scene.culvert_edge_ids || []).length;
+            culvertEl.textContent = '涵洞: ' + found + '/' + total;
+            culvertEl.className = found >= total ? 'completed' : '';
+        }
+        if (obstacleEl) {
+            const found = (sim.scene.discovered_obstacles || []).length;
+            const total = (sim.scene.obstacle_edge_ids || []).length;
+            obstacleEl.textContent = '障碍: ' + found + '/' + total;
+        }
+    }
 }
 
 // 路径显示

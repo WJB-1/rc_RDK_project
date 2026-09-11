@@ -1,0 +1,13 @@
+﻿<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>RoboCup Navigation 2.0</title><link rel="stylesheet" href="{{ url_for('static', filename='css/dashboard.css') }}"></head>
+<body>
+<header class="topbar"><strong>RoboCup Rescue Brain</strong><span id="connection">绂荤嚎</span><span id="clock">--</span></header>
+<main class="layout"><span class="sr-only">RuntimeMap</span>
+<section class="panel navigation-panel" id="navigation-panel"><h2>瀵艰埅鐘舵€?/h2><div class="state-card"><span>涓荤姸鎬?/span><b id="nav-state">--</b></div><div class="state-card"><span>褰撳墠鍔ㄤ綔</span><b id="current-action">--</b></div><div class="state-card"><span>鎵ц璇锋眰</span><b id="current-request">--</b></div><div class="state-card"><span>浠诲姟杩涘害</span><b id="task-progress">--</b></div><div class="state-card"><span>鍦板浘鐗堟湰</span><b id="map-version">--</b></div><h3>褰撳墠璺嚎</h3><ol id="route-list" class="route-list"><li>绛夊緟瑙勫垝</li></ol></section>
+<section class="panel map-panel" id="map-panel"><div class="panel-heading"><h2>璧涢亾鍦板浘</h2><label><input id="truth-toggle" type="checkbox"> 鏄剧ず浠跨湡鐪熷€?/label></div><svg id="map" viewBox="0 0 1000 700" role="img" aria-label="璧涢亾鎷撴墤"></svg><div class="legend"><span><i class="unknown"></i>鏈煡</span><span><i class="clear"></i>鐣呴€?/span><span><i class="blocked"></i>闃诲</span><span><i class="culvert"></i>娑垫礊</span><span><i class="truth"></i>鐪熷€?/span></div></section>
+<section class="panel timeline-panel" id="timeline-panel"><div class="panel-heading"><h2>鎺у埗涓庝簨浠?/h2><span id="runner-state">鏈惎鍔?/span></div><div class="controls" id="simulation-controls"><button data-command="START">鍚姩</button><button data-command="PAUSE">鏆傚仠</button><button data-command="RESUME">缁х画</button><button data-command="STEP">鍗曟</button><button data-command="STOP" class="danger">鍋滄</button><button data-command="RESET">閲嶇疆</button></div><div class="timeline" id="timeline"><p class="muted">鏆傛棤浜嬩欢</p></div><h3>璇婃柇</h3><pre id="diagnostics" class="diagnostics">--</pre></section>
+</main>
+<script src="{{ url_for('static', filename='js/map-view-fixed.js') }}"></script><script src="{{ url_for('static', filename='js/timeline.js') }}"></script><script src="{{ url_for('static', filename='js/controls.js') }}"></script><script src="{{ url_for('static', filename='js/websocket.js') }}"></script><script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body></html>
+
