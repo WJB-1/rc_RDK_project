@@ -8,6 +8,7 @@ from navigation.contracts import (
     ChoreographyStageKind,
     ChoreographyStartResult,
     ChoreographyStartStatus,
+    TurnDirection,
 )
 
 
@@ -21,11 +22,41 @@ class DepartureChoreographyFactory:
         self._choreographer = choreographer
 
     def start_departure(self):
-        """生成 START 到 J_START 后固定右转并观察的剧本。"""
-        return self._build("J_START->N12", "departure:right", include_bridge=True)
+        """固定出发：右转、直行160mm、左转、打卡N1。"""
+        right_traversal_id = "J_START->N1"
+        left_traversal_id = "N1->T1_R"
+        stages = (
+            self._choreographer._stage(
+                0, "right", ChoreographyStageKind.TURN_AT_JUNCTION,
+                right_traversal_id, "J_START", requested_turn_direction=TurnDirection.RIGHT,
+            ),
+            self._choreographer._stage(
+                1, "forward160", ChoreographyStageKind.DRIVE_TO_TURN_WINDOW,
+                right_traversal_id, None,
+            ),
+            self._choreographer._stage(
+                2, "left", ChoreographyStageKind.TURN_AT_JUNCTION,
+                left_traversal_id, "N1", requested_turn_direction=TurnDirection.LEFT,
+            ),
+            self._choreographer._stage(
+                3, "check_n1", ChoreographyStageKind.EXECUTE_TASK,
+                left_traversal_id, "N1", task_id="check-in-N1",
+            ),
+        )
+        choreography_id = self._choreographer._choreography_id(
+            "departure:fixed", tuple(stage.stage_id for stage in stages)
+        )
+        return ChoreographyStartResult(
+            ChoreographyStartStatus.STARTED,
+            ChoreographyPlan(
+                choreography_id, "departure:fixed", ChoreographySourceKind.DEPARTURE,
+                0, (right_traversal_id, left_traversal_id), stages,
+            ),
+            ChoreographyProgress(choreography_id, 0),
+        )
 
     def start_left_turn(self):
-        """生成撤回右转后左转并观察的剧本。"""
+        """生成兼容旧调用方的左转替代剧本。"""
         return self._build("J_START->N1", "departure:left", include_bridge=False)
 
     def _build(self, first_traversal_id, source_id, include_bridge):

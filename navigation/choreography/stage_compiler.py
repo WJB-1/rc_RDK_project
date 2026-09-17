@@ -5,6 +5,7 @@ from navigation.contracts import (
     Action,
     AdvanceOnTraversalEffect,
     AlignToTraversalEffect,
+    TailAnchorAtNodeEffect,
     ArriveAtNodeEffect,
     AwaitObservationEffect,
     ChoreographyAdvanceResult,
@@ -13,6 +14,7 @@ from navigation.contracts import (
     ChoreographyRejectionCode,
     ChoreographyStageKind,
     CompleteTaskEffect,
+    CorrectPoseCommand,
     DriveDistanceCommand,
     DrivePurpose,
     ExecuteTaskCommand,
@@ -63,6 +65,10 @@ class StageCompiler:
             return self._ready_observation(plan, progress, stage)
         if stage.kind is ChoreographyStageKind.DRIVE_TO_OBSERVATION_ZONE:
             return self._ready_observation_zone_drive(plan, progress, stage)
+        if stage.kind is ChoreographyStageKind.DRIVE_TO_TURN_WINDOW:
+            return self._ready_turn_window_drive(plan, progress, stage)
+        if stage.kind in (ChoreographyStageKind.CORRECT_AT_JUNCTION, ChoreographyStageKind.CORRECT_AT_OBSERVATION_ZONE):
+            return self._ready_correction(plan, progress, stage)
         if stage.kind is ChoreographyStageKind.DRIVE_TO_NEXT_CENTER:
             return self._ready_next_center_drive(plan, progress, stage)
         if stage.kind is ChoreographyStageKind.REVERSE_TO_SAFE_JUNCTION:
@@ -121,17 +127,21 @@ class StageCompiler:
             to_node_id,
             self._choreographer._state_query.robot_state().heading_deg,
         )
-        if abs(heading_difference) < 0.000001:
+        if stage.requested_turn_direction is not None:
+            direction = stage.requested_turn_direction
+        elif abs(heading_difference) < 0.000001:
             # 已对齐时直接递归编译下一阶段，不生成“直行转弯”伪动作。
             return self.compile_next(
                 plan, ChoreographyProgress(plan.choreography_id, progress.stage_index + 1)
             )
-        if abs(abs(heading_difference) - 180.0) < 0.000001:
+        if stage.requested_turn_direction is None and abs(abs(heading_difference) - 180.0) < 0.000001:
             return self._choreographer._rejected(
                 ChoreographyRejectionCode.FORBIDDEN_UTURN,
                 "目标巡航要求绝对禁止的一百八十度原地掉头",
             )
-        if abs(heading_difference - 90.0) < 0.000001:
+        if stage.requested_turn_direction is not None:
+            pass
+        elif abs(heading_difference - 90.0) < 0.000001:
             direction = TurnDirection.LEFT
         elif abs(heading_difference + 90.0) < 0.000001:
             direction = TurnDirection.RIGHT
@@ -148,7 +158,11 @@ class StageCompiler:
                 forward_trajectory_id="turn:{}:forward".format(direction.value),
                 retrace_trajectory_id="turn:{}:retrace".format(direction.value),
             ),
-            AlignToTraversalEffect(stage.traversal_id),
+            TailAnchorAtNodeEffect(
+                stage.node_id or from_node_id,
+                stage.traversal_id,
+                self._choreographer._profile.tail_anchor_offset_mm,
+            ),
         )
         return self._choreographer._ready(action, plan, progress.stage_index + 1)
 
@@ -189,9 +203,14 @@ class StageCompiler:
                 ChoreographyRejectionCode.MISSING_RETRACE_SOURCE,
                 "同轨迹撤回阶段缺少已完成前向转弯动作标识",
             )
+        if stage.retrace_trajectory_id is None:
+            return self._choreographer._rejected(
+                ChoreographyRejectionCode.MISSING_RETRACE_SOURCE,
+                "同轨迹撤回阶段缺少已标定反向轨迹",
+            )
         action = Action(
             self._choreographer._action_id(plan, progress.stage_index),
-            RetraceTurnCommand(stage.source_action_id),
+            RetraceTurnCommand(stage.source_action_id, stage.retrace_trajectory_id),
             RetraceTurnEffect(stage.source_action_id),
         )
         return self._choreographer._ready(action, plan, progress.stage_index + 1)
@@ -215,6 +234,14 @@ class StageCompiler:
         )
         return self._choreographer._ready(action, plan, progress.stage_index + 1)
 
+    def _ready_correction(self, plan, progress, stage):
+        action = Action(
+            self._choreographer._action_id(plan, progress.stage_index),
+            CorrectPoseCommand(),
+            AwaitObservationEffect(),
+        )
+        return self._choreographer._ready(action, plan, progress.stage_index + 1)
+
     def _ready_observation_zone_drive(self, plan, progress, stage):
         """生成普通长边驶入观察区的固定距离前进动作。"""
 
@@ -222,18 +249,66 @@ class StageCompiler:
             return self._choreographer._rejected(
                 ChoreographyRejectionCode.INVALID_PROGRESS, "观察区前进阶段缺少巡航标识"
             )
+        distance_mm = self._remaining_distance(stage.traversal_id)
+        distance_mm -= self._choreographer._profile.observation_zone_from_endpoint_mm
+        if distance_mm < 0.0:
+            distance_mm = 0.0
         action = Action(
             self._choreographer._action_id(plan, progress.stage_index),
             DriveDistanceCommand(
                 stage.traversal_id,
-                self._choreographer._profile.initial_observation_advance_mm,
+                distance_mm,
                 DrivePurpose.TO_OBSERVATION_ZONE,
             ),
             AdvanceOnTraversalEffect(
-                stage.traversal_id, self._choreographer._profile.initial_observation_advance_mm
+                stage.traversal_id, distance_mm
             ),
         )
         return self._choreographer._ready(action, plan, progress.stage_index + 1)
+
+    def _ready_turn_window_drive(self, plan, progress, stage):
+        """生成驶向目标路口端点前 35mm 转弯窗口的前进动作。"""
+
+        if stage.traversal_id is None:
+            return self._choreographer._rejected(
+                ChoreographyRejectionCode.INVALID_PROGRESS, "提前转弯阶段缺少巡航标识"
+            )
+        if self._choreographer._state_query.is_traversal_blocked(stage.traversal_id):
+            return self._choreographer._rejected(
+                ChoreographyRejectionCode.STALE_BLOCKED_TRAVERSAL, "目标巡航边已被运行时地图封锁"
+            )
+        if stage.node_id is None:
+            distance_mm = self._choreographer._profile.departure_forward_mm
+        else:
+            distance_mm = self._remaining_distance(stage.traversal_id)
+            distance_mm -= self._choreographer._profile.junction_turn_advance_mm
+        if distance_mm < 0.0:
+            distance_mm = 0.0
+        next_stage_is_task = (
+            progress.stage_index + 1 < len(plan.stages) and
+            plan.stages[progress.stage_index + 1].kind is ChoreographyStageKind.EXECUTE_TASK
+        )
+        if next_stage_is_task and stage.node_id is not None:
+            # 任务系统接手端点前窗口内的相对偏移；导航在此交接为目标路口。
+            effect = ArriveAtNodeEffect(stage.node_id, stage.traversal_id)
+        else:
+            effect = AdvanceOnTraversalEffect(stage.traversal_id, distance_mm)
+        action = Action(
+            self._choreographer._action_id(plan, progress.stage_index),
+            DriveDistanceCommand(stage.traversal_id, distance_mm, DrivePurpose.TO_TURN_WINDOW),
+            effect,
+        )
+        return self._choreographer._ready(action, plan, progress.stage_index + 1)
+
+    def _remaining_distance(self, traversal_id):
+        from_node_id, to_node_id = self._choreographer._split_traversal_id(traversal_id)
+        cruise_edge = self._choreographer._topology.get_cruise_edge(from_node_id, to_node_id)
+        location = self._choreographer._state_query.robot_state().location
+        if isinstance(location, OnCruiseEdge) and location.traversal_id == traversal_id:
+            return max(0.0, cruise_edge.length_mm - location.progress_mm)
+        if isinstance(location, AtNode) and location.node_id == from_node_id:
+            return max(0.0, cruise_edge.length_mm - location.tail_anchor_offset_mm)
+        return cruise_edge.length_mm
 
     def _ready_next_center_drive(self, plan, progress, stage):
         """按当前校正位置生成驶入下一路口中心的剩余前进动作。"""
