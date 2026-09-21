@@ -270,6 +270,21 @@ lane_detection:
     pixel_per_mm: 0.5
     blind_spot_mm: 90.0
 
+  # ---- 地面 IPM / 偏航与横向偏移：独立标定参数 ----
+  ground_camera:
+    img_w: 1920
+    img_h: 1080
+    focal_length_mm: 2.8
+    pixel_size_mm: 0.003
+    fx_px: 1148.5534828996256
+    fy_px: 1148.5534828996256
+    cx_px: 947.8505552892422
+    cy_px: 567.5025328444085
+    camera_height_mm: 158.17124739512468
+    pitch_deg: 37.15759309700342
+    roll_deg: 0.0
+    yaw_deg: 0.0
+
   # ---- 模型输入尺寸 ----
   input_size: [512, 384]
 
