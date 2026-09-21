@@ -35,7 +35,7 @@
 - [x] **Step 2: Run** `D:\anaconda\python.exe -m unittest test.perception.test_pipelines test.perception.test_facade` and confirm the missing adapter failure.
 - [x] **Step 3: Implement** `VisionPipeline` with `FrameAnalysis`, `LaneMeasurement`, `VALID`, and non-valid sample conversion.
 - [x] **Step 4: Re-run** the two Perception test modules and confirm success.
-- [ ] **Step 5: Commit** the adapter and its tests with `fix(perception): restore lane facade adapter`.
+- [x] **Step 5: Commit** the adapter and its tests with `fix(perception): restore lane facade adapter`.
 
 ### Task 2: Simulate task-owned forward sequence
 
@@ -52,7 +52,7 @@
 - [x] **Step 2: Run** `D:\anaconda\python.exe -m unittest test.navigation.2_0.test_simulation_ports` and confirm the behavior is absent.
 - [x] **Step 3: Implement** deterministic visual distance estimation and the ordered internal task sequence.
 - [x] **Step 4: Re-run** the simulation-port tests and confirm success.
-- [ ] **Step 5: Commit** the simulation behavior and tests with `feat(simulation): simulate culvert task forward sequence`.
+- [x] **Step 5: Commit** the simulation behavior and tests with `feat(simulation): simulate culvert task forward sequence`.
 
 ### Task 3: Run focused regression checks
 
@@ -62,4 +62,4 @@
 - [x] **Step 1: Run** `D:\anaconda\python.exe -m unittest test.perception.test_contracts test.perception.test_pipelines test.perception.test_facade test.navigation.2_0.test_simulation_ports`.
 - [x] **Step 2: Run** `D:\anaconda\python.exe -m unittest discover -s test\motion -p test_*.py`.
 - [x] **Step 3: Review** `git diff --check` for only intended files and record pre-existing unrelated failures without modifying them.
-- [ ] **Step 4: Commit** any documentation evidence change, otherwise make no empty commit.
+- [x] **Step 4: Commit** the documentation evidence change.
