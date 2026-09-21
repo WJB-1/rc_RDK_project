@@ -58,7 +58,8 @@ class LanePipeline:
         self._timing_frame_counter = 0
 
         self.last_debug_capture = {}
-        self.debug_capture_enabled = True
+        self.debug_render_enabled = bool(debug_cfg.get("render_enabled", False))
+        self.debug_capture_enabled = bool(debug_cfg.get("capture_enabled", False))
 
     # ------------------------------------------------------------------
     # 单帧处理
@@ -69,8 +70,15 @@ class LanePipeline:
         self._timing_frame_counter += 1
 
         try:
+            with block("tracker.resize_input"):
+                processing_input = cv2.resize(
+                    frame,
+                    (self.edge_engine.input_width, self.edge_engine.input_height),
+                    interpolation=cv2.INTER_AREA,
+                )
+
             with block("tracker.undistort"):
-                processing_input = self.undistorter.apply(frame)
+                processing_input = self.undistorter.apply(processing_input)
 
             with block("tracker.edge_inference"):
                 edge_mask = self.edge_engine.inference(processing_input)
@@ -101,15 +109,8 @@ class LanePipeline:
             with block("tracker.draw_bev"):
                 bev_mask = renderer.draw_bev_view()
 
-            with block("tracker.resize_input"):
-                processing_frame = cv2.resize(
-                    processing_input,
-                    (self.edge_engine.input_width, self.edge_engine.input_height),
-                    interpolation=cv2.INTER_AREA,
-                )
-
             with block("tracker.draw_original"):
-                original_view = renderer.draw_original_view(processing_frame)
+                original_view = renderer.draw_original_view(processing_input)
 
             lane_state["raw_line_count"] = len(self.edge_engine.last_raw_lines)
             lane_state["line_count"] = len(self.edge_engine.last_lines)
@@ -119,17 +120,20 @@ class LanePipeline:
                 else "HoughLinesP + PCA merge (a3d8)"
             )
 
-            with block("tracker.draw_debug_panel"):
-                debug_frame = draw_debug_panel(
-                    clean_mask=clean_mask,
-                    bev_mask=bev_mask,
-                    lane_state=lane_state,
-                    raw_image=original_view,
-                    camera_pitch_deg=self.ipm.pitch_deg,
-                    physical_track_width_mm=self.cfg.lane_width_mm,
-                    noise_mask=noise_mask,
-                    semantic_mask=semantic_mask,
-                )
+            if self.debug_render_enabled:
+                with block("tracker.draw_debug_panel"):
+                    debug_frame = draw_debug_panel(
+                        clean_mask=clean_mask,
+                        bev_mask=bev_mask,
+                        lane_state=lane_state,
+                        raw_image=original_view,
+                        camera_pitch_deg=self.ipm.pitch_deg,
+                        physical_track_width_mm=self.cfg.lane_width_mm,
+                        noise_mask=noise_mask,
+                        semantic_mask=semantic_mask,
+                    )
+            else:
+                debug_frame = original_view.copy()
 
             if self.debug_capture_enabled:
                 with block("tracker.capture_debug"):
@@ -276,3 +280,7 @@ class LanePipeline:
         if not self.debug_capture_enabled:
             self.last_debug_capture = {}
         return self.debug_capture_enabled
+
+    def set_debug_render_enabled(self, enabled: bool) -> bool:
+        self.debug_render_enabled = bool(enabled)
+        return self.debug_render_enabled

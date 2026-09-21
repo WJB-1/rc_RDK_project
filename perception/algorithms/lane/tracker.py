@@ -58,6 +58,9 @@ class LaneTracker:
     def set_debug_capture_enabled(self, enabled: bool) -> bool:
         return self.pipeline.set_debug_capture_enabled(enabled)
 
+    def set_debug_render_enabled(self, enabled: bool) -> bool:
+        return self.pipeline.set_debug_render_enabled(enabled)
+
     def process(self, frame: Optional[np.ndarray]) -> Tuple[float, bool, np.ndarray]:
         if frame is None or not isinstance(frame, np.ndarray) or frame.size == 0:
             self.logger.warning("输入帧无效")

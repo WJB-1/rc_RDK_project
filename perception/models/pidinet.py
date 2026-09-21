@@ -101,8 +101,14 @@ class PiDiNetEngine:
         inference_started = time.perf_counter()
 
         with block("edge.resize"):
-            resized = cv2.resize(frame, (self.input_width, self.input_height),
-                                 interpolation=cv2.INTER_AREA)
+            if frame.shape[:2] == (self.input_height, self.input_width):
+                resized = frame
+            else:
+                resized = cv2.resize(
+                    frame,
+                    (self.input_width, self.input_height),
+                    interpolation=cv2.INTER_AREA,
+                )
         with block("edge.enhance"):
             enhanced = enhance_image(resized)
         with block("edge.bgr2nv12"):
