@@ -1,6 +1,7 @@
 """实现三个与真实目标边界一致的异步仿真端口。"""
 
 from collections import deque
+import math
 
 from navigation.contracts import (
     CorrectExecutionCommand,
@@ -92,8 +93,30 @@ class SimTaskPort(_SimPort):
 
     target = ExecutionTarget.TASK_SYSTEM
     command_types = (ExecuteTaskExecutionCommand,)
+    EXPLORATION_DISTANCE_MM = 300.0
 
     def _complete(self, command):
+        exploration = self.world.execute_task_drive(self.EXPLORATION_DISTANCE_MM)
+        if exploration.outcome is not ExecutionOutcome.COMPLETED:
+            return TargetCompletion(
+                exploration.outcome,
+                exploration.timestamp,
+                error_code=exploration.error_code,
+            )
+        distance_mm = self.world.estimate_distance_to_next_turn_window_mm()
+        if distance_mm is None or not math.isfinite(distance_mm) or distance_mm <= 0.0:
+            return TargetCompletion(
+                ExecutionOutcome.FAILED,
+                exploration.timestamp,
+                error_code="TURN_WINDOW_DISTANCE_UNAVAILABLE",
+            )
+        approach = self.world.execute_task_drive(distance_mm)
+        if approach.outcome is not ExecutionOutcome.COMPLETED:
+            return TargetCompletion(
+                approach.outcome,
+                approach.timestamp,
+                error_code=approach.error_code,
+            )
         result = self.world.execute_task(command)
         return TargetCompletion(result.outcome, result.timestamp, task_result=result.task_result,
                                 error_code=result.error_code)

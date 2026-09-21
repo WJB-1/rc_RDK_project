@@ -14,6 +14,7 @@ from navigation.contracts import (
 from navigation.domain import TrackTopology, build_default_topology
 from navigation.domain.state import WorldPose
 from .snapshot import SimMotionResult, SimTaskResult, SimWorldSnapshot
+from navigation.choreography.profile import TURN_WINDOW_FROM_CENTER_MM
 
 
 class SimWorld:
@@ -65,6 +66,7 @@ class SimWorld:
         self._now = 0.0
         self._observation_count = 0
         self._last_frame_id = None
+        self._task_drive_distances = []
 
     @property
     def _pose(self) -> WorldPose:
@@ -117,6 +119,47 @@ class SimWorld:
         if not isinstance(command, ExecuteTaskExecutionCommand):
             raise TypeError("仿真任务端口只支持 ExecuteTaskExecutionCommand")
         return SimTaskResult(ExecutionOutcome.COMPLETED, self._advance_time(1.0), "completed")
+
+    @property
+    def task_drive_distances(self):
+        """返回任务端口内部下发的仿真前行距离。"""
+
+        return tuple(self._task_drive_distances)
+
+    def execute_task_drive(self, distance_mm: float) -> SimMotionResult:
+        """执行任务系统私有前行，不改写 Navigation 持有的位姿。"""
+
+        distance_mm = float(distance_mm)
+        if not math.isfinite(distance_mm) or distance_mm <= 0.0:
+            return SimMotionResult(
+                ExecutionOutcome.FAILED,
+                self._advance_time(0.0),
+                self._pose,
+                error_code="INVALID_TASK_DRIVE_DISTANCE",
+            )
+        self._task_drive_distances.append(distance_mm)
+        return SimMotionResult(
+            ExecutionOutcome.COMPLETED,
+            self._advance_time(distance_mm),
+            self._pose,
+            distance_mm,
+        )
+
+    def estimate_distance_to_next_turn_window_mm(self):
+        """以当前仿真位姿生成到前方转弯窗口的确定性视觉距离估计。"""
+
+        current_road = self._current_road_edge()
+        if current_road is None:
+            return None
+        _, traversal_id, _ = current_road
+        _, target_node_id = traversal_id.split("->", 1)
+        target = self.topology.get_node(target_node_id)
+        distance_to_center = math.hypot(
+            target.x_mm - self._pose.x_mm,
+            target.y_mm - self._pose.y_mm,
+        )
+        distance_to_window = distance_to_center - TURN_WINDOW_FROM_CENTER_MM
+        return distance_to_window if distance_to_window > 0.0 else None
 
     def snapshot(self) -> SimWorldSnapshot:
         """返回真值世界的不可变副本；位姿字段来自 provider（若已装配）。"""
