@@ -125,6 +125,7 @@ class LanePipeline:
                 with block("tracker.capture_debug"):
                     try:
                         self._capture_debug(
+                            raw_frame=frame,
                             processing_input=processing_input,
                             lane_state=lane_state,
                             clean_mask=clean_mask,
@@ -160,16 +161,18 @@ class LanePipeline:
     # ------------------------------------------------------------------
     # Debug capture
     # ------------------------------------------------------------------
-    def _capture_debug(self, processing_input, lane_state, clean_mask,
+    def _capture_debug(self, raw_frame, processing_input, lane_state, clean_mask,
                        bev_mask, original_view, renderer):
         edge_engine = self.edge_engine
         lane_selector = self.selector
-        hough_view = processing_input.copy()
+        hough_view = raw_frame.copy()
+        scale_x = hough_view.shape[1] / float(processing_input.shape[1])
+        scale_y = hough_view.shape[0] / float(processing_input.shape[0])
         for line in getattr(edge_engine, "last_lines", []) or []:
             cv2.line(
                 hough_view,
-                (round(line["x1"]), round(line["y1"])),
-                (round(line["x2"]), round(line["y2"])),
+                (round(line["x1"] * scale_x), round(line["y1"] * scale_y)),
+                (round(line["x2"] * scale_x), round(line["y2"] * scale_y)),
                 (0, 255, 0), 2, cv2.LINE_AA,
             )
 
@@ -178,10 +181,7 @@ class LanePipeline:
                 "binary": getattr(edge_engine, "last_binary", None),
                 "hough": hough_view,
                 "lane_bev": bev_mask,
-                "ground_bev": (
-                    renderer.render_new_ground_bev()
-                    if getattr(lane_selector, "new_ground", None) is not None else None
-                ),
+                "ground_bev": renderer.render_new_ground_bev(),
                 "overlay": original_view,
             },
             "metrics": {

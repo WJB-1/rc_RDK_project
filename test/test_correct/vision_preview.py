@@ -35,15 +35,21 @@ def _resize_for_transfer(image, max_size):
     return image
 
 
-def _draw_merged_lines(image, lines):
+def _draw_merged_lines(image, lines, source_size=None):
+    if source_size:
+        source_width, source_height = source_size
+        scale_x = image.shape[1] / float(source_width)
+        scale_y = image.shape[0] / float(source_height)
+    else:
+        scale_x = scale_y = 1.0
     for line in lines or []:
         if isinstance(line, dict):
-            start = (int(round(line["x1"])), int(round(line["y1"])))
-            end = (int(round(line["x2"])), int(round(line["y2"])))
+            start = (int(round(line["x1"] * scale_x)), int(round(line["y1"] * scale_y)))
+            end = (int(round(line["x2"] * scale_x)), int(round(line["y2"] * scale_y)))
         else:
             points = np.asarray(line, dtype=np.float64).reshape(2, 2)
-            start = tuple(np.round(points[0]).astype(int))
-            end = tuple(np.round(points[1]).astype(int))
+            start = tuple(np.round(points[0] * (scale_x, scale_y)).astype(int))
+            end = tuple(np.round(points[1] * (scale_x, scale_y)).astype(int))
         cv2.line(image, start, end, (0, 0, 255), 2, cv2.LINE_AA)
     return image
 
@@ -54,7 +60,9 @@ def _fallback_view(view_name, raw_image, clean_mask, bev_mask, original_view, di
     if view_name == "binary":
         return diagnostics.get("binary", clean_mask)
     if view_name == "hough":
-        return _draw_merged_lines(_as_bgr(raw_image), diagnostics.get("merged_lines"))
+        return _draw_merged_lines(
+            _as_bgr(raw_image), diagnostics.get("merged_lines"), diagnostics.get("source_size")
+        )
     if view_name == "lane_bev":
         return bev_mask
     return None

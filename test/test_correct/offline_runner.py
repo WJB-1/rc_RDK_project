@@ -52,6 +52,7 @@ class OfflineVisionRunner:
             raise RuntimeError("camera initialization failed")
         try:
             tracker = LaneTracker(settings)
+            tracker.set_debug_capture_enabled(True)
         except Exception:
             camera.release()
             raise

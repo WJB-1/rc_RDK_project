@@ -99,6 +99,7 @@ class DebugRunner:
             raise RuntimeError("camera initialization failed")
         try:
             tracker = LaneTracker(settings)
+            tracker.set_debug_capture_enabled(True)
         except Exception:
             camera.release()
             raise
@@ -476,6 +477,7 @@ class DebugRunner:
                             "n_labels": edge_engine.last_n_labels,
                             "raw_lines": edge_engine.last_raw_lines,
                             "merged_lines": edge_engine.last_lines,
+                            "source_size": (edge_engine.input_width, edge_engine.input_height),
                             "candidate_bev_segments": getattr(lane_selector, "candidate_bev_segments", []),
                         }
                         stage = "preview.update"

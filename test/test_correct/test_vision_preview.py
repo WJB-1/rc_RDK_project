@@ -126,6 +126,19 @@ class VisionPreviewTests(unittest.TestCase):
         image = cv2.imdecode(np.frombuffer(encoded, dtype=np.uint8), cv2.IMREAD_COLOR)
         self.assertGreater(int(image[60, 80, 2]), 100)
 
+    def test_hough_fallback_scales_merged_lines_to_raw_frame(self):
+        from vision_preview import render_preview
+
+        raw = np.zeros((100, 200, 3), dtype=np.uint8)
+        encoded = render_preview(
+            "hough", raw, None, None, {}, diagnostics={
+                "merged_lines": [{"x1": 25, "y1": 10, "x2": 75, "y2": 40}],
+                "source_size": (100, 50),
+            },
+        )
+        image = cv2.imdecode(np.frombuffer(encoded, dtype=np.uint8), cv2.IMREAD_COLOR)
+        self.assertGreater(int(image[50, 100, 2]), 100)
+
     def test_offline_page_only_lists_lane_debug_views_and_defaults_to_overlay(self):
         from offline_runner import OFFLINE_PAGE, OfflineVisionRunner
 
