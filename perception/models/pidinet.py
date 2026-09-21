@@ -1,10 +1,10 @@
 from pathlib import Path
 import time
-from perception.algorithms.timing import block
+from perception.algorithms.core.timing import block
 import cv2
 import numpy as np
 
-from perception.algorithms.pidinet_lane import (
+from perception.algorithms.lane.line_detection import (
     detect_lines,
     draw_lines,
     merge_lines,

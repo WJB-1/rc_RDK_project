@@ -5,8 +5,8 @@ from typing import Optional, Tuple
 import numpy as np
 
 from utils.logger import get_logger
-from .lane.builders import build_lane_pipeline
-from .lane.undistort import build_undistort_parameters
+from .builders import build_lane_pipeline
+from .undistort import build_undistort_parameters
 
 
 class LaneTracker:

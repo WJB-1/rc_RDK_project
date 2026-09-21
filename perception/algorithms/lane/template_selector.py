@@ -14,7 +14,7 @@ from itertools import combinations
 import cv2
 import numpy as np
 
-from perception.algorithms.timing import block
+from perception.algorithms.core.timing import block
 
 from .config import CameraConfig
 from .new_ground import NewGroundProjector

@@ -10,9 +10,9 @@ from typing import Optional
 import cv2
 import numpy as np
 
-from perception.algorithms.timing import reset_frame, block, get_frame_timings
-from perception.algorithms.mask_utils import clean_mask_by_cc
-from perception.algorithms.pidinet_lane import lines_to_mask
+from perception.algorithms.core.timing import reset_frame, block, get_frame_timings
+from perception.algorithms.core.mask_utils import clean_mask_by_cc
+from .line_detection import lines_to_mask
 from perception.diagnostics.ipm_drawer import draw_debug_panel
 
 from .types import LanePipelineResult

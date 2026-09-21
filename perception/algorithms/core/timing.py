@@ -2,7 +2,7 @@
 """线程局部阶段计时器。
 
 用法：
-    from perception.algorithms.timing import reset_frame, block, get_frame_timings
+    from perception.algorithms.core.timing import reset_frame, block, get_frame_timings
 
     reset_frame()
     with block("edge.resize"):

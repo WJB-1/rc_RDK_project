@@ -1,13 +1,11 @@
 # perception/algorithms/lane/builders.py
 from pathlib import Path
 
-from perception.algorithms.ipm import MathematicalIPM
+from perception.algorithms.core.ipm import MathematicalIPM
 from perception.models.pidinet import PiDiNetEngine
 from perception.models.bisenet import SegmentationEngine
-from perception.algorithms.pidinet_lane import (
-    GroundIPMLanePairSelector,
-    TemplateDistanceLaneSelector,
-)
+from .ground_ipm_selector import GroundIPMLanePairSelector
+from .template_selector import TemplateDistanceLaneSelector
 
 from .config import load_lane_config, LaneConfig
 from .pipeline import LanePipeline
