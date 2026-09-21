@@ -3,6 +3,7 @@
 from collections import deque
 
 from navigation.contracts import (
+    CorrectExecutionCommand,
     DispatchAck, ExecutionOutcome, ExecutionTarget, ExecutionRequest,
     ExecutionTargetPort, TargetCompletion,
     DriveExecutionCommand, ReverseExecutionCommand, TurnExecutionCommand,
@@ -65,7 +66,7 @@ class SimMotionPort(_SimPort):
     """消费运动命令并把世界运动结果转换为 TargetCompletion。"""
 
     target = ExecutionTarget.MOTION_CONTROLLER
-    command_types = (DriveExecutionCommand, ReverseExecutionCommand, TurnExecutionCommand,
+    command_types = (CorrectExecutionCommand, DriveExecutionCommand, ReverseExecutionCommand, TurnExecutionCommand,
                      RetraceTurnExecutionCommand, StopExecutionCommand)
 
     def _complete(self, command):
@@ -81,7 +82,7 @@ class SimPerceptionPort(_SimPort):
     command_types = (ObserveExecutionCommand,)
 
     def _complete(self, command):
-        frame = self.world.observe()
+        frame = self.world.observe(command.scope, command.traversal_id)
         return TargetCompletion(ExecutionOutcome.COMPLETED, self.world.snapshot().now,
                                 perception_frame=frame)
 

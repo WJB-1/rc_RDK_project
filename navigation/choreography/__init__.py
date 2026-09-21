@@ -6,10 +6,22 @@
 状态影响：不直接提交执行器、不写入机器人状态、动态地图或任务状态。
 """
 
-# 重新导出纯编排器，调用方无需依赖内部实现文件路径。
 from .choreographer import Choreographer
-# 重新导出不可变运动标定参数，调用方可在运行时装配阶段统一创建。
-from .profile import MotionProfile
+from .profile import (
+    BODY_HALF_LENGTH_MM,
+    DEPARTURE_FORWARD_MM,
+    OBSERVATION_ZONE_FROM_CENTER_MM,
+    RETRACE_ANCHOR_FROM_CENTER_MM,
+    TAIL_ANCHOR_FROM_CENTER_MM,
+    TURN_WINDOW_FROM_CENTER_MM,
+)
 
-# 限制外部仅依赖已冻结的编排入口，避免私有实现细节泄漏。
-__all__ = ("Choreographer", "MotionProfile")
+__all__ = (
+    "Choreographer",
+    "OBSERVATION_ZONE_FROM_CENTER_MM",
+    "TURN_WINDOW_FROM_CENTER_MM",
+    "TAIL_ANCHOR_FROM_CENTER_MM",
+    "RETRACE_ANCHOR_FROM_CENTER_MM",
+    "BODY_HALF_LENGTH_MM",
+    "DEPARTURE_FORWARD_MM",
+)

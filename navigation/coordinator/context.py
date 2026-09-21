@@ -26,6 +26,12 @@ class LastMotionRecord:
     traversal_id: Optional[str] = None
     # 前向转弯使用的标定轨迹；非转弯时为空。
     forward_trajectory_id: Optional[str] = None
+    # 转弯发生的路口；脱困撤回只允许匹配当前路口。
+    junction_id: Optional[str] = None
+    # 前向转弯对应的反向标定轨迹；非转弯时为空。
+    retrace_trajectory_id: Optional[str] = None
+    # 转弯后的目标巡航边，撤回时用作出口边。
+    target_traversal_id: Optional[str] = None
 
     @property
     def source_action_id(self) -> str:

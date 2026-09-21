@@ -34,10 +34,33 @@ led:
 # --------------------------------------------
 # 语义分割 (BiSeNetV2 BPU)
 # --------------------------------------------
-segmentation:
-  model_path: "models/bisenetv2_lane_x5.bin"
-  input_size: 512
-  target_class: 1              # 赛道类别索引
+edge_detection:
+  model_path: "models/pidinet_small_dil_512x384_x5_bayese.bin"
+  input_width: 512
+  input_height: 384
+  threshold: 0.25
+  angle_tol_deg: 3.0
+  normal_dist_tol: 8.0
+  semantic_gate:
+    available: false
+    enabled: false
+    model_path: "models/bisenetv2_lane_x5.bin"
+    input_size: 512
+    target_class: 1
+    min_coverage: 0.01
+    line_thickness: 3
+  # 可选 lane / wall_outer / auto；auto 先尝试标准车道宽度，再尝试墙体外侧间距
+  debug_pair_profile: "auto"
+  pair_profiles:
+    lane:
+      min_mm: 190.0
+      max_mm: 210.0
+      target_mm: 200.0
+    wall_outer:
+      min_mm: 236.0
+      max_mm: 250.0
+      target_mm: 236.0
+      height_mm: 50.0       # 围墙顶面高度：投影时有效相机高度减去 50mm
 
 # --------------------------------------------
 # 数学逆透视变换 (Analytical IPM)
@@ -47,13 +70,41 @@ math_ipm:
   img_h: 1080
   focal_length_mm: 2.8
   pixel_size_mm: 0.003
-  camera_height_mm: 173
-  pitch_deg: 40.0
+  # --- 张正友标定得到的真实像素内参 (2026-09-15 标定, 重投影误差 0.228px) ---
+  # 优先使用；fx_px/fy_px 非空时绕开 focal_length_mm/pixel_size_mm 的凑数假设
+  fx_px: 1148.5534828996256
+  fy_px: 1148.5534828996256
+  cx_px: 947.8505552892422
+  cy_px: 567.5025328444085
+  # 去畸变必须在 PiDiNet、BiSeNet 与 IPM 之前统一执行，保证各路坐标一致。
+  camera_calibration:
+    enabled: true
+    image_width: 1920
+    image_height: 1080
+    fx_px: 1148.5534828996256
+    fy_px: 1148.5534828996256
+    cx_px: 947.8505552892422
+    cy_px: 567.5025328444085
+    distortion: [0.03958995851910604, -0.04525247266910747, 0.001291725575952253, 0.0018078485914911084, -0.0739306041524181]
+  # --- 地面棋盘格外参标定 (2026-09-02, 11 张有效帧) ---
+  camera_height_mm: 163.52111350206778
+  pitch_deg: 35.41572788367764
   canvas_w: 400
   canvas_h: 400
   pixel_per_mm: 0.5
-  blind_spot_mm: 200.0
-  physical_track_width_mm: 200.0
+  blind_spot_mm: 90.0        # 相机光心地面投影点到最近有效视野，实测固定值
+
+# --------------------------------------------
+# 车辆几何参数（视觉算法原始事实）
+# 坐标派生由算法脚本根据这些参数计算，不在配置中手工填写
+# --------------------------------------------
+vehicle_geometry:
+  body_length_mm: 142.0                 # 车体长度，不含前方摄像头
+  body_width_mm: 120.0                  # 车体最大宽度
+  camera_forward_of_body_front_mm: 60.0 # 摄像头光心位于车体前端前方的距离
+  camera_width_mm: 31.0                 # 摄像头外壳横向尺寸（仅用于可视化）
+  camera_length_mm: 60.0                # 摄像头外壳纵向尺寸（仅用于可视化）
+  camera_lateral_offset_mm: 0.0         # 摄像头位于车体横向中心线
 
 # --------------------------------------------
 # RDK X5 40pin 引脚定义
@@ -70,15 +121,15 @@ pinout:
   rfid_cs_pin: 5                       # GPIO5, pin 29
   rfid_reset_pin: 6                    # GPIO6, pin 31
   rfid_irq_pin: 26                     # GPIO26, pin 37
-  # 上下位机通讯: UART3, 115200bps
-  stm32_uart: "/dev/ttyS3"            # pin 3(TX), pin 5(RX)
+  # 上下位机通讯: UART1, 115200bps (实测 /dev/ttyS1 = serial@34070000 可用)
+  stm32_uart: "/dev/ttyS1"            # pin 8(TX), pin 10(RX)
   stm32_baudrate: 115200
 
 # --------------------------------------------
 # 串口通讯 (STM32) — 兼容旧配置
 # --------------------------------------------
 serial:
-  port: "/dev/ttyS3"                   # UART3, pin 3+5
+  port: "/dev/ttyS1"                   # UART1, pin 8+10 (验证过可用)
   baudrate: 115200
   timeout: 0.01
   write_timeout: 0.01
@@ -104,10 +155,13 @@ yolo:
 track:
   lane_width_mm: 200.0         # 车道物理宽度
   tunnel_segment_length_mm: 800.0
-  straight_segment_length_mm: 800.0
+  straight_segment_length_mm: 800.0   # 净直道长（端口模型：直道=完整800）
   start_depth_mm: 200.0        # START → J_START 距离 (启动桥)
-  main_track_span_mm: 800.0    # N1 到 N12 的水平间距
-  half_track_span_mm: 400.0    # J_START → N1/N12 距离
+  # 端口模型：相邻方块中心距 = 1000mm（半块100 + 直道800 + 半块100）
+  # 以下两个字段在端口模型下已非核心（坐标由 map_config 的 _BLOCKS 决定），
+  # 保留仅为向后兼容，实际不再参与坐标计算。勿再据此推算坐标。
+  main_track_span_mm: 1000.0   # 相邻方块中心距（历史遗留，勿用于坐标）
+  half_track_span_mm: 300.0    # 顶部 J_START 端口间直道长（历史遗留，勿用于坐标）
 
 # --------------------------------------------
 # 边属性默认值
@@ -125,9 +179,10 @@ edge:
 state_machine:
   odom_update_hz: 50.0
   approach_threshold_mm: 150.0
-  turn_finish_threshold_mm: 50.0
+  approach_duration_s: 0.3       # 路口逼近阶段持续时间（秒）
+  turn_finish_threshold_mm: 50.0 # 转弯完成判定距离阈值（mm，仅语义保留，勿当时间用）
   stop_distance_mm: 100.0
-  turn_timeout_s: 2.0           # 转弯超时额外秒数
+  turn_timeout_s: 2.0           # 转弯超时秒数
   # --- EDGE_EXECUTING ---
   edge_obstacle_enable_ratio: 0.3   # 边走了 30% 后才启用障碍物检测
   edge_backtrack_ratio: 0.8         # 回退时走了 80% 就认为回到了起点
@@ -160,8 +215,134 @@ expected_yaw:
   up: 180.0
 
 # --------------------------------------------
+# 路径规划代价模型（Task 12：线图 + 转向约束）
+# --------------------------------------------
+planner:
+  turn_cost_90_mm: 300.0         # 左/右转 90° 的等价距离（直行 0，180° 掉头禁止=inf）
+  reverse_cost_mm: 1500.0        # 倒车 5×普通代价（等价距离），仅障碍响应层使用
+  tunnel_penalty_factor: 1.0     # 隧道与普通边同代价（S-13 整改后固定 1.0，不再缩水）
+
+# --------------------------------------------
 # 调试选项
 # --------------------------------------------
 debug:
   show_video: false           # 本地 cv2.imshow (已废弃，用 Web 面板)
   log_level: "INFO"
+
+# ================================================================
+# 仿真配置 (simulation)
+# ================================================================
+simulation:
+  culvert_recon_duration_s: 2.0       # 涵洞侦查耗时 (秒)
+  visible_range_mm: 400               # 视觉可视距离 (mm)
+  max_scene_attempts: 100             # 场景生成最大尝试次数
+  tick_hz: 20                         # 仿真控制频率 (Hz)
+  default_speed_mms: 300              # 默认巡航速度 (mm/s)
+
+lane_detection:
+  # ---- 去畸变：原始相机标定（主点 947.85） ----
+  undistort_camera:
+    enabled: true
+    image_width: 1920
+    image_height: 1080
+    fx_px: 1148.5534828996256
+    fy_px: 1148.5534828996256
+    cx_px: 947.8505552892422
+    cy_px: 567.5025328444085
+    distortion: [0.03958995851910604, -0.04525247266910747, 0.001291725575952253, 0.0018078485914911084, -0.0739306041524181]
+
+  # ---- IPM / 车道提取：标定后参数（主点 1247.85，+300px 偏移） ----
+  ipm_camera:
+    img_w: 1920
+    img_h: 1080
+    focal_length_mm: 2.8
+    pixel_size_mm: 0.003
+    fx_px: 1148.553483
+    fy_px: 1148.553483
+    cx_px: 1247.850555
+    cy_px: 567.502533
+    camera_height_mm: 163.561848
+    pitch_deg: 38.044078
+    roll_deg: 0.221316
+    yaw_deg: 0.0
+    canvas_w: 400
+    canvas_h: 400
+    pixel_per_mm: 0.5
+    blind_spot_mm: 90.0
+
+  # ---- 模型输入尺寸 ----
+  input_size: [512, 384]
+
+  # ---- 六线模板（x_at_ref, mm） ----
+  template_x_at_ref_mm:
+    "0": 99.771
+    "1": -99.789
+    "2": 144.157
+    "3": -144.721
+    "4": 170.861
+    "5": -171.389
+
+  # ---- 身份权重 ----
+  identity_weights:
+    "0": 1.0
+    "1": 1.0
+    "2": 0.5
+    "3": 0.5
+    "4": 0.2
+    "5": 0.2
+
+  # ---- 车道宽度 ----
+  lane_width_mm: 200.0
+
+  # ---- 机器人几何 ----
+  robot_geometry:
+    body_length_mm: 142.0
+    body_width_mm: 120.0
+    camera_forward_of_body_front_mm: 60.0
+    camera_lateral_offset_mm: 0.0
+
+  # ---- 地面段合并 ----
+  merge:
+    angle_tol_deg: 2.0
+    normal_tol_mm: 12.0
+    min_length_mm: 40.0
+
+  # ---- Hough 检测 ----
+  hough:
+    rho: 1
+    theta_deg: 1.0
+    threshold: 30
+    min_length_ratio: 0.08
+    max_gap_ratio: 0.02
+
+  # ---- 边缘二值化 ----
+  edge:
+    threshold: 64
+    skeleton_close_kernel: 3
+
+  # ---- 模板匹配 ----
+  matching:
+    candidate_radius_mm: 20.0
+    candidate_radius_first_frame_mm: 40.0
+    max_candidates_per_slot: 3
+    parallel_angle_tol_deg: 3.0
+    min_parallel_lines: 3
+    ground_y_max_mm: 2000.0
+    y_ref_mm: 500.0
+
+  # ---- 置信度 ----
+  confidence:
+    high: 0.6
+    low: 0.3
+    inferred_factor: 0.5
+    fit_scale: 10.0
+    lane_precision_scale: 5.0
+    weights: [0.4, 0.3, 0.3]
+
+  # ---- BEV 画布 ----
+  bev:
+    x_min: -600.0
+    x_max: 600.0
+    y_min: -250.0
+    y_max: 800.0
+    ppm: 0.9

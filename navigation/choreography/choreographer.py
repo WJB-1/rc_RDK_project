@@ -30,7 +30,7 @@ from navigation.contracts import (
 )
 
 # 导入本包不可变经验距离参数，保持流程展开规则可装配、可测试。
-from .profile import MotionProfile
+from .profile import *
 from .departure_factory import DepartureChoreographyFactory
 from .route_factory import RouteChoreographyFactory
 from .stage_compiler import StageCompiler
@@ -45,7 +45,7 @@ class Choreographer:
     状态影响：只读取拓扑、标定与导航状态查询口，不写机器人、地图、任务或执行器。
     """
 
-    def __init__(self, topology: TrackTopology, profile: MotionProfile, state_query: NavigationStateQuery, task_registry=None) -> None:
+    def __init__(self, topology: TrackTopology, state_query: NavigationStateQuery, task_registry=None, context=None) -> None:
         """保存纯编排所需的静态拓扑、经验标定与只读运行时查询口。
 
         谁调用：导航系统的装配代码创建编排器时调用一次。
@@ -56,10 +56,9 @@ class Choreographer:
 
         # 保存只读静态赛道，用于按路口步骤查询巡航边的长度和道路类别。
         self._topology = topology
-        # 保存不可变经验标定，避免把距离常量散落到流程分支中。
-        self._profile = profile
         # 保存最小只读查询口，为下一任务的逐步动作生成预留状态读取边界。
         self._state_query = state_query
+        self._context = context
         # 保存任务只读查询，供涵洞发现时自行找到对应待办任务，不要求协调器筛选任务身份。
         self._task_registry = task_registry
         self.departure_factory = DepartureChoreographyFactory(self)
@@ -121,10 +120,15 @@ class Choreographer:
 
         return self.route_factory.start_junction_escape(side)
 
-    def start_retrace_turn(self, source_action_id: str) -> ChoreographyStartResult:
+    def start_retrace_turn(self, source_action_id: str, retrace_trajectory_id=None) -> ChoreographyStartResult:
         """为已完成但验证失败的侧支转弯创建单步同轨迹撤回剧本。"""
+        
+        return self.route_factory.start_retrace_turn(source_action_id, retrace_trajectory_id)
 
-        return self.route_factory.start_retrace_turn(source_action_id)
+    def start_final_return(self) -> ChoreographyStartResult:
+        """创建从 J_START 驶入 START 中心并停车的最终返场剧本。"""
+
+        return self.route_factory.start_final_return()
 
     def compile_next(self, plan: ChoreographyPlan, progress: ChoreographyProgress) -> ChoreographyAdvanceResult:
         """委托阶段编译器生成当前游标对应的动作。"""
@@ -194,8 +198,8 @@ class Choreographer:
         # 隧道始终不能在边中插入观察区，直接按短边流程驶入下一路口。
         if road_kind == "TUNNEL":
             return False
-        # 普通边只有长度超过观察区剩余距离阈值时才有独立观察区空间。
-        return length_mm > self._profile.observation_zone_max_remaining_mm
+        # 普通边只有在观察区与提前转弯窗口之间存在可用空间时才插入观察区。
+        return length_mm > (OBSERVATION_ZONE_FROM_CENTER_MM + TURN_WINDOW_FROM_CENTER_MM)
 
     @staticmethod
     def _stage(
@@ -205,13 +209,20 @@ class Choreographer:
         traversal_id: str,
         node_id: Optional[str],
         safe_node_id: Optional[str] = None,
+        requested_turn_direction=None,
+        task_id: Optional[str] = None,
     ) -> ChoreographyStage:
         """按稳定步骤序号创建一条不可变流程阶段，集中避免阶段标识拼写分散。"""
 
         # 阶段标识只由路线内顺序、语义后缀和巡航标识组成，便于面板和日志稳定关联。
         stage_id = "stage:{}:{}:{}".format(step_index, suffix, traversal_id)
         # 返回不含任何可变执行状态的阶段定义。
-        return ChoreographyStage(stage_id, kind, traversal_id, node_id, safe_node_id=safe_node_id)
+        return ChoreographyStage(
+            stage_id, kind, traversal_id, node_id,
+            safe_node_id=safe_node_id,
+            requested_turn_direction=requested_turn_direction,
+            task_id=task_id,
+        )
 
     @staticmethod
     def _choreography_id(source_plan_id: str, stage_ids: Tuple[str, ...]) -> str:

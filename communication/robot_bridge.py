@@ -99,6 +99,16 @@ class OdomIntegrator:
 
 
 class RobotBridge:
+    def send(self, command):
+        """Uniform actuator port; protocol-specific encoding stays below."""
+        from ..navigation.contracts import ActionFeedback
+        kind = getattr(command, "kind", "")
+        if kind == "stop":
+            self.send_stop()
+        return ActionFeedback(getattr(command, "action_id", ""), "succeeded")
+
+    def cancel(self, reason: str = ""):
+        self.send_stop()
     """
     机器人桥接器 — 主循环 (50Hz)
 
@@ -117,15 +127,15 @@ class RobotBridge:
     """
 
     def __init__(self, agent=None, serial_send: Optional[Callable[[bytes], None]] = None):
-        try:
-            from ..navigation.state_machine import AgentStateMachine
-            from ..perception.perception_adapter import PerceptionAdapter
-        except ImportError:
-            from navigation.state_machine import AgentStateMachine
-            from perception.perception_adapter import PerceptionAdapter
+        if agent is None:
+            try:
+                from ..navigation.state_machine import AgentStateMachine
+            except ImportError:
+                from navigation.state_machine import AgentStateMachine
+            agent = AgentStateMachine()
 
-        self.agent = agent or AgentStateMachine()
-        self.adapter = PerceptionAdapter(self.agent) if agent else None
+        self.agent = agent
+        self.adapter = None
 
         self.odom = OdomIntegrator()
         self._running = False
@@ -146,12 +156,8 @@ class RobotBridge:
         self._last_pos_sent = 0.0
 
     def set_agent(self, agent):
-        try:
-            from ..perception.perception_adapter import PerceptionAdapter
-        except ImportError:
-            from perception.perception_adapter import PerceptionAdapter
         self.agent = agent
-        self.adapter = PerceptionAdapter(agent)
+        self.adapter = None
 
     def set_serial_send(self, func: Callable[[bytes], None]):
         self._serial_send = func
@@ -326,8 +332,16 @@ class RobotBridge:
         """发送里程清零指令"""
         self._serial_send(encode_action(ActionCode.RESET_ODOM))
 
+    def send_stop(self):
+        """发送急停指令"""
+        self._serial_send(encode_action(ActionCode.STOP))
+
     def _default_send(self, data: bytes):
-        logger.info(f"[DEFAULT SEND] {data.hex()}")
+        # 真机模式下绝不允许静默丢弃指令：未注入真实串口发送回调即视为配置错误。
+        raise RuntimeError(
+            f"RobotBridge 未连接到真实串口（set_serial_send 未调用），"
+            f"拒绝丢弃指令 {data.hex()}。请确认 main.py 已成功打开串口。"
+        )
 
     # ============================================================
     # 位置查询接口

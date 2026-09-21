@@ -12,6 +12,7 @@ from .models import (
     EscapeDirectionAssessment,
     JunctionPassability,
     PlanningEntryConstraint,
+    PlanningPhase,
     PlanningStateQuery,
     RecoveryPlan,
     RecoveryPlanOutcome,
@@ -25,6 +26,10 @@ from .models import (
     RouteQuery,
     RouteStep,
 )
+from .state_query import PlanningReadPort
+from .target_selection import TargetSelector, TargetSelectionResult
+from .reachability import ReachabilityAnalyzer, ReachabilityReport
+from .escape_assessor import EscapeAssessor
 
 # 声明本阶段唯一允许外部依赖的规划类型，后续路线与恢复类型将按工作包补充。
 __all__ = (
@@ -45,7 +50,14 @@ __all__ = (
     "EscapeAssessment",
     "EscapeDirectionAssessment",
     "PlanningEntryConstraint",
+    "PlanningPhase",
     "PlanningStateQuery",
+    "PlanningReadPort",
+    "TargetSelector",
+    "TargetSelectionResult",
+    "ReachabilityAnalyzer",
+    "ReachabilityReport",
+    "EscapeAssessor",
     # 恢复查询、步骤、计划和显式结果类型。
     "RecoveryPlanOutcome",
     "RecoveryStepKind",

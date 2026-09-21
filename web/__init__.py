@@ -132,6 +132,8 @@ class WebPushServer:
         self._offset_mm = 0.0
         self._is_intersection = False
         self._quality_score = 0.0
+        self._semantic_gate_available = False
+        self._semantic_gate_enabled = False
 
         # 导航状态
         self._agent_state = "MANUAL"
@@ -167,7 +169,8 @@ class WebPushServer:
     # 供主程序调用的更新接口
     # ------------------------------------------------------------------
     def update(self, seg_frame=None, offset_mm=0.0, is_intersection=False,
-               quality_score=0.0):
+               quality_score=0.0, semantic_gate_available=None,
+               semantic_gate_enabled=None):
         """更新感知层数据"""
         with self._lock:
             if seg_frame is not None:
@@ -175,6 +178,10 @@ class WebPushServer:
             self._offset_mm = offset_mm
             self._is_intersection = is_intersection
             self._quality_score = quality_score
+            if semantic_gate_available is not None:
+                self._semantic_gate_available = bool(semantic_gate_available)
+            if semantic_gate_enabled is not None:
+                self._semantic_gate_enabled = bool(semantic_gate_enabled)
 
     def update_navigation(self, agent_state=None, position=None, current_node=None,
                           target_node=None, planned_path=None, visited_nodes=None,
@@ -306,6 +313,8 @@ class WebPushServer:
                 "offset_mm": self._offset_mm,
                 "is_intersection": self._is_intersection,
                 "quality_score": self._quality_score,
+                "semantic_gate_available": self._semantic_gate_available,
+                "semantic_gate_enabled": self._semantic_gate_enabled,
                 "cmd_log": self._cmd_log,
                 "map_data": {
                     "nodes": self._map_nodes,

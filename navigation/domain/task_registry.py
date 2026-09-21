@@ -75,6 +75,22 @@ class TaskRegistry:
         # 只保留尚未提交给任务系统的任务，其他状态不能重复规划。
         return tuple(task for task in self.list_tasks() if task.lifecycle is TaskLifecycle.PENDING)
 
+    def register(self, task: Task) -> TaskTransition:
+        """登记一个新的待办任务，供协调器在发现运行时任务后调用。"""
+
+        if not isinstance(task, Task):
+            raise TypeError("task 必须是 Task")
+        if task.task_id in self._tasks_by_id:
+            return TaskTransition(False, self._tasks_by_id[task.task_id], self._tasks_by_id[task.task_id], "任务标识已存在")
+        if any(
+            existing.kind is task.kind and existing.target_id == task.target_id
+            for existing in self._tasks_by_id.values()
+        ):
+            return TaskTransition(False, None, None, "任务目标已登记")
+        self._task_ids = self._task_ids + (task.task_id,)
+        self._tasks_by_id[task.task_id] = task
+        return TaskTransition(True, None, task)
+
     def begin(self, task_id: str) -> TaskTransition:
         """将待办任务推进为执行中，防止同一任务重复提交。
 

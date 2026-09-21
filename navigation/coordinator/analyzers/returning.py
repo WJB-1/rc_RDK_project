@@ -1,7 +1,9 @@
 """返场状态的业务分析器。"""
 
-from navigation.contracts import ChoreographyAdvanceStatus
+from navigation.contracts import ChoreographyAdvanceStatus, ChoreographySourceKind, ChoreographyStartStatus
+from navigation.domain import AtNode
 from navigation.planning import RoutePlanOutcome
+from ..states import CoordinatorState
 from .base import AnalyzerDecision, AnalyzerDecisionKind, BaseAnalyzer
 
 
@@ -16,8 +18,21 @@ class ReturningAnalyzer(BaseAnalyzer):
         if coordinator.current_request is not None:
             return AnalyzerDecision(AnalyzerDecisionKind.WAITING, "等待返场动作终局")
         if coordinator.active_choreography is not None:
+            active_plan = coordinator.active_choreography
             ack = coordinator._dispatch_current_action()
             if coordinator._last_choreography_status is ChoreographyAdvanceStatus.FINISHED:
+                if active_plan.source_kind is not ChoreographySourceKind.FINAL_RETURN:
+                    navigation_state = getattr(coordinator, "_navigation_state", None)
+                    robot_state = navigation_state.robot_state() if navigation_state is not None else None
+                    if isinstance(getattr(robot_state, "location", None), AtNode) and robot_state.location.node_id == "J_START":
+                        start_final_return = getattr(coordinator._choreographer, "start_final_return", None)
+                        if start_final_return is not None:
+                            final_result = start_final_return()
+                            if final_result.status is ChoreographyStartStatus.STARTED:
+                                coordinator._load_choreography_result(final_result)
+                                return AnalyzerDecision(AnalyzerDecisionKind.TRANSITIONED, "已抵达 J_START，开始最终驶入 START")
+                            coordinator.diagnostics.append("已抵达 J_START，但最终返场剧本生成失败")
+                            return AnalyzerDecision(AnalyzerDecisionKind.WAITING, "最终返场剧本生成失败")
                 coordinator._mission_finished = True
                 return AnalyzerDecision(AnalyzerDecisionKind.TERMINAL, "已完成返场剧本")
             if ack is None:
@@ -40,6 +55,9 @@ class ReturningAnalyzer(BaseAnalyzer):
         coordinator._context.active_progress = None
         result = coordinator._route_planner.plan()
         if getattr(result, "outcome", None) is not RoutePlanOutcome.PLANNED or result.plan is None:
+            if getattr(result, "outcome", None) is RoutePlanOutcome.TRAPPED:
+                coordinator.diagnostics.append(result.reason or "返回态规划确认受困")
+                coordinator._context.transition_main(CoordinatorState.ESCAPE)
             return False
         return coordinator._load_planning_result(result.plan)
 

@@ -1,0 +1,8 @@
+{
+	"InstallScripts" : 
+	[
+		"D:/work/robotcup/patrol_robot/build/Release/cmake_install.cmake",
+		"D:/work/robotcup/patrol_robot/build/Release/cmake/stm32cubemx/cmake_install.cmake"
+	],
+	"Parallel" : false
+}

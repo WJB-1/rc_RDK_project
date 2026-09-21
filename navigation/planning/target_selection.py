@@ -2,7 +2,7 @@
 
 from typing import Optional, Tuple
 
-from navigation.domain import Goal, GoalKind, Task, TrackTopology
+from navigation.domain import CulvertKnowledgeStatus, EdgeKnowledgeStatus, Goal, GoalKind, Task, TrackTopology
 
 from .goal_deriver import GoalDeriver
 from .models import PlanningPhase, RoutePlanOutcome
@@ -42,11 +42,11 @@ class TargetSelector:
                     for edge_id in edge.physical_edge_ids
                     if self._topology.get_physical_edge(edge_id).road_kind != "INTERNAL"
                 )
-                if any(edge_id in map_snapshot.blocked_edge_ids for edge_id in external_edge_ids):
+                if any(self._edge_status(map_snapshot, edge_id) is EdgeKnowledgeStatus.BLOCKED for edge_id in external_edge_ids):
                     continue
-                if any(edge_id in map_snapshot.discovered_culvert_edge_ids for edge_id in external_edge_ids):
+                if any(self._culvert_status(map_snapshot, edge_id) is CulvertKnowledgeStatus.DISCOVERED for edge_id in external_edge_ids):
                     continue
-                if external_edge_ids and all(edge_id in map_snapshot.confirmed_no_culvert_edge_ids for edge_id in external_edge_ids):
+                if external_edge_ids and all(self._culvert_status(map_snapshot, edge_id) is CulvertKnowledgeStatus.CONFIRMED_ABSENT for edge_id in external_edge_ids):
                     continue
                 goals.append(
                     Goal(
@@ -58,3 +58,25 @@ class TargetSelector:
                 )
         goals.sort(key=lambda goal: goal.goal_id)
         return TargetSelectionResult(None, tuple(goals), "最近未探索边候选")
+
+    @staticmethod
+    def _edge_status(map_snapshot, edge_id):
+        """兼容旧快照的边状态读取适配。"""
+
+        status_method = getattr(map_snapshot, "edge_status", None)
+        if status_method is not None:
+            return status_method(edge_id)
+        return EdgeKnowledgeStatus.BLOCKED if edge_id in map_snapshot.blocked_edge_ids else EdgeKnowledgeStatus.UNKNOWN
+
+    @staticmethod
+    def _culvert_status(map_snapshot, edge_id):
+        """读取涵洞知识状态，区分发现、确认无涵洞和未知。"""
+
+        status_method = getattr(map_snapshot, "culvert_status", None)
+        if status_method is not None:
+            return status_method(edge_id)
+        if edge_id in map_snapshot.discovered_culvert_edge_ids:
+            return CulvertKnowledgeStatus.DISCOVERED
+        if edge_id in getattr(map_snapshot, "confirmed_no_culvert_edge_ids", ()):
+            return CulvertKnowledgeStatus.CONFIRMED_ABSENT
+        return CulvertKnowledgeStatus.UNKNOWN

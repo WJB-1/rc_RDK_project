@@ -21,11 +21,7 @@ class ProgressSource(Enum):
 
 @dataclass(frozen=True)
 class AtNode:
-    """机器人经验上位于可转向、可重规划的路口中心。"""
-
-    # 当前路口中心或 START 出发区的静态节点标识。
     node_id: str
-    # 刚刚驶入当前路口的有向巡航标识；初始位置尚无进入道路时为空。
     entry_traversal_id: Optional[str] = None
 
 
@@ -49,7 +45,7 @@ LogicalLocation = Union[AtNode, OnCruiseEdge]
 
 @dataclass(frozen=True)
 class WorldPose:
-    """用于仿真、面板和位置投影器的连续世界坐标位姿。"""
+    """物理坐标。"""
 
     # 世界坐标系中的横向位置，单位毫米。
     x_mm: float
@@ -68,15 +64,13 @@ class RobotState:
     输入输出：输入为逻辑位置、朝向和进度来源；输出为可安全读取的不可变状态。
     状态影响：只有逻辑位置为 `AtNode` 时，运行时才能兑现普通重规划。
     """
-
     # 当前逻辑位置，决定是否可以安全转弯或兑现重规划。
     location: LogicalLocation
-    # 当前车头世界朝向，供编排器选择左转、右转或直行。
-    heading_deg: float
-    # 当前边进度的可信数据来源。
+    # 当前世界坐标系下的连续位姿，供仿真和位置投影器使用。
+    world_pose: WorldPose
     progress_source: ProgressSource = ProgressSource.ODOMETRY
-    # 边上发现新地图事实后暂存的重规划请求，到 AtNode 才兑现。
     pending_replan: bool = False
+    
 
     @property
     def is_at_safe_node(self) -> bool:

@@ -123,10 +123,33 @@ class SimulationRunner:
     def snapshot(self) -> SimulationSnapshot:
         """返回 Web 和调试面板唯一允许读取的组合快照。"""
 
-        navigation_snapshot = self._navigation_runtime.snapshot() if self._navigation_runtime is not None else None
+        navigation_snapshot = (
+            self._navigation_runtime.snapshot()
+            if self._navigation_runtime is not None else None
+        )
         world_snapshot = self._world.snapshot()
-        return SimulationSnapshot(self._running, self._paused, self._stopped, self._seed,
-                                  world_snapshot.now, world_snapshot,
-                                  self._completed_action_count, None, self._last_outcome,
-                                  self._last_perception_frame, navigation_snapshot,
-                                  tuple(self._timeline))
+
+        robot_state_pose = None
+        robot_location_label = None
+        store = self.state_store
+        if store is not None:
+            rs = store.robot_state()
+            if rs is not None:
+                robot_state_pose = rs.world_pose
+                loc = rs.location
+                if hasattr(loc, "node_id"):
+                    robot_location_label = "AtNode({})".format(loc.node_id)
+                elif hasattr(loc, "traversal_id"):
+                    robot_location_label = "Edge({}, {:.0f}mm)".format(
+                        loc.traversal_id, getattr(loc, "progress_mm", 0.0)
+                    )
+
+        return SimulationSnapshot(
+            self._running, self._paused, self._stopped, self._seed,
+            world_snapshot.now, world_snapshot,
+            self._completed_action_count, None, self._last_outcome,
+            self._last_perception_frame, navigation_snapshot,
+            tuple(self._timeline),
+            robot_state_pose=robot_state_pose,
+            robot_location_label=robot_location_label,
+        )

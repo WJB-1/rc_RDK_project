@@ -64,7 +64,8 @@ class ExecutionCommand:
 @dataclass(frozen=True)
 class ObserveExecutionCommand(ExecutionCommand):
     """请求感知系统完成一次观察并返回唯一最终感知帧。"""
-
+    scope: object = None
+    traversal_id: Optional[str] = None
 
 @dataclass(frozen=True)
 class TurnExecutionCommand(ExecutionCommand):
@@ -72,6 +73,7 @@ class TurnExecutionCommand(ExecutionCommand):
 
     # 编排器选择的真实车身轨迹标识，不能用 LEFT_90 等抽象角度替代。
     forward_trajectory_id: str
+    target_traversal_id: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -96,6 +98,11 @@ class RetraceTurnExecutionCommand(ExecutionCommand):
 
     # 与原前向转弯对应的反向真实轨迹标识。
     retrace_trajectory_id: str
+
+
+@dataclass(frozen=True)
+class CorrectExecutionCommand(ExecutionCommand):
+    """请求运动系统执行一次闭环位姿校正。"""
 
 
 @dataclass(frozen=True)

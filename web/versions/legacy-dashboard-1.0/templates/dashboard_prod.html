@@ -305,8 +305,12 @@ body {
     <!-- 左侧：摄像头/分割图 + 路径 + 事件日志 -->
     <div class="left-panel">
         <div class="video-container">
-            <img id="segImage" src="" alt="车道分割">
-            <span class="video-label">BiSeNet 车道分割 (WebSocket 实时)</span>
+            <img id="segImage" src="" alt="视觉调试">
+            <span class="video-label">视觉调试 (WebSocket 实时)</span>
+            <label style="position:absolute;right:8px;top:8px;background:#111c;padding:4px 7px;border-radius:3px;font-size:12px;">
+                <input id="semanticGateToggle" type="checkbox" onchange="setSemanticGate(this.checked)"> 语义门控
+                <span id="semanticGateStatus">--</span>
+            </label>
         </div>
         <div class="path-info">
             <div class="panel-title">路径规划</div>
@@ -634,6 +638,13 @@ function switchToStandalone() {
 
 function onWsMessage(event) {
     const data = JSON.parse(event.data);
+    const semanticToggle = document.getElementById('semanticGateToggle');
+    const semanticStatus = document.getElementById('semanticGateStatus');
+    if (semanticToggle && data.semantic_gate_available !== undefined) {
+        semanticToggle.disabled = !data.semantic_gate_available;
+        semanticToggle.checked = Boolean(data.semantic_gate_enabled);
+        semanticStatus.textContent = data.semantic_gate_available ? (data.semantic_gate_enabled ? '开' : '关') : '不可用';
+    }
     const receiveTime = Date.now();
     const latency = receiveTime - data.timestamp;
 
@@ -672,6 +683,19 @@ function onWsMessage(event) {
 
     if (data.events) {
         updateEventLog(data.events);
+    }
+}
+
+async function setSemanticGate(enabled) {
+    try {
+        const response = await fetch('/api/cmd', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({cmd: 'set_semantic_gate', enabled: Boolean(enabled)})
+        });
+        const result = await response.json();
+        if (!result.ok) logCmd('语义门控切换失败: ' + (result.error || 'unknown'), 'error');
+    } catch (error) {
+        logCmd('语义门控网络错误: ' + error.message, 'error');
     }
 }
 

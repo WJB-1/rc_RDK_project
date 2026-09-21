@@ -2,7 +2,7 @@
 
 import math
 import random
-from typing import Dict, Iterable, Optional, FrozenSet, Set
+from typing import Callable, Dict, Iterable, Optional, FrozenSet, Set
 
 from navigation.contracts import (
     CorrectExecutionCommand,
@@ -17,7 +17,12 @@ from .snapshot import SimMotionResult, SimTaskResult, SimWorldSnapshot
 
 
 class SimWorld:
-    """持有静态赛道、连续位姿和障碍/涵洞真值，但不持有 RuntimeMap。"""
+    """持有静态赛道、障碍/涵洞真值，并把物理位姿交给外部提供者维护。
+
+    装配时提供 `pose_provider`（通常指向 NavigationState 的 RobotState.world_pose）
+    时，本类不再自己推进位姿；所有位置查询都返回 provider 的值。这样仿真器的
+    "世界位姿" 与导航层 "计划位姿" 始终一致，Web 端只显示一份物理位置。
+    """
 
     JUNCTION_NEAR_RATIO = 0.35
 
@@ -26,14 +31,19 @@ class SimWorld:
                  blocked_edge_ids: Optional[Iterable[str]] = None,
                  culvert_edge_ids: Optional[Iterable[str]] = None,
                  culvert_positions_by_edge: Optional[Dict[str, float]] = None,
-                 obstacle_positions_by_edge: Optional[Dict[str, float]] = None) -> None:
-        """创建确定性世界；未显式提供真值时由 seed 生成。"""
+                 obstacle_positions_by_edge: Optional[Dict[str, float]] = None,
+                 pose_provider: Optional[Callable[[], WorldPose]] = None) -> None:
+        """创建确定性世界；装配 `pose_provider` 时位姿由外部维护。"""
 
         self.topology = topology or build_default_topology()
         self.seed = seed
         self._random = random.Random(seed)
+        self._pose_provider = pose_provider
+
+        # 无论是否装配 provider，都保留一个内部占位位姿，避免属性缺失。
         start = self.topology.get_node("START")
-        self._pose = initial_pose or WorldPose(start.x_mm, start.y_mm, 90.0)
+        self._internal_pose = initial_pose or WorldPose(start.x_mm, start.y_mm, 90.0)
+
         external = [edge.edge_id for edge in self._edges() if edge.road_kind != "INTERNAL"]
         if blocked_edge_ids is None:
             blocked_edge_ids = self._random_truth(external, 3)
@@ -56,8 +66,16 @@ class SimWorld:
         self._observation_count = 0
         self._last_frame_id = None
 
+    @property
+    def _pose(self) -> WorldPose:
+        """返回当前物理位姿；装配 provider 时直接返回 provider 的值。"""
+
+        if self._pose_provider is not None:
+            return self._pose_provider()
+        return self._internal_pose
+
     def execute_motion(self, command: ExecutionCommand):
-        """执行一条运动命令并返回终局；不会写入导航地图或逻辑位姿。"""
+        """执行一条运动命令并返回终局；位姿由 provider 维护时不改内部位姿。"""
 
         if isinstance(command, CorrectExecutionCommand):
             return SimMotionResult(ExecutionOutcome.COMPLETED, self._advance_time(1.0), self._pose, 0.0, self._pose.yaw_deg)
@@ -86,7 +104,6 @@ class SimWorld:
         self._last_frame_id = "sim-frame-{}".format(self._observation_count)
         branches = self._road_features(scope, traversal_id)
         targets = []
-        current_road = self._current_road_edge()
         for edge_id, region in self._observable_targets(scope, traversal_id):
             if edge_id in self._truth_blocked:
                 targets.append(TargetDetection("OBSTACLE", region, 1.0, True))
@@ -102,7 +119,7 @@ class SimWorld:
         return SimTaskResult(ExecutionOutcome.COMPLETED, self._advance_time(1.0), "completed")
 
     def snapshot(self) -> SimWorldSnapshot:
-        """返回真值世界的不可变副本。"""
+        """返回真值世界的不可变副本；位姿字段来自 provider（若已装配）。"""
 
         return SimWorldSnapshot(self.seed, self._now, self._pose,
                                 frozenset(self._truth_blocked), frozenset(self._truth_culvert),
@@ -121,28 +138,54 @@ class SimWorld:
         return self._now
 
     def _translate(self, distance):
-        radians = math.radians(self._pose.yaw_deg)
-        self._pose = WorldPose(self._pose.x_mm + distance * math.cos(radians),
-                               self._pose.y_mm + distance * math.sin(radians), self._pose.yaw_deg)
+        if self._pose_provider is not None:
+            return
+        radians = math.radians(self._internal_pose.yaw_deg)
+        self._internal_pose = WorldPose(
+            self._internal_pose.x_mm + distance * math.cos(radians),
+            self._internal_pose.y_mm + distance * math.sin(radians),
+            self._internal_pose.yaw_deg,
+        )
 
     def _turn(self, trajectory_id, fallback, target_traversal_id=None):
-        """转弯完成后车尾吸附到目标巡航边在当前路口一侧的端口。"""
-        name = str(trajectory_id).lower()
-        sign = 1.0 if "left" in name else -1.0 if "right" in name else 0.0
-        yaw_deg = (self._pose.yaw_deg + sign * fallback) % 360.0
+        """转弯完成后对齐到目标边方向，并落到目标路口中心沿出口边的前向落点。"""
+
+        if self._pose_provider is not None:
+            return
+
+        # 撤回等没有目标边的场景：仅按方向符号旋转，位置不动。
         if target_traversal_id is None:
-            self._pose = WorldPose(self._pose.x_mm, self._pose.y_mm, yaw_deg)
+            name = str(trajectory_id).lower()
+            sign = 1.0 if "left" in name else -1.0 if "right" in name else 0.0
+            self._internal_pose = WorldPose(
+                self._internal_pose.x_mm,
+                self._internal_pose.y_mm,
+                (self._internal_pose.yaw_deg + sign * fallback) % 360.0,
+            )
             return
 
         from_node_id, to_node_id = target_traversal_id.split("->", 1)
-        cruise_edge = self.topology.get_cruise_edge(from_node_id, to_node_id)
-        first_edge = self.topology.get_physical_edge(cruise_edge.physical_edge_ids[0])
-        source_endpoint_id = next(
-            node_id for node_id in (first_edge.from_node_id, first_edge.to_node_id)
-            if node_id != from_node_id and node_id.startswith(from_node_id + ".P_")
+        from_node = self.topology.get_node(from_node_id)
+        to_node = self.topology.get_node(to_node_id)
+
+        yaw_deg = math.degrees(math.atan2(
+            to_node.y_mm - from_node.y_mm,
+            to_node.x_mm - from_node.x_mm,
+        ))
+
+        dx = to_node.x_mm - from_node.x_mm
+        dy = to_node.y_mm - from_node.y_mm
+        length = math.hypot(dx, dy)
+        if length == 0.0:
+            self._internal_pose = WorldPose(from_node.x_mm, from_node.y_mm, yaw_deg)
+            return
+        ux, uy = dx / length, dy / length
+        self._internal_pose = WorldPose(
+            from_node.x_mm + ux * 171.0,
+            from_node.y_mm + uy * 171.0,
+            yaw_deg,
         )
-        endpoint = self.topology.get_node(source_endpoint_id)
-        self._pose = WorldPose(endpoint.x_mm, endpoint.y_mm, yaw_deg)
+
     def _nearest_junction(self):
         nodes = [self.topology.get_node(node_id) for node_id in self.topology.node_ids()]
         return min(nodes, key=lambda node: (node.x_mm - self._pose.x_mm) ** 2 + (node.y_mm - self._pose.y_mm) ** 2)
@@ -188,7 +231,8 @@ class SimWorld:
         edge = self.topology.get_physical_edge(edge_id)
         ratio = self._culvert_positions.get(edge_id, self._obstacle_positions.get(edge_id, 0.5))
         near_ratio = ratio if self._belongs_to_junction(edge.from_node_id, junction_id) else 1.0 - ratio
-        if traversal_id is not None and edge_id == self._current_road_edge()[2]:
+        current_road = self._current_road_edge()
+        if traversal_id is not None and current_road is not None and edge_id == current_road[2]:
             near_ratio = 1.0 - ratio if traversal_id.endswith("->" + junction_id) == False else ratio
         return near_ratio <= self.JUNCTION_NEAR_RATIO
 

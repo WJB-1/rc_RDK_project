@@ -10,7 +10,6 @@ from typing import Optional, Protocol, Tuple, Union
 # 导入机器人不可变状态，供只读查询端口声明其唯一允许返回的动态位置数据。
 from navigation.domain.state import RobotState
 
-
 class ChoreographySourceKind(Enum):
     """编排剧本的来源类别，供协调器区分正常、倒车和路口撤回流程。"""
 
@@ -22,6 +21,8 @@ class ChoreographySourceKind(Enum):
     JUNCTION_RECOVERY = "junction_recovery"
     # 表示由出发分析器请求、用于 START 到 J_START 的固定启动流程。
     DEPARTURE = "departure"
+    # 表示从 J_START 驶入 START 中心并停车的最终返场流程。
+    FINAL_RETURN = "final_return"
 
 
 class ChoreographyStageKind(Enum):
@@ -35,8 +36,12 @@ class ChoreographyStageKind(Enum):
     OBSERVE_POST_TURN = "observe_post_turn"
     # 沿普通长边固定前进至观察区。
     DRIVE_TO_OBSERVATION_ZONE = "drive_to_observation_zone"
+    # 沿当前巡航边前进到目标路口端点前的提前转弯窗口。
+    DRIVE_TO_TURN_WINDOW = "drive_to_turn_window"
     # 在普通长边观察区执行视觉/IPM 观察。
     OBSERVE_AT_ZONE = "observe_at_zone"
+    CORRECT_AT_JUNCTION = "correct_at_junction"
+    CORRECT_AT_OBSERVATION_ZONE = "correct_at_observation_zone"
     # 按当前状态中的剩余距离驶入下一路口中心。
     DRIVE_TO_NEXT_CENTER = "drive_to_next_center"
     # 执行到达任务目标后的打卡或涵洞侦查任务。
@@ -45,6 +50,8 @@ class ChoreographyStageKind(Enum):
     REVERSE_TO_SAFE_JUNCTION = "reverse_to_safe_junction"
     # 沿完成的前向转弯轨迹反向撤回。
     RETRACE_TURN = "retrace_turn"
+    # 已驶入 START 中心后请求运动控制器保持停车。
+    STOP_AT_START = "stop_at_start"
 
 
 class ObservationScope(Enum):
@@ -72,6 +79,8 @@ class DrivePurpose(Enum):
 
     # 表示从路口中心经验性前进至普通长边的观察区。
     TO_OBSERVATION_ZONE = "to_observation_zone"
+    # 表示驶入目标路口端点前的提前转弯窗口。
+    TO_TURN_WINDOW = "to_turn_window"
     # 表示按当前校正后的剩余距离驶入下一路口中心。
     TO_NEXT_CENTER = "to_next_center"
 
@@ -140,6 +149,10 @@ class ChoreographyStage:
     source_action_id: Optional[str] = None
     # 倒车阶段成功后应抵达的安全路口；非倒车阶段为空。
     safe_node_id: Optional[str] = None
+    # 撤回转弯阶段使用的已标定反向轨迹；其他阶段为空。
+    retrace_trajectory_id: Optional[str] = None
+    # 出发等固定剧本可显式指定相对转向，避免固定动作被当前几何位置误判为掉头。
+    requested_turn_direction: Optional[TurnDirection] = None
 
 
 @dataclass(frozen=True)
@@ -238,6 +251,8 @@ class RetraceTurnCommand:
 
     # 必须引用协调器已记录的成功前向转弯动作。
     source_action_id: str
+    # 与原前向转弯对应的反向真实轨迹标识。
+    retrace_trajectory_id: str
 
 
 @dataclass(frozen=True)
@@ -249,8 +264,14 @@ class StopCommand:
 
 
 # 声明所有允许出现在 Action 中的类型化命令，调用者不能传入裸字符串或参数字典。
+@dataclass(frozen=True)
+class CorrectPoseCommand:
+    """请求运动系统执行一次视觉回正。"""
+
+
 ActionCommand = Union[
     ObserveCommand,
+    CorrectPoseCommand,
     TurnAtJunctionCommand,
     DriveDistanceCommand,
     ExecuteTaskCommand,
@@ -271,7 +292,6 @@ class AlignToTraversalEffect:
 
     # 转弯成功后将写入路口动作上下文的目标有向巡航边。
     target_traversal_id: str
-
 
 @dataclass(frozen=True)
 class AdvanceOnTraversalEffect:
@@ -313,16 +333,39 @@ class CompleteTaskEffect:
 class StopEffect:
     """表示停止动作成功后协调器不得继续生成普通后续动作。"""
 
+@dataclass(frozen=True)
+class AdvanceAtNodeEffect:
+    """沿指定巡航边前进或后退，逻辑位置保持 AtNode。"""
+
+    # 前进所沿的有向巡航边。
+    traversal_id: str
+    # 正值沿 from->to 前进，负值沿反方向后退，单位毫米。
+    distance_mm: float
+
+@dataclass(frozen=True)
+class SequentialEffect:
+    """顺序执行的多个子效果，EventProjector 依次应用后一次性写入状态。"""
+
+    # 子效果必须按执行顺序排列，EventProjector 只按顺序 reduce。
+    effects: Tuple["ActionExpectedEffect", ...]
+
+@dataclass(frozen=True)
+class TeleportToNodeEffect:
+    """把物理位置直接设为指定路口中心，逻辑位置保持当前值。"""
+    node_id: str
 
 # 声明所有允许出现在 Action 中的状态投影模板，模板永远不下发给执行器。
 ActionExpectedEffect = Union[
     AwaitObservationEffect,
     AlignToTraversalEffect,
+    AdvanceAtNodeEffect,       # 新增
     AdvanceOnTraversalEffect,
     ArriveAtNodeEffect,
     RetraceTurnEffect,
     CompleteTaskEffect,
     StopEffect,
+    SequentialEffect,          # 新增
+    TeleportToNodeEffect,
 ]
 
 
@@ -446,18 +489,13 @@ class ChoreographyAdvanceResult:
         # 枚举之外的状态没有安全语义，必须显式失败。
         raise ValueError("未知的编排推进结果状态")
 
-
 class NavigationStateQuery(Protocol):
-    """编排器访问导航域动态状态的最小只读端口。
-
-    谁调用：`Choreographer` 在解释流程阶段时读取。
-    谁响应：后续 `NavigationRuntime` 或测试替身实现本端口。
-    输入输出：返回不可变机器人状态或指定巡航边的阻塞布尔值。
-    状态影响：查询不得修改机器人、地图、任务、流程或执行器。
-    """
+    """编排器访问导航域动态状态的最小只读端口。"""
 
     def robot_state(self) -> RobotState:
         """返回当前不可变机器人逻辑状态。"""
+        ...
 
     def is_traversal_blocked(self, traversal_id: str) -> bool:
         """返回指定有向巡航边是否已被运行时地图封锁。"""
+        ...

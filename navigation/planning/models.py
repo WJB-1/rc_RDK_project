@@ -8,7 +8,14 @@ from enum import Enum
 from typing import Optional, Protocol, Tuple
 
 # 导入安全路口、领域快照和目标，规划层只读取这些对象而不拥有其状态。
-from navigation.domain import AtNode, Goal, RobotState, RuntimeMapSnapshot
+from navigation.domain import AtNode, Goal, RobotState, RuntimeMapSnapshot, Task
+
+
+class PlanningPhase(Enum):
+    """规划器读取的当前业务阶段，不赋予规划器状态转移权限。"""
+
+    TASK_PROCESSING = "task_processing"
+    RETURNING = "returning"
 
 
 class JunctionPassability(Enum):
@@ -82,10 +89,23 @@ class PlanningStateQuery(Protocol):
 
     def robot_state(self) -> RobotState:
         """返回当前不可变机器人状态。"""
+        ...
 
     def runtime_map_snapshot(self) -> RuntimeMapSnapshot:
         """返回当前不可变动态地图快照。"""
+        ...
 
+    def pending_tasks(self) -> Tuple["Task", ...]:
+        """返回当前仍待办的长期任务快照。"""
+        ...
+
+    def mission_phase(self) -> "PlanningPhase":
+        """返回当前规划阶段。"""
+        ...
+
+    def mission_finished(self) -> bool:
+        """返回任务配额是否已完成。"""
+        ...
 
 class RoutePlanOutcome(Enum):
     """正常路线规划的显式结果类别，协调器据此决定继续编排或报告不可达。"""
@@ -96,6 +116,9 @@ class RoutePlanOutcome(Enum):
     NO_ROUTE = "no_route"
     # 当前规划无法满足协调器指定的首边节点或朝向约束。
     CONSTRAINT_UNSATISFIED = "constraint_unsatisfied"
+    TASKS_COMPLETED = "tasks_completed"
+    TRAPPED = "trapped"
+    INVALID_STATE = "invalid_state"
 
 
 class RecoveryPlanOutcome(Enum):

@@ -37,6 +37,8 @@ class NavigationRuntimeSnapshot:
     last_completed_turn: Optional[object]
     # Coordinator 诊断信息的不可变副本。
     diagnostics: Tuple[str, ...]
+    tasks: Tuple[object, ...] = ()
+    task_progress: object = None
 
 
 class NavigationRuntime:
@@ -71,6 +73,15 @@ class NavigationRuntime:
 
         return getattr(self._coordinator, "_navigation_state", None)
 
+    @property
+    def tasks(self):
+        """Return the coordinator's task snapshots without exposing the coordinator."""
+
+        registry = getattr(self._coordinator, "_task_registry", None)
+        if registry is None or not callable(getattr(registry, "list_tasks", None)):
+            return ()
+        return tuple(registry.list_tasks())
+
     def start(self) -> None:
         """标记导航门面已就绪，并驱动 Coordinator 生成第一条出发动作。
 
@@ -95,4 +106,6 @@ class NavigationRuntime:
             is_waiting_interrupt=self._coordinator.is_waiting_interrupt,
             last_completed_turn=self._coordinator.last_completed_turn,
             diagnostics=tuple(self._coordinator.diagnostics),
+            tasks=tuple(self.tasks),
+            task_progress=self._coordinator.task_progress,
         )

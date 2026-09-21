@@ -32,14 +32,13 @@ if PROJECT_ROOT.name == "robocup_rescue_brain":
 import yaml
 
 from utils.logger import get_logger
-from hardware.camera import CameraManager
-from perception.lane_tracker import LaneTracker
-from perception.perception_adapter import culvert_detection_to_event, obstacle_detection_to_event
+from perception.devices.camera import CameraManager
+from perception.pipelines.lane_tracker import LaneTracker
 from web import WebPushServer
 from navigation.state_machine import AgentStateMachine
 from navigation.domain.topology import get_topology
 from communication.robot_bridge import RobotBridge
-from vision.algorithms.crossroad_seg import detect_crossroad_from_seg, confirm_crossroad_seg, estimate_distance as seg_estimate_distance
+from perception.algorithms.crossroad_seg import detect_crossroad_from_seg, confirm_crossroad_seg, estimate_distance as seg_estimate_distance
 
 
 def _attach_child_loggers():
@@ -321,7 +320,7 @@ class RescueBrain:
 
         def _load_worker():
             try:
-                from vision.tools import VisionToolsImpl
+                from perception.tooling import VisionToolsImpl
                 t0 = time.time()
                 vision = VisionToolsImpl(yolo_model_path=yolo_path_full)
                 self._vision_tools = vision
@@ -366,6 +365,13 @@ class RescueBrain:
         支持手动控制 + 自动模式切换。
         """
         self.logger.info(f"[调试面板] 收到指令: {cmd}, 参数: {payload}")
+
+        if cmd == 'set_semantic_gate':
+            if self.lane_tracker is None:
+                raise RuntimeError('LaneTracker not initialized')
+            enabled = self.lane_tracker.set_semantic_gate(bool(payload.get('enabled', False)))
+            self.logger.info(f"[vision] semantic gate: {'enabled' if enabled else 'disabled'}")
+            return
 
         if cmd == 'set_mode':
             self._manual_mode = (payload.get('mode', 'manual') == 'manual')
@@ -453,10 +459,14 @@ class RescueBrain:
         if self.web is None:
             return
 
+        lane_state = self.lane_tracker.last_lane_state if self.lane_tracker is not None else {}
         self.web.update(
             seg_frame=seg_frame,
             offset_mm=offset_mm,
             is_intersection=is_intersection,
+            semantic_gate_available=bool(self.lane_tracker and self.lane_tracker.semantic_engine is not None),
+            semantic_gate_enabled=bool(self.lane_tracker and self.lane_tracker.semantic_gate_enabled),
+            quality_score=float((lane_state or {}).get('quality_score', 0.0)),
         )
 
         x, y, yaw = self.agent.get_position()
@@ -596,9 +606,7 @@ class RescueBrain:
                             if culvert_result.is_wall_detection:
                                 wall_type = self._validate_wall_detection(culvert_result)
                                 if wall_type == "culvert":
-                                    culvert_event = culvert_detection_to_event(
-                                        culvert_result, "side")
-                                    self.agent.on_culvert_detected(culvert_event)
+                                    self.logger.info("检测到涵洞侧壁；Navigation 观察端口尚未启用")
                                 elif wall_type == "tunnel":
                                     self.logger.info("隧道侧墙检测，忽略")
                             else:
@@ -611,10 +619,7 @@ class RescueBrain:
                                                 if b.class_id == 2]
                                 if culvert_boxes:
                                     best = max(culvert_boxes, key=lambda b: b.confidence)
-                                    culvert_event = culvert_detection_to_event(
-                                        culvert_result, "front")
-                                    culvert_event.confidence = best.confidence
-                                    self.agent.on_culvert_entrance_detected(culvert_event)
+                                    self.logger.info("检测到涵洞入口，置信度 %.3f；Navigation 观察端口尚未启用", best.confidence)
                                 if tunnel_boxes:
                                     self.logger.info("隧道口检测（标签2），仅记录，不动作")
                 except Exception as e:
@@ -628,8 +633,7 @@ class RescueBrain:
                             front_frame, seg_mask=seg_mask
                         )
                         if obstacle_result.detected and obstacle_result.in_lane:
-                            obs_event = obstacle_detection_to_event(obstacle_result)
-                            self.agent.on_obstacle_detected(obs_event)
+                            self.logger.info("检测到车道内障碍物；Navigation 观察端口尚未启用")
                 except Exception as e:
                     self.logger.exception(f"障碍物检测异常: {e}")
 

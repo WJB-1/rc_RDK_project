@@ -58,5 +58,27 @@ class WebStateBridge:
         if "runtime_map" not in navigation_data:
             store = getattr(self._runner, "state_store", None)
             navigation_data["runtime_map"] = _json_value(store.runtime_map_snapshot()) if store is not None and callable(getattr(store, "runtime_map_snapshot", None)) else {}
+        runtime = getattr(self._runner, "navigation_runtime", None) or getattr(self._runner, "runtime", None)
+        if "tasks" not in navigation_data and runtime is not None:
+            tasks = getattr(runtime, "tasks", ())
+            navigation_data["tasks"] = _json_value(tasks)
+        timeline = simulation_data.get("timeline", ())
+        events = []
+        for item in timeline:
+            if isinstance(item, (list, tuple)) and len(item) >= 2:
+                events.append({"timestamp": item[0], "kind": "action_completed", "message": "completed action {}".format(item[1])})
+        if navigation_data.get("state") is not None:
+            events.append({"timestamp": simulation_data.get("now", 0), "kind": "navigation_state", "message": "state: {}".format(navigation_data["state"])})
+        navigation_data["events"] = events
+        if "map" not in navigation_data:
+            topology = getattr(getattr(self._runner, "world", None), "topology", None)
+            if topology is not None:
+                nodes = []
+                for node_id in getattr(topology, "_nodes_by_id", {}):
+                    node = topology.get_node(node_id)
+                    nodes.append({"node_id": node.node_id, "x_mm": node.x_mm, "y_mm": node.y_mm, "node_kind": node.node_kind})
+                edges = []
+                for edge in getattr(topology, "_edges_by_id", {}).values():
+                    edges.append({"edge_id": edge.edge_id, "from_node_id": edge.from_node_id, "to_node_id": edge.to_node_id, "length_mm": edge.length_mm, "road_kind": edge.road_kind})
+                navigation_data["map"] = {"nodes": nodes, "edges": edges}
         return {"simulation": simulation_data, "world": world, "navigation": navigation_data}
-

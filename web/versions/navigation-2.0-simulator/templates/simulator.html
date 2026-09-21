@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="zh-CN">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Navigation 2.0 Simulator</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/simulator.css') }}">
+</head>
+
+<body>
+  <header class="topbar"><strong>RoboCup Rescue Brain</strong><span>Navigation 2.0 Simulator</span><span
+      id="connection">连接中</span><time id="clock">--</time></header>
+  <main class="workspace">
+    <aside class="panel sidebar">
+      <section id="seed-controls">
+        <h2>场景种子</h2>
+        <div class="seed-row"><input id="seed" type="number" value="0" step="1"><button
+            data-command="RESET">RESET(seed)</button></div>
+        <p id="command-error" class="error"></p>
+      </section>
+      <section>
+        <h2>仿真控制</h2>
+        <div id="simulation-controls" class="button-grid"><button data-command="START">Start</button><button
+            data-command="PAUSE">Pause</button><button data-command="RESUME">Resume</button><button
+            data-command="STEP">Step</button><button data-command="STOP" class="danger">Stop</button></div>
+        <dl class="telemetry">
+          <dt>状态</dt>
+          <dd id="runner-state">--</dd>
+          <dt>时间</dt>
+          <dd id="sim-time">--</dd>
+          <dt>动作</dt>
+          <dd id="action-count">--</dd>
+          <dt>World 位姿<br><small>(SimWorld 真值)</small></dt>
+          <dd id="pose">--</dd>
+          <dt>Robot 位姿<br><small>(RobotState 计划)</small></dt>
+          <dd id="robot-pose">--</dd>
+          <dt>位姿差<br><small>(Robot - World)</small></dt>
+          <dd id="pose-diff">--</dd>
+          <dt>逻辑位置</dt>
+          <dd id="robot-location">--</dd>
+        </dl>
+        <dd id="pose">--</dd>
+        </dl>
+      </section>
+      <section>
+        <h2>任务</h2>
+        <table id="task-table">
+          <thead>
+            <tr>
+              <th>任务</th>
+              <th>目标</th>
+              <th>生命周期</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </section>
+      <section>
+        <h2>事件日志</h2>
+        <ol id="event-log" class="event-log"></ol>
+      </section>
+    </aside>
+    <section class="panel map-panel">
+      <div class="panel-heading">
+        <h2>实体赛道</h2><label>叠层 <select id="view-mode">
+            <option value="runtime">RuntimeMap（已探明）</option>
+            <option value="truth">世界真值</option>
+          </select></label>
+      </div><canvas id="map-canvas" width="900" height="650"></canvas>
+      <div class="legend"><span><i class="edge unknown"></i>未知道路</span><span><i
+            class="edge clear"></i>确认通行</span><span><i class="edge blocked"></i>障碍物</span><span><i
+            class="edge culvert"></i>涵洞</span><span><i class="truth-line"></i>真值视图</span></div>
+    </section>
+    <aside class="panel inspector">
+      <h2>导航诊断</h2>
+      <dl class="telemetry">
+        <dt>State</dt>
+        <dd id="nav-state">--</dd>
+        <dt>Substate</dt>
+        <dd id="nav-substate">--</dd>
+        <dt>Action</dt>
+        <dd id="current-action">--</dd>
+        <dt>Request</dt>
+        <dd id="current-request">--</dd>
+        <dt>RuntimeMap</dt>
+        <dd id="runtime-map-counts">--</dd>
+      </dl>
+      <h3>Diagnostics</h3>
+      <pre id="diagnostics">--</pre>
+    </aside>
+  </main>
+  <script src="{{ url_for('static', filename='js/snapshot-client.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/map-renderer.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/simulator-page.js') }}"></script>
+</body>
+
+</html>

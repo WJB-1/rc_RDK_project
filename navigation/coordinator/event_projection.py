@@ -1,7 +1,13 @@
 """把已校验的执行终局投影为导航域状态变化。"""
 
+import math
+from typing import Optional
+
 from navigation.contracts import (
     AdvanceOnTraversalEffect,
+    AlignToTraversalEffect,
+    AdvanceAtNodeEffect,
+    SequentialEffect,
     ArriveAtNodeEffect,
     Action,
     CompleteTaskEffect,
@@ -12,8 +18,10 @@ from navigation.contracts import (
     EdgePassability,
     DriveDistanceCommand,
     ReverseDistanceCommand,
+    RetraceTurnEffect,
     RetraceTurnCommand,
     TurnAtJunctionCommand,
+    TeleportToNodeEffect,
 )
 from navigation.domain import (
     AbsoluteMapUpdate,
@@ -21,20 +29,22 @@ from navigation.domain import (
     AtNode,
     MapUpdateAuthority,
     MapObservationScope,
+    TrackTopology, 
     OnCruiseEdge,
     ProgressSource,
     RobotState,
+    WorldPose,
     TaskKind,
 )
 from .context import LastMotionRecord
 
-
 class EventProjector:
     """集中处理动作成功后的机器人逻辑位置投影。"""
 
-    def __init__(self, state, task_registry=None, perception_adapter=None, location_projector=None, on_map_update=None, diagnostics=None, context=None) -> None:
-        """保存状态、任务、感知和地图影响回调依赖。"""
-
+    def __init__(self, state, task_registry=None, perception_adapter=None,
+                location_projector=None, on_map_update=None, diagnostics=None,
+                context=None, topology: Optional[TrackTopology] = None) -> None:
+        self._topology: Optional[TrackTopology] = topology
         self._state = state
         self._task_registry = task_registry
         self._perception_adapter = perception_adapter
@@ -47,51 +57,26 @@ class EventProjector:
         """按动作预期效果把成功中断写入机器人状态。"""
 
         self._record_motion(action)
+        self._apply_effect(action.expected_effect, interrupt)
 
-        effect = action.expected_effect
-        if isinstance(effect, ArriveAtNodeEffect):
-            if self._state is None:
-                self._diagnostics.append("未装配导航状态，无法投影路口到达")
-                return
-            current = self._state.robot_state()
-            self._state.replace_robot_state(
-                RobotState(
-                    AtNode(effect.node_id, effect.entry_traversal_id),
-                    current.heading_deg,
-                    current.progress_source,
-                    current.pending_replan,
-                )
-            )
+    def _edge_length_mm(self, from_node_id, to_node_id):
+        """查询巡航边长度；无拓扑或未知边时返回 None。"""
 
-        if not isinstance(effect, AdvanceOnTraversalEffect):
-            return
-        if self._state is None or interrupt.odometry_delta_mm is None:
-            if self._state is None:
-                self._diagnostics.append("未装配导航状态，无法投影里程增量")
-            return
-        current = self._state.robot_state()
-        from_node_id, to_node_id = effect.traversal_id.split("->", 1)
-        if isinstance(current.location, OnCruiseEdge):
-            if current.location.traversal_id != effect.traversal_id:
-                return
-            base_progress_mm = current.location.progress_mm
-        elif isinstance(current.location, AtNode) and current.location.node_id == from_node_id:
-            base_progress_mm = 0.0
-        else:
-            return
-        self._state.replace_robot_state(
-            RobotState(
-                OnCruiseEdge(
-                    effect.traversal_id,
-                    from_node_id,
-                    to_node_id,
-                    base_progress_mm + interrupt.odometry_delta_mm,
-                ),
-                current.heading_deg,
-                ProgressSource.ODOMETRY,
-                current.pending_replan,
-            )
-        )
+        if self._topology is None:
+            return None
+        try:
+            edge = self._topology.get_cruise_edge(from_node_id, to_node_id)
+        except KeyError:
+            return None
+        return getattr(edge, "length_mm", None)
+
+    @staticmethod
+    def _actual_heading_or_geometry(interrupt, dy_mm, dx_mm):
+        """优先采用下位机完成反馈的实际航向，几何方向仅作兼容回退。"""
+
+        if interrupt.actual_heading_deg is not None:
+            return interrupt.actual_heading_deg
+        return math.degrees(math.atan2(dy_mm, dx_mm))
 
     def _record_motion(self, action: Action) -> None:
         """记录成功运动动作摘要，供撤回转弯等恢复流程使用。"""
@@ -112,6 +97,8 @@ class EventProjector:
             is_turn=is_turn,
             traversal_id=getattr(command, "traversal_id", None),
             forward_trajectory_id=trajectory_id,
+            retrace_trajectory_id=getattr(command, "retrace_trajectory_id", None),
+            target_traversal_id=getattr(command, "target_traversal_id", None),   # 新增
             junction_id=(
                 getattr(command, "target_traversal_id", "").split("->", 1)[0]
                 if is_turn and getattr(command, "target_traversal_id", None)
@@ -198,3 +185,150 @@ class EventProjector:
             return
         current_state = self._state.robot_state()
         self._state.replace_robot_state(self._location_projector.correct_from_landmark(current_state, correction))
+
+    def _apply_effect(self, effect, interrupt):
+        """按单个 effect 类型更新机器人状态。"""
+        self._diagnostics.append("EFFECT {}".format(type(effect).__name__))
+        if self._state is None:
+            self._diagnostics.append("未装配导航状态，无法投影效果")
+            return
+
+        # 顺序复合：依次应用每个子效果，最后一次写入状态。
+        if isinstance(effect, SequentialEffect):
+            for sub in effect.effects:
+                self._apply_effect(sub, interrupt)
+            return
+
+        current = self._state.robot_state()
+
+        if isinstance(effect, AlignToTraversalEffect):
+            if self._topology is None:
+                self._diagnostics.append("未装配拓扑，无法对齐朝向")
+                return
+            new_pose = self._align_world_pose(
+                current.world_pose, effect.target_traversal_id
+            )
+            self._state.replace_robot_state(RobotState(
+                current.location, new_pose,
+                current.progress_source, current.pending_replan,
+            ))
+            return
+
+        if isinstance(effect, AdvanceAtNodeEffect):
+            if self._topology is None:
+                self._diagnostics.append("未装配拓扑，无法推进物理位置")
+                return
+            new_pose = self._advance_world_pose(
+                current.world_pose, effect.traversal_id, effect.distance_mm
+            )
+            self._state.replace_robot_state(RobotState(
+                current.location, new_pose,
+                current.progress_source, current.pending_replan,
+            ))
+            return
+
+        if isinstance(effect, ArriveAtNodeEffect):
+            self._state.replace_robot_state(RobotState(
+                AtNode(effect.node_id, effect.entry_traversal_id),
+                current.world_pose,
+                current.progress_source, current.pending_replan,
+            ))
+            return
+
+        if isinstance(effect, RetraceTurnEffect):
+            self._diagnostics.append(
+                "RetraceTurnEffect 已弃用；撤回转弯应由 SequentialEffect 表达"
+            )
+            return
+
+        if isinstance(effect, TeleportToNodeEffect):
+            if self._topology is None:
+                self._diagnostics.append("未装配拓扑，无法执行物理瞬移")
+                return
+            node = self._topology.get_node(effect.node_id)
+            new_pose = WorldPose(
+                node.x_mm, node.y_mm, current.world_pose.yaw_deg
+            )
+            self._state.replace_robot_state(RobotState(
+                current.location, new_pose,
+                current.progress_source, current.pending_replan,
+            ))
+            return
+
+        if isinstance(effect, AdvanceOnTraversalEffect):
+            from_node_id, to_node_id = effect.traversal_id.split("->", 1)
+
+            # ---- 逻辑位置投影（保留原行为）----
+            if isinstance(current.location, OnCruiseEdge):
+                if current.location.traversal_id != effect.traversal_id:
+                    return
+                base_progress_mm = current.location.progress_mm
+            elif isinstance(current.location, AtNode) and current.location.node_id == from_node_id:
+                base_progress_mm = 0.0
+            else:
+                return
+
+            new_progress_mm = base_progress_mm + effect.planned_distance_mm
+
+            # ---- 物理位置投影 ----
+            if self._topology is not None:
+                new_pose = self._advance_world_pose(
+                    current.world_pose, effect.traversal_id, effect.planned_distance_mm
+                )
+            else:
+                new_pose = current.world_pose
+
+            edge_length_mm = self._edge_length_mm(from_node_id, to_node_id)
+
+            if edge_length_mm is not None and new_progress_mm >= edge_length_mm - 1.0:
+                self._state.replace_robot_state(RobotState(
+                    AtNode(to_node_id, effect.traversal_id),
+                    new_pose,
+                    ProgressSource.ODOMETRY,
+                    current.pending_replan,
+                ))
+                return
+
+            self._state.replace_robot_state(RobotState(
+                OnCruiseEdge(effect.traversal_id, from_node_id, to_node_id, new_progress_mm),
+                new_pose,
+                ProgressSource.ODOMETRY,
+                current.pending_replan,
+            ))
+            return
+
+        # 其他 effect（AwaitObservationEffect、CompleteTaskEffect、StopEffect）不改位置
+        return
+
+
+    def _advance_world_pose(self, world_pose, traversal_id, distance_mm):
+        """沿 traversal_id 方向推进 world_pose，逻辑位置不变。"""
+        if self._topology is None:
+            return world_pose
+        from_node_id, to_node_id = traversal_id.split("->", 1)
+        from_node = self._topology.get_node(from_node_id)
+        to_node = self._topology.get_node(to_node_id)
+        dx = to_node.x_mm - from_node.x_mm
+        dy = to_node.y_mm - from_node.y_mm
+        length = math.hypot(dx, dy)
+        if length == 0.0:
+            return world_pose
+        ux, uy = dx / length, dy / length
+        return WorldPose(
+            world_pose.x_mm + ux * distance_mm,
+            world_pose.y_mm + uy * distance_mm,
+            world_pose.yaw_deg,
+        )
+
+    def _align_world_pose(self, world_pose, target_traversal_id):
+        """将 world_pose 的朝向对齐到 target_traversal_id 方向，位置不变。"""
+        if self._topology is None:
+            return world_pose
+        from_node_id, to_node_id = target_traversal_id.split("->", 1)
+        from_node = self._topology.get_node(from_node_id)
+        to_node = self._topology.get_node(to_node_id)
+        yaw_deg = math.degrees(math.atan2(
+            to_node.y_mm - from_node.y_mm,
+            to_node.x_mm - from_node.x_mm,
+        ))
+        return WorldPose(world_pose.x_mm, world_pose.y_mm, yaw_deg)

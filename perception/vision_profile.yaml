@@ -1,0 +1,177 @@
+cameras:
+  front:
+    device_id: 0
+    width: 1920
+    height: 1080
+    fps: 30
+    exposure: -1
+    auto_focus: false
+  side:
+    device_id: 1
+    width: 1920
+    height: 1080
+    fps: 30
+    exposure: -1
+    auto_focus: true
+led:
+  front_pin: 17
+  side_pin: 27
+  tunnel_brightness: 255
+  normal_brightness: 128
+edge_detection:
+  model_path: "models/pidinet_small_dil_512x384_x5_bayese.bin"
+  input_width: 512
+  input_height: 384
+  threshold: 0.25
+  angle_tol_deg: 3.0
+  normal_dist_tol: 8.0
+  semantic_gate:
+    enabled: false
+    model_path: "models/bisenetv2_lane_x5.bin"
+    input_size: 512
+    target_class: 1
+    min_coverage: 0.01
+    line_thickness: 3
+  debug_pair_profile: "auto"
+  pair_profiles:
+    lane: {min_mm: 190.0, max_mm: 210.0, target_mm: 200.0}
+    wall_outer: {min_mm: 236.0, max_mm: 250.0, target_mm: 236.0, height_mm: 50.0}
+math_ipm:
+  img_w: 1920
+  img_h: 1080
+  focal_length_mm: 2.8
+  pixel_size_mm: 0.003
+  fx_px: 1148.5534828996256
+  fy_px: 1148.5534828996256
+  cx_px: 947.8505552892422
+  cy_px: 567.5025328444085
+  camera_calibration:
+    enabled: true
+    image_width: 1920
+    image_height: 1080
+    fx_px: 1148.5534828996256
+    fy_px: 1148.5534828996256
+    cx_px: 947.8505552892422
+    cy_px: 567.5025328444085
+    distortion: [0.03958995851910604, -0.04525247266910747, 0.001291725575952253, 0.0018078485914911084, -0.0739306041524181]
+  camera_height_mm: 163.52111350206778
+  pitch_deg: 35.41572788367764
+  canvas_w: 400
+  canvas_h: 400
+  pixel_per_mm: 0.5
+  blind_spot_mm: 90.0
+track:
+  lane_width_mm: 200.0
+yolo:
+  model_path: "models/yolov8_detection_x5.bin"
+  confidence_threshold: 0.5
+debug:
+  show_video: false
+
+lane_detection:
+  # ---- 去畸变：原始相机标定（主点 947.85） ----
+  undistort_camera:
+    enabled: true
+    image_width: 1920
+    image_height: 1080
+    fx_px: 1148.5534828996256
+    fy_px: 1148.5534828996256
+    cx_px: 947.8505552892422
+    cy_px: 567.5025328444085
+    distortion: [0.03958995851910604, -0.04525247266910747, 0.001291725575952253, 0.0018078485914911084, -0.0739306041524181]
+
+  # ---- IPM / 车道提取：标定后参数（主点 1247.85，+300px 偏移） ----
+  ipm_camera:
+    img_w: 1920
+    img_h: 1080
+    focal_length_mm: 2.8
+    pixel_size_mm: 0.003
+    fx_px: 1148.553483
+    fy_px: 1148.553483
+    cx_px: 1247.850555
+    cy_px: 567.502533
+    camera_height_mm: 163.561848
+    pitch_deg: 38.044078
+    roll_deg: 0.221316
+    yaw_deg: 0.0
+    canvas_w: 400
+    canvas_h: 400
+    pixel_per_mm: 0.5
+    blind_spot_mm: 90.0
+
+  # ---- 模型输入尺寸 ----
+  input_size: [512, 384]
+
+  # ---- 六线模板（x_at_ref, mm） ----
+  template_x_at_ref_mm:
+    "0": 99.771
+    "1": -99.789
+    "2": 144.157
+    "3": -144.721
+    "4": 170.861
+    "5": -171.389
+
+  # ---- 身份权重 ----
+  identity_weights:
+    "0": 1.0
+    "1": 1.0
+    "2": 0.5
+    "3": 0.5
+    "4": 0.2
+    "5": 0.2
+
+  # ---- 车道宽度 ----
+  lane_width_mm: 200.0
+
+  # ---- 机器人几何 ----
+  robot_geometry:
+    body_length_mm: 142.0
+    body_width_mm: 120.0
+    camera_forward_of_body_front_mm: 60.0
+    camera_lateral_offset_mm: 0.0
+
+  # ---- 地面段合并 ----
+  merge:
+    angle_tol_deg: 2.0
+    normal_tol_mm: 12.0
+    min_length_mm: 40.0
+
+  # ---- Hough 检测 ----
+  hough:
+    rho: 1
+    theta_deg: 1.0
+    threshold: 30
+    min_length_ratio: 0.08
+    max_gap_ratio: 0.02
+
+  # ---- 边缘二值化 ----
+  edge:
+    threshold: 64
+    skeleton_close_kernel: 3
+
+  # ---- 模板匹配 ----
+  matching:
+    candidate_radius_mm: 20.0
+    candidate_radius_first_frame_mm: 40.0
+    max_candidates_per_slot: 3
+    parallel_angle_tol_deg: 3.0
+    min_parallel_lines: 3
+    ground_y_max_mm: 2000.0
+    y_ref_mm: 500.0
+
+  # ---- 置信度 ----
+  confidence:
+    high: 0.6
+    low: 0.3
+    inferred_factor: 0.5
+    fit_scale: 10.0
+    lane_precision_scale: 5.0
+    weights: [0.4, 0.3, 0.3]
+
+  # ---- BEV 画布 ----
+  bev:
+    x_min: -600.0
+    x_max: 600.0
+    y_min: -250.0
+    y_max: 800.0
+    ppm: 0.9

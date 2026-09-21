@@ -71,3 +71,5 @@ class Goal:
     task_id: Optional[str] = None
     # 涵洞任务在目标路口需要面对的物理道路；打卡和返航目标没有该限制。
     approach_edge_id: Optional[str] = None
+    # 探索目标要求路线最后必须驶过该有向巡航边；普通任务和返回目标保持为空。
+    required_final_traversal_id: Optional[str] = None

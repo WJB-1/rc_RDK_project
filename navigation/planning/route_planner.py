@@ -1,19 +1,19 @@
 """实现只按合法物理距离搜索的有向正常路径规划器。"""
 
 # 导入最小堆，Dijkstra 以累计物理距离优先扩展候选状态。
-import heapq
 # 导入反正切函数，将起点车头与首段道路比较为是否原地掉头。
 import math
 # 导入 Python 3.8 兼容的字典、可选值和元组类型注解。
 from typing import Dict, Optional, Tuple
 
 # 导入领域目标、巡航边和拓扑，规划器只读取这些静态与不可变事实。
-from navigation.domain import AtNode, CruiseEdge, Goal, RuntimeMapSnapshot, TrackTopology
+from navigation.domain import AtNode, CruiseEdge, EdgeKnowledgeStatus, Goal, GoalKind, RuntimeMapSnapshot, TrackTopology
 # 导入本层查询、步骤、计划和结果数据包，避免返回裸列表或异常表达不可达。
 from .models import (
     EscapeAssessment,
     EscapeDirectionAssessment,
     JunctionPassability,
+    PlanningPhase,
     PlanningStateQuery,
     RoutePlan,
     RoutePlanOutcome,
@@ -21,6 +21,10 @@ from .models import (
     RouteQuery,
     RouteStep,
 )
+from .shortest_path import GlobalShortestPath
+from .target_selection import TargetSelector
+from .reachability import ReachabilityAnalyzer
+from .escape_assessor import EscapeAssessor
 
 
 class RoutePlanner:
@@ -39,6 +43,14 @@ class RoutePlanner:
         self._topology = topology
         # 可选只读状态口供局部脱困查询使用，普通路径搜索仍以 RouteQuery 快照为准。
         self._state_query = state_query
+        self._target_selector = TargetSelector(topology)
+        self._reachability_analyzer = ReachabilityAnalyzer(topology)
+        self._escape_assessor = EscapeAssessor(topology, self._reachability_analyzer)
+
+    def bind_read_state(self, state_query) -> None:
+        """由组合层注入规划只读端口，不改变任务、地图或机器人状态的所有权。"""
+
+        self._state_query = state_query
 
     def assess_escape(self) -> EscapeAssessment:
         """报告当前路口前后左右的局部通路事实，不选择方向或完整路线。"""
@@ -52,6 +64,20 @@ class RoutePlanner:
             raise ValueError("只有 AtNode 才能进行局部脱困查询")
         # 读取同一时刻的动态地图快照，保证四个方向使用一致的阻塞事实。
         map_snapshot = self._state_query.runtime_map_snapshot()
+        if all(hasattr(self._state_query, name) for name in ("pending_tasks", "mission_phase", "mission_finished")):
+            selection = self._target_selector.select(
+                self._state_query.mission_phase(),
+                tuple(self._state_query.pending_tasks()),
+                bool(self._state_query.mission_finished()),
+                map_snapshot,
+            )
+            return self._escape_assessor.assess(
+                robot_state,
+                map_snapshot,
+                selection.goals,
+                self._passability,
+                self._relative_direction,
+            )
         results = {
             "forward": EscapeDirectionAssessment(JunctionPassability.ABSENT, False),
             "left": EscapeDirectionAssessment(JunctionPassability.ABSENT, False),
@@ -60,7 +86,7 @@ class RoutePlanner:
         }
         # 将每条静态出边按相对朝向归类，并把物理边阻塞映射为局部状态。
         for cruise_edge in self._topology.outgoing_cruise_edges(robot_state.location.node_id):
-            direction = self._relative_direction(robot_state.location.node_id, cruise_edge, robot_state.heading_deg)
+            direction = self._relative_direction(robot_state.location.node_id, cruise_edge, robot_state.world_pose.yaw_deg)
             if direction is None:
                 continue
             passability = self._passability(cruise_edge, map_snapshot)
@@ -72,9 +98,9 @@ class RoutePlanner:
     def _passability(self, cruise_edge: CruiseEdge, map_snapshot) -> JunctionPassability:
         """将一条完整巡航边的物理事实合成为四状态之一。"""
 
-        if self._is_blocked_snapshot(cruise_edge, map_snapshot.blocked_edge_ids):
+        if any(self._edge_status(map_snapshot, edge_id) is EdgeKnowledgeStatus.BLOCKED for edge_id in cruise_edge.physical_edge_ids):
             return JunctionPassability.BLOCKED
-        if all(edge_id in map_snapshot.confirmed_clear_edge_ids for edge_id in cruise_edge.physical_edge_ids):
+        if all(self._edge_status(map_snapshot, edge_id) is EdgeKnowledgeStatus.CLEAR for edge_id in cruise_edge.physical_edge_ids):
             return JunctionPassability.CLEAR
         return JunctionPassability.UNOBSERVED
 
@@ -83,12 +109,13 @@ class RoutePlanner:
 
         if status in (JunctionPassability.ABSENT, JunctionPassability.BLOCKED):
             return False
-        reachability = getattr(self._state_query, "can_escape_via", None)
-        if reachability is not None:
-            return bool(reachability(direction, cruise_edge.traversal_id))
         return True
 
-    def plan(self, query: RouteQuery, candidates: Tuple[Goal, ...]) -> RoutePlanResult:
+    def plan(
+        self,
+        query: Optional[RouteQuery] = None,
+        candidates: Optional[Tuple[Goal, ...]] = None,
+    ) -> RoutePlanResult:
         """在候选目标中选择合法 Dijkstra 距离最小且标识稳定的路线。
 
         谁调用：后续 `Coordinator` 需要从待办任务候选中选择下一个目标时调用。
@@ -97,30 +124,102 @@ class RoutePlanner:
         状态影响：只读搜索，不会开始任务或写入地图。
         """
 
-        # 保存当前最优成功结果，初始时尚未找到任何可达候选。
-        best_result: Optional[RoutePlanResult] = None
-        # 逐个搜索候选，避免目标派生器承担路径距离计算职责。
+        if query is None or candidates is None:
+            return self._plan_from_read_state()
+
+        return self._plan_candidates_globally(query, candidates)
+
+    def _plan_candidates_globally(self, query: RouteQuery, candidates: Tuple[Goal, ...]) -> RoutePlanResult:
+        """一次全局 Dijkstra 覆盖全部候选目标，再按距离和标识选择最优路线。"""
+
+        map_snapshot = self._current_map_snapshot(query)
+        start_state = (query.start_node_id, query.entry_traversal_id)
+        distances, predecessors = GlobalShortestPath(self._topology, map_snapshot).search(start_state, query.heading_deg)
+        best_result = None
+        best_plan = None
         for candidate in candidates:
-            # 复用指定目标搜索，保证两个公开入口遵循同一掉头和阻塞规则。
-            result = self.plan_to(query, candidate)
-            # 不可达候选不能参与最短路线比较，继续检查其余候选。
-            if result.outcome is not RoutePlanOutcome.PLANNED:
-                continue
-            # 第一个成功候选暂时成为当前最优路线。
-            if best_result is None:
-                best_result = result
-                continue
-            # 先按总物理距离比较，再按目标标识稳定打破完全相同距离的平局。
-            current_key = (result.plan.total_distance_mm, result.plan.selected_goal.goal_id)
-            best_key = (best_result.plan.total_distance_mm, best_result.plan.selected_goal.goal_id)
-            if current_key < best_key:
-                best_result = result
-        # 至少一个候选成功时返回最优结果，而不是重新包装或修改路线对象。
+            for state, distance_mm in distances.items():
+                node_id, entry_traversal_id = state
+                if node_id != candidate.arrival_node_id:
+                    continue
+                if candidate.required_final_traversal_id is not None and entry_traversal_id != candidate.required_final_traversal_id:
+                    continue
+                if self._entered_via_approach_edge(entry_traversal_id, candidate):
+                    continue
+                result = self._build_result(query, candidate, state, predecessors, distance_mm, map_snapshot)
+                result = self._enforce_entry_constraint(query, result)
+                if result.outcome is not RoutePlanOutcome.PLANNED:
+                    continue
+                if result.plan is None or not result.plan.steps:
+                    continue
+                plan = result.plan
+                if best_result is None or best_plan is None:
+                    best_result = result
+                    best_plan = plan
+                    continue
+                if (
+                    plan.total_distance_mm,
+                    plan.selected_goal.goal_id,
+                ) < (
+                    best_plan.total_distance_mm,
+                    best_plan.selected_goal.goal_id,
+                ):
+                    best_result = result
+                    best_plan = plan
         if best_result is not None:
             return best_result
-        # 候选为空或全部不可达时明确返回失败，协调器据此进入等待或异常策略。
         return RoutePlanResult(RoutePlanOutcome.NO_ROUTE, None, "没有合法路线")
 
+    def _plan_from_read_state(self) -> RoutePlanResult:
+        """从只读状态端口读取任务态现场；任务完成时拒绝越权规划返回路线。"""
+
+        if self._state_query is None:
+            return RoutePlanResult(RoutePlanOutcome.INVALID_STATE, None, "未装配规划只读状态端口")
+        mission_phase = getattr(self._state_query, "mission_phase", None)
+        mission_finished = getattr(self._state_query, "mission_finished", None)
+        pending_tasks = getattr(self._state_query, "pending_tasks", None)
+        if mission_phase is None or mission_finished is None or pending_tasks is None:
+            return RoutePlanResult(RoutePlanOutcome.INVALID_STATE, None, "规划状态端口缺少任务或阶段只读查询")
+        phase = mission_phase()
+        selection = self._target_selector.select(
+            phase,
+            tuple(pending_tasks()),
+            bool(mission_finished()),
+            self._state_query.runtime_map_snapshot(),
+        )
+        if selection.outcome is not None:
+            return RoutePlanResult(selection.outcome, None, selection.reason)
+        state = self._state_query.robot_state()
+        if not isinstance(state.location, AtNode):
+            return RoutePlanResult(RoutePlanOutcome.INVALID_STATE, None, "正常规划要求机器人位于安全路口")
+
+        # 已经位于某个待办任务的到达节点：交给上层完成任务，而不是生成 0 步空计划。
+        for goal in selection.goals:
+            if goal.kind is not GoalKind.TASK_ARRIVAL:
+                continue
+            if goal.task_id is None:
+                continue
+            if goal.arrival_node_id != state.location.node_id:
+                continue
+            if goal.required_final_traversal_id is not None and state.location.entry_traversal_id != goal.required_final_traversal_id:
+                continue
+            if self._entered_via_approach_edge(state.location.entry_traversal_id, goal):
+                continue
+            return RoutePlanResult(
+                RoutePlanOutcome.TASKS_COMPLETED,
+                None,
+                "已位于任务目标节点 {}".format(goal.arrival_node_id),
+            )
+
+        query = RouteQuery(state.location.node_id, state.location.entry_traversal_id, state.world_pose.yaw_deg)
+        report = self._reachability_analyzer.analyze(
+            query,
+            selection.goals,
+            self._state_query.runtime_map_snapshot(),
+        )
+        if report.is_trapped:
+            return RoutePlanResult(RoutePlanOutcome.TRAPPED, None, "按当前阶段目标集合分析，机器人处于受困状态")
+        return self.plan(query, selection.goals)
     def plan_to(self, query: RouteQuery, target: Goal) -> RoutePlanResult:
         """只计算到指定目标的最短正常路线，不在内部重新选择任务。
 
@@ -130,8 +229,6 @@ class RoutePlanner:
         状态影响：不修改任何输入对象和运行时状态。
         """
 
-        # 规划器装配共享状态口时始终读取最新地图，不再依赖调用方转发的旧快照。
-        map_snapshot = self._current_map_snapshot(query)
         # 先验证起点与目标节点存在，未知静态标识不能被搜索器猜测处理。
         self._topology.get_node(query.start_node_id)
         self._topology.get_node(target.arrival_node_id)
@@ -141,58 +238,18 @@ class RoutePlanner:
                 return RoutePlanResult(RoutePlanOutcome.CONSTRAINT_UNSATISFIED, None, "首边约束节点与查询起点不一致")
             if abs(query.entry_constraint.required_heading_deg - query.heading_deg) > 0.000001:
                 return RoutePlanResult(RoutePlanOutcome.CONSTRAINT_UNSATISFIED, None, "首边约束朝向与查询朝向不一致")
-        # 状态由当前路口和进入边共同组成，才能在同一节点保留不同的掉头约束。
-        start_state = (query.start_node_id, query.entry_traversal_id)
-        # 记录每个状态已知的最短物理距离。
-        distances: Dict[Tuple[str, Optional[str]], float] = {start_state: 0.0}
-        # 记录每个状态的前驱状态和到达该状态所选巡航边，用于最终重建 RouteStep。
-        predecessors: Dict[Tuple[str, Optional[str]], Tuple[Tuple[str, Optional[str]], CruiseEdge]] = {}
-        # 堆中的序号稳定处理相同距离，避免直接比较可选值造成不确定性。
-        queue = [(0.0, 0, query.start_node_id, query.entry_traversal_id)]
-        # 保存递增序号，保证每次压入队列有确定的次序。
-        sequence = 1
-        # 当起点就是目标时，仍需返回一条零长度的正常路线供协调器处理已到达语义。
-        if query.start_node_id == target.arrival_node_id:
-            result = self._build_result(query, target, start_state, predecessors, 0.0, map_snapshot)
-            return self._enforce_entry_constraint(query, result)
-        # 持续扩展累计距离最小的尚未过期状态。
-        while queue:
-            # 取出当前累计距离最小的有向状态。
-            distance_mm, _, node_id, entry_traversal_id = heapq.heappop(queue)
-            # 队列中较旧的同状态条目已不可能产生更优路线，直接跳过。
-            if distance_mm != distances[(node_id, entry_traversal_id)]:
-                continue
-            # 到达目标路口且末段没有沿涵洞道路驶入时，当前距离才是合法最短距离。
-            if node_id == target.arrival_node_id and not self._entered_via_approach_edge(entry_traversal_id, target):
-                result = self._build_result(query, target, (node_id, entry_traversal_id), predecessors, distance_mm, map_snapshot)
-                return self._enforce_entry_constraint(query, result)
-            # 读取当前路口的静态有向出边，拓扑已保证返回顺序稳定。
-            for cruise_edge in self._topology.outgoing_cruise_edges(node_id):
-                # 任何组成物理边被动态地图阻塞时，本次巡航整体不可通行。
-                if self._is_blocked(cruise_edge, map_snapshot):
-                    continue
-                # 从刚驶入的边立即反向离开属于被禁止的普通掉头。
-                if self._is_reverse(entry_traversal_id, cruise_edge.traversal_id):
-                    continue
-                # 初始位置没有进入边时，用实际车头与首段方向阻止原地 180° 掉头。
-                if entry_traversal_id is None and self._is_initial_uturn(query, cruise_edge):
-                    continue
-                # 新状态记录本次巡航作为到达下一路口的进入边。
-                next_state = (cruise_edge.to_junction, cruise_edge.traversal_id)
-                # 距离只累加道路物理长度，不引入未标定的转向成本。
-                next_distance_mm = distance_mm + cruise_edge.length_mm
-                # 已知同状态的路线更短或等长时保留旧路线，稳定性由出边顺序与目标排序保证。
-                if next_state in distances and distances[next_state] <= next_distance_mm:
-                    continue
-                # 写入新的最短距离与重建所需前驱信息。
-                distances[next_state] = next_distance_mm
-                predecessors[next_state] = ((node_id, entry_traversal_id), cruise_edge)
-                # 将新状态压入最小堆，供后续继续扩展。
-                heapq.heappush(queue, (next_distance_mm, sequence, next_state[0], next_state[1]))
-                # 递增稳定序号，避免相同距离时依赖 Python 对其他字段的比较。
-                sequence += 1
-        # 队列耗尽仍未到达目标，说明阻塞或掉头约束下不存在合法路线。
-        return RoutePlanResult(RoutePlanOutcome.NO_ROUTE, None, "没有合法路线")
+        result = self._plan_candidates_globally(query, (target,))
+        if result.outcome is not RoutePlanOutcome.NO_ROUTE or query.entry_constraint is None:
+            return result
+        unconstrained_query = RouteQuery(
+            query.start_node_id,
+            query.entry_traversal_id,
+            query.heading_deg,
+        )
+        unconstrained_result = self._plan_candidates_globally(unconstrained_query, (target,))
+        if unconstrained_result.outcome is RoutePlanOutcome.PLANNED:
+            return RoutePlanResult(RoutePlanOutcome.CONSTRAINT_UNSATISFIED, None, "路线首边不满足指定首边约束")
+        return result
 
     @staticmethod
     def _enforce_entry_constraint(query: RouteQuery, result: RoutePlanResult) -> RoutePlanResult:
@@ -207,10 +264,13 @@ class RoutePlanner:
         return result
 
     @staticmethod
-    def _is_blocked_snapshot(cruise_edge: CruiseEdge, blocked_edge_ids) -> bool:
-        """根据同一份地图快照判断巡航边是否被阻塞。"""
+    def _edge_status(map_snapshot, edge_id):
+        """统一通过快照边状态接口读取阻塞、畅通或未知。"""
 
-        return any(edge_id in blocked_edge_ids for edge_id in cruise_edge.physical_edge_ids)
+        status_method = getattr(map_snapshot, "edge_status", None)
+        if status_method is not None:
+            return status_method(edge_id)
+        return EdgeKnowledgeStatus.BLOCKED if edge_id in map_snapshot.blocked_edge_ids else EdgeKnowledgeStatus.UNKNOWN
 
     def _relative_direction(self, node_id: str, cruise_edge: CruiseEdge, heading_deg: float) -> Optional[str]:
         """将一条出边按当前车头归类为前、左、右或后。"""
@@ -262,13 +322,6 @@ class RoutePlanner:
         from_node_id, to_node_id = entry_traversal_id.split("->", 1)
         # 只有恰好回到刚离开的路口才是普通路线禁止的 180° 掉头。
         return next_traversal_id == "{}->{}".format(to_node_id, from_node_id)
-
-    @staticmethod
-    def _is_blocked(cruise_edge: CruiseEdge, map_snapshot: RuntimeMapSnapshot) -> bool:
-        """判断巡航组成物理边是否与统一状态层快照中的阻塞事实相交。"""
-
-        # 任一物理段被阻塞都使中心到中心巡航无法安全通过。
-        return any(edge_id in map_snapshot.blocked_edge_ids for edge_id in cruise_edge.physical_edge_ids)
 
     def _current_map_snapshot(self, query: RouteQuery) -> RuntimeMapSnapshot:
         """返回规划时刻地图；地图只能从装配的共享只读状态口读取。"""

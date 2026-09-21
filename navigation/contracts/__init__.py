@@ -21,6 +21,7 @@ from .execution import (
     IAsyncExecutor,
     ObserveExecutionCommand,
     RetraceTurnExecutionCommand,
+    CorrectExecutionCommand,
     ReverseExecutionCommand,
     StopExecutionCommand,
     TargetCompletion,
@@ -46,6 +47,8 @@ from .choreography import (
     ActionExpectedEffect,
     AdvanceOnTraversalEffect,
     AlignToTraversalEffect,
+    AdvanceAtNodeEffect,
+    SequentialEffect,
     ArriveAtNodeEffect,
     AwaitObservationEffect,
     ChoreographyAdvanceResult,
@@ -68,6 +71,7 @@ from .choreography import (
     NavigationStateQuery,
     ObservationScope,
     ObserveCommand,
+    CorrectPoseCommand,
     RetraceTurnCommand,
     RetraceTurnEffect,
     ReverseDistanceCommand,
@@ -75,6 +79,7 @@ from .choreography import (
     StopEffect,
     TurnAtJunctionCommand,
     TurnDirection,
+    TeleportToNodeEffect,
 )
 
 # 声明本包唯一允许外部依赖的公开类型，避免内部实现意外泄漏。
@@ -96,6 +101,7 @@ __all__ = (
     "DriveExecutionCommand",
     "ReverseExecutionCommand",
     "RetraceTurnExecutionCommand",
+    "CorrectExecutionCommand",
     "ExecuteTaskExecutionCommand",
     "StopExecutionCommand",
     "IAsyncExecutor",
@@ -127,6 +133,7 @@ __all__ = (
     "TurnDirection",
     "DrivePurpose",
     "ObserveCommand",
+    "CorrectPoseCommand",
     "TurnAtJunctionCommand",
     "DriveDistanceCommand",
     "ExecuteTaskCommand",
@@ -136,6 +143,8 @@ __all__ = (
     "ActionCommand",
     "AwaitObservationEffect",
     "AlignToTraversalEffect",
+    "AdvanceAtNodeEffect",
+    "SequentialEffect",
     "AdvanceOnTraversalEffect",
     "ArriveAtNodeEffect",
     "RetraceTurnEffect",
@@ -144,4 +153,5 @@ __all__ = (
     "ActionExpectedEffect",
     "Action",
     "NavigationStateQuery",
+    "TeleportToNodeEffect",
 )

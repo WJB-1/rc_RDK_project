@@ -5,6 +5,8 @@ import time
 # 导入 Python 3.8 兼容的可选类型。
 from typing import Callable, List, Optional
 
+from navigation.choreography import Choreographer
+
 # 导入执行层类型化请求和命令。
 from navigation.contracts import (
     Action,
@@ -21,7 +23,11 @@ from navigation.contracts import (
     IAsyncExecutor,
 )
 from navigation.domain import (
+    AbsoluteMapUpdateKind,
     RobotState,
+    Task,
+    TaskKind,
+    TaskLifecycle,
 )
 from navigation.domain import TrackTopology
 from navigation.planning import RecoveryPlan
@@ -46,7 +52,6 @@ class Coordinator:
     def __init__(
         self,
         executor: IAsyncExecutor,
-        choreographer,
         clock: Callable[[], float] = time.time,
         state_store=None,
         perception_adapter=None,
@@ -57,47 +62,79 @@ class Coordinator:
         task_registry=None,
         route_planner=None,
         recovery_planner=None,
+        culvert_quota: int = 0,
     ) -> None:
-        """保存已装配依赖，并把自身注册为执行器唯一终局消费者。"""
+        """保存已装配依赖，并把自身注册为执行器唯一终局消费者。
+
+        Choreographer 和 EventProjector 都由本类在内部构建，两者共享同一个
+        CoordinatorContext，避免外部重复装配或 context 不一致。
+        """
 
         # 执行器只负责受理命令和回传终局，协调器不判断仿真或真实环境。
         self._executor = executor
-        # 编排器只负责把剧本指针解释为一条 Action。
-        self._choreographer = choreographer
         # 注入时钟以便测试请求身份和时间字段，不读取系统时间以外的业务状态。
         self._clock = clock
-        # 状态端口由 Runtime 装配，Coordinator 是唯一可以提交新 RobotState 的业务方。
+
+        # ---- 1. 状态端口 ----
         # 新版只接收统一状态层；旧参数仅通过适配器兼容迁移中的测试和装配代码。
         self._navigation_state = navigation_state
         if self._navigation_state is None and (state_store is not None or runtime_map is not None):
             self._navigation_state = LegacyNavigationStateAdapter(state_store, runtime_map)
+
         # 感知适配器只负责翻译单帧，地图和位置仍由 Coordinator 统一消费。
         self._perception_adapter = perception_adapter
-        # 运行时地图由 Coordinator 写入，适配器本身不持有地图写权限。
         # 位置投影器只接收已确认的视觉校正，不直接参与感知翻译。
         self._location_projector = location_projector
         # 静态拓扑用于把地图更新的物理边映射到活动路线的巡航边。
         self._topology = topology
         # 任务注册表由 Coordinator 在提交和确认任务动作时推进生命周期。
         self._task_registry = task_registry
-        # 正常规划器负责自行选目标和生成路线，Coordinator 只消费其结果。
+
+        # ---- 2. 涵洞配额 ----
+        if culvert_quota < 0:
+            raise ValueError("culvert_quota 不能为负数")
+        self._culvert_quota = int(culvert_quota)
+        self._culvert_task_sequence = 0
+
+        # ---- 3. 唯一 context（必须在 state_query 和 choreographer 之前）----
+        self._context = CoordinatorContext()
+
+        # ---- 4. 共享只读状态查询口 ----
+        # 只有同时具备 navigation_state 和 topology 才能构造出可用的 state_query。
+        # 若任一缺失，route_planner 与 choreographer 会被降级为不可用，构造时显式拒绝。
+        self._state_query = None
+        if self._navigation_state is not None and self._topology is not None:
+            self._state_query = CoordinatorPlanningReadAdapter(
+                self._navigation_state,
+                self._task_registry,
+                lambda: self._context.state,
+                self._topology,
+                mission_finished_provider=lambda: self.task_requirements_met,
+            )
+
+        # ---- 5. 内部构建 Choreographer，共享同一个 context ----
+        if self._state_query is None or self._topology is None:
+            self.diagnostics = []
+            raise ValueError("无法创建 Choreographer：缺少 navigation_state 或 topology")
+        self._choreographer = Choreographer(
+            self._topology,
+            self._state_query,
+            task_registry=self._task_registry,
+            context=self._context,
+        )
+
+        # ---- 6. 正常规划器 ----
+        # 规划器自行选目标和生成路线，Coordinator 只消费其结果。
         self._route_planner = route_planner
-        if self._route_planner is not None and self._navigation_state is not None:
+        if self._route_planner is not None and self._state_query is not None:
             bind_read_state = getattr(self._route_planner, "bind_read_state", None)
             if bind_read_state is not None:
-                bind_read_state(
-                    CoordinatorPlanningReadAdapter(
-                        self._navigation_state,
-                        self._task_registry,
-                        lambda: self._context.state,
-                        self._topology,
-                    )
-                )
+                bind_read_state(self._state_query)
+
         # 恢复规划器负责自行选择倒车目标，Coordinator 不传入安全路口参数。
         self._recovery_planner = recovery_planner
-        # 四个内部流程对象按外层状态承载阶段业务，公共执行入口仍由本类统一维护。
-        # 保存外层状态与内部阶段，供事件入口和调试面板读取。
-        self._context = CoordinatorContext()
+
+        # ---- 7. 四个内部流程对象按外层状态承载阶段业务 ----
         # 分析器是各主状态的业务决策者；Coordinator 只负责选择它并统一执行动作。
         self._analyzers = {
             CoordinatorState.DEPARTURE: DepartureAnalyzer(self),
@@ -105,6 +142,8 @@ class Coordinator:
             CoordinatorState.ESCAPE: EscapeAnalyzer(self),
             CoordinatorState.RETURNING: ReturningAnalyzer(self),
         }
+
+        # ---- 8. 泵循环与诊断 ----
         # 防止执行器回调在泵循环内部重入，保证一次只运行一个状态机泵。
         self._pump_running = False
         self._pump_requested = False
@@ -115,26 +154,26 @@ class Coordinator:
         self._last_choreography_status = None
         # 记录返场剧本完成后的终局，避免继续尝试生成普通路线。
         self._mission_finished = False
-        # 记录最近成功转弯，供局部恢复引用而不要求执行器缓存历史。
         # 记录诊断信息但不把迟到事件重新解释为业务动作。
         self.diagnostics: List[str] = []
+
+        # ---- 9. EventProjector，共享同一个 context ----
         # 投影器集中处理执行反馈写入，地图影响仍回调 Coordinator 做路线生命周期分流。
-        self._event_projector = (
-            EventProjector(
-                self._navigation_state,
-                task_registry=self._task_registry,
-                perception_adapter=self._perception_adapter,
-                location_projector=self._location_projector,
-                on_map_update=self.handle_map_update,
-                diagnostics=self.diagnostics,
-                context=self._context,
-            )
-            
+        self._event_projector = EventProjector(
+            self._navigation_state,
+            task_registry=self._task_registry,
+            perception_adapter=self._perception_adapter,
+            location_projector=self._location_projector,
+            on_map_update=self.handle_map_update,
+            diagnostics=self.diagnostics,
+            context=self._context,
+            topology=self._topology,
         )
+
+        # ---- 10. 注册执行器中断回调 ----
         # Coordinator 直接接收执行器终局，NavigationRuntime 不参与中断转发。
         if self._executor is not None:
-            self._executor.on_interrupt(self.handle_execution_interrupt)
-
+            self._executor.on_interrupt(self._on_executor_interrupt)
     @property
     def current_action(self) -> Optional[Action]:
         """返回当前唯一在途动作，供运行时和调试面板只读查看。"""
@@ -178,6 +217,41 @@ class Coordinator:
         return self._mission_finished
 
     @property
+    def task_requirements_met(self) -> bool:
+        """返回任务配额是否完成，返航本身不属于此判定。"""
+
+        if self._task_registry is None:
+            return False
+        tasks = self._task_registry.list_tasks()
+        if not tasks:
+            return False
+        if any(task.lifecycle is not TaskLifecycle.COMPLETED for task in tasks if task.kind is not TaskKind.CULVERT_RECON):
+            return False
+        completed_culverts = sum(
+            task.lifecycle is TaskLifecycle.COMPLETED
+            for task in tasks
+            if task.kind is TaskKind.CULVERT_RECON
+        )
+        return completed_culverts >= self._culvert_quota
+
+    @property
+    def task_progress(self):
+        """返回供调试面板展示的任务配额快照。"""
+
+        tasks = self._task_registry.list_tasks() if self._task_registry is not None else ()
+        check_in_tasks = tuple(task for task in tasks if task.kind is TaskKind.CHECK_IN)
+        culvert_tasks = tuple(task for task in tasks if task.kind is TaskKind.CULVERT_RECON)
+        return {
+            "check_in_total": len(check_in_tasks),
+            "check_in_completed": sum(task.lifecycle is TaskLifecycle.COMPLETED for task in check_in_tasks),
+            "check_in_pending": sum(task.lifecycle is not TaskLifecycle.COMPLETED for task in check_in_tasks),
+            "culvert_target": self._culvert_quota,
+            "culvert_discovered": len(culvert_tasks),
+            "culvert_completed": sum(task.lifecycle is TaskLifecycle.COMPLETED for task in culvert_tasks),
+            "culvert_pending": sum(task.lifecycle is not TaskLifecycle.COMPLETED for task in culvert_tasks),
+        }
+
+    @property
     def substate(self):
         """返回当前外层状态对应的内部阶段。"""
 
@@ -190,6 +264,81 @@ class Coordinator:
         if self._context.state is CoordinatorState.RETURNING:
             return self._context.return_substate
         return None
+
+    @staticmethod
+    def _format_command_args(command) -> str:
+        """按命令类型列出关键参数，供日志对照仿真执行。"""
+        from navigation.contracts import (
+            DriveDistanceCommand, ReverseDistanceCommand,
+            TurnAtJunctionCommand, RetraceTurnCommand,
+            ObserveCommand, ExecuteTaskCommand, StopCommand,
+        )
+        if isinstance(command, DriveDistanceCommand):
+            return "traversal={} distance={:.1f}mm purpose={}".format(
+                command.traversal_id, command.distance_mm, command.purpose.value
+            )
+        if isinstance(command, ReverseDistanceCommand):
+            return "traversal={} distance={:.1f}mm safe={}".format(
+                command.traversal_id, command.distance_mm, command.safe_node_id
+            )
+        if isinstance(command, TurnAtJunctionCommand):
+            return "dir={} target={} fwd={} retrace={}".format(
+                command.turn_direction.value, command.target_traversal_id,
+                command.forward_trajectory_id, command.retrace_trajectory_id,
+            )
+        if isinstance(command, RetraceTurnCommand):
+            return "source={} retrace={}".format(
+                command.source_action_id, command.retrace_trajectory_id
+            )
+        if isinstance(command, ObserveCommand):
+            return "scope={} traversal={}".format(
+                command.scope.value, command.traversal_id
+            )
+        if isinstance(command, ExecuteTaskCommand):
+            return "task_id={}".format(command.task_id)
+        if isinstance(command, StopCommand):
+            return "reason={}".format(command.reason)
+        return ""
+
+    @staticmethod
+    def _format_effect(effect) -> str:
+        """递归格式化 expected_effect，展示顺序复合中的每个子效果参数。"""
+        from navigation.contracts import (
+            AdvanceAtNodeEffect, AdvanceOnTraversalEffect,
+            AlignToTraversalEffect, ArriveAtNodeEffect,
+            TeleportToNodeEffect, SequentialEffect,
+            CompleteTaskEffect, StopEffect, AwaitObservationEffect,
+            RetraceTurnEffect,
+        )
+        if isinstance(effect, SequentialEffect):
+            return "[" + " -> ".join(
+                Coordinator._format_effect(sub) for sub in effect.effects
+            ) + "]"
+        if isinstance(effect, AdvanceAtNodeEffect):
+            return "AdvanceAtNode({}, {:.1f}mm)".format(
+                effect.traversal_id, effect.distance_mm
+            )
+        if isinstance(effect, AdvanceOnTraversalEffect):
+            return "AdvanceOnTraversal({}, {:.1f}mm)".format(
+                effect.traversal_id, effect.planned_distance_mm
+            )
+        if isinstance(effect, AlignToTraversalEffect):
+            return "AlignTo({})".format(effect.target_traversal_id)
+        if isinstance(effect, ArriveAtNodeEffect):
+            return "ArriveAtNode({}, {})".format(
+                effect.node_id, effect.entry_traversal_id
+            )
+        if isinstance(effect, TeleportToNodeEffect):
+            return "TeleportTo({})".format(effect.node_id)
+        if isinstance(effect, CompleteTaskEffect):
+            return "CompleteTask({})".format(effect.task_id)
+        if isinstance(effect, StopEffect):
+            return "Stop"
+        if isinstance(effect, AwaitObservationEffect):
+            return "AwaitObservation"
+        if isinstance(effect, RetraceTurnEffect):
+            return "RetraceTurn({})".format(effect.source_action_id)
+        return type(effect).__name__
 
     def enter_exception(self, reason: str) -> None:
         """记录异常原因并进入异常终局，不再生成普通动作。"""
@@ -216,30 +365,72 @@ class Coordinator:
     def _pump(self) -> None:
         """运行状态机直到异步等待、无法推进或进入终局。"""
 
-        # 回调可能在泵运行期间到达，只登记一次待处理请求，避免递归调用。
         if self._pump_running:
             self._pump_requested = True
             return
         self._pump_running = True
+        pump_round = 0
         try:
             while True:
+                pump_round += 1
                 self._pump_requested = False
-                if self._context.state is CoordinatorState.EXCEPTION:
+
+                # 无进展保护：单次 _pump 内最多允许 64 轮
+                if pump_round > 64:
+                    self.diagnostics.append(
+                        "PUMP 无进展保护触发：连续 64 轮未退出，state={} active_plan={} current_request={}".format(
+                            self._context.state.value,
+                            getattr(self._context.active_plan, "choreography_id", None),
+                            self._context.current_request is not None,
+                        )
+                    )
                     return
+
+                if self._context.state is CoordinatorState.EXCEPTION:
+                    self.diagnostics.append("PUMP 退出：EXCEPTION")
+                    return
+
                 analyzer = self._select_analyzer()
                 if analyzer is None:
+                    self.diagnostics.append("PUMP 退出：当前状态没有分析器，state={}".format(self._context.state.value))
                     return
+
                 previous_state = self._context.state
                 decision = analyzer.run()
-                # 分析器可能在一次判断中完成主状态转移；此时立即重新选择新的分析器。
+
+                self.diagnostics.append(
+                    "PUMP round={} state_before={} state_after={} kind={} reason={} plan={} req={}".format(
+                        pump_round,
+                        previous_state.value,
+                        self._context.state.value,
+                        decision.kind.value,
+                        decision.reason,
+                        getattr(self._context.active_plan, "choreography_id", None),
+                        self._context.current_request is not None,
+                    )
+                )
+
                 if self._context.state is not previous_state:
                     continue
+
                 if decision.kind in (
                     AnalyzerDecisionKind.DISPATCHED,
                     AnalyzerDecisionKind.WAITING,
                     AnalyzerDecisionKind.TERMINAL,
                 ):
+                    self.diagnostics.append("PUMP 退出：decision={}".format(decision.kind.value))
                     return
+
+                if decision.kind is AnalyzerDecisionKind.TRANSITIONED:
+                    self.diagnostics.append(
+                        "TRANSITIONED 但状态未变：state={} reason={} active_plan={} current_request={}".format(
+                            self._context.state.value,
+                            decision.reason,
+                            getattr(self._context.active_plan, "choreography_id", None),
+                            self._context.current_request is not None,
+                        )
+                    )
+
                 if not self._pump_requested:
                     continue
         finally:
@@ -267,17 +458,50 @@ class Coordinator:
         self._last_choreography_status = result.status
         if result.status is ChoreographyAdvanceStatus.FINISHED:
             finished_plan = self._context.active_plan
+            finished_progress = self._context.active_progress
+            self.diagnostics.append(
+                "活动编排流程已结束：plan={} source={} stage_index={} total_stages={}".format(
+                    getattr(finished_plan, "choreography_id", None),
+                    getattr(getattr(finished_plan, "source_kind", None), "value", None),
+                    getattr(finished_progress, "stage_index", None),
+                    len(getattr(finished_plan, "stages", ()) or ()),
+                )
+            )
             self._context.active_plan = None
             self._context.active_progress = None
             self._context.active_planning_result = None
-            self.diagnostics.append("活动编排流程已结束")
             self._on_choreography_finished(finished_plan)
             return None
+        # if result.status is ChoreographyAdvanceStatus.FINISHED:
+        #     finished_plan = self._context.active_plan
+        #     self._context.active_plan = None
+        #     self._context.active_progress = None
+        #     self._context.active_planning_result = None
+        #     self.diagnostics.append("活动编排流程已结束")
+        #     self._on_choreography_finished(finished_plan)
+        #     return None
         if result.status is not ChoreographyAdvanceStatus.READY:
-            self.diagnostics.append("编排器未返回 READY：{}".format(result.status.value))
+            rejection = getattr(result, "rejection", None)
+            reason = getattr(rejection, "reason", None) if rejection is not None else None
+            self.diagnostics.append(
+                "编排器未返回 READY：{} reason={}".format(result.status.value, reason)
+            )
             return None
-        # 在调用执行器前原子保存剧本、动作和下一指针，保证受理期间状态完整。
         action = result.action
+        if action is None:
+            self.diagnostics.append("READY 结果缺少动作")
+            return None
+        # 打印编排动作的完整参数，便于对照仿真执行结果
+        self.diagnostics.append(
+            "DISPATCH stage={} action={} command={}({}) effect={}".format(
+                getattr(self._context.active_progress, "stage_index", -1),
+                action.action_id,
+                type(action.command).__name__,
+                self._format_command_args(action.command),
+                self._format_effect(action.expected_effect),
+            )
+        )
+        # 以下保持原样
         self._context.active_progress = result.next_progress
         self._context.current_action = action
         if not self._auto_drive and self._context.state is CoordinatorState.DEPARTURE:
@@ -329,7 +553,10 @@ class Coordinator:
         analyzer = self._select_analyzer()
         plan_method = None
         if analyzer is not None:
-            plan_method = getattr(analyzer, "plan_return_route", None) or getattr(analyzer, "plan", None)
+            plan_method = (
+                getattr(analyzer, "plan_return_route", None)
+                or getattr(analyzer, "plan", None)
+            )
         if plan_method is None:
             analyzer = self._analyzers.get(CoordinatorState.TASK_PROCESSING)
             plan_method = getattr(analyzer, "plan", None) if analyzer is not None else None
@@ -347,6 +574,8 @@ class Coordinator:
     def handle_map_update(self, update):
         """调用编排器消费地图事实，并只执行其返回的剧本生命周期决定。"""
 
+        if update.kind is AbsoluteMapUpdateKind.DISCOVER_CULVERT:
+            self._register_discovered_culvert(update.edge_id)
         # 涵洞和阻塞是否命中尚未执行路线，由编排器依据阶段游标和静态拓扑判断；
         # Coordinator 不再遍历 RouteStep 或反查物理道路。
         impact = self._handle_active_choreography_map_update(update)
@@ -357,6 +586,31 @@ class Coordinator:
         handler = getattr(analyzer, "handle_map_update", None) if analyzer is not None else None
         result = handler(update) if handler is not None else None
         return result
+
+    def _register_discovered_culvert(self, edge_id: str) -> None:
+        """为首次发现且仍在配额内的涵洞登记待探索任务。"""
+
+        if not edge_id or self._task_registry is None:
+            return
+        if self._culvert_quota <= 0:
+            return
+        existing = tuple(
+            task for task in self._task_registry.list_tasks()
+            if task.kind is TaskKind.CULVERT_RECON and task.target_id == edge_id
+        )
+        if existing:
+            return
+        discovered = sum(task.kind is TaskKind.CULVERT_RECON for task in self._task_registry.list_tasks())
+        if discovered >= self._culvert_quota:
+            return
+        while True:
+            self._culvert_task_sequence += 1
+            task_id = "culvert-{:03d}".format(self._culvert_task_sequence)
+            if not any(task.task_id == task_id for task in self._task_registry.list_tasks()):
+                break
+        transition = self._task_registry.register(Task(task_id, TaskKind.CULVERT_RECON, edge_id))
+        if transition.accepted:
+            self.diagnostics.append("已登记涵洞任务 {} -> {}".format(task_id, edge_id))
 
     def _handle_active_choreography_map_update(self, update):
         """消费编排器路线影响结果；阻塞只登记，到安全路口才同时销毁路线与剧本。"""
@@ -432,7 +686,13 @@ class Coordinator:
             else:
                 self._context.transition(CoordinatorState.TASK_PROCESSING, TaskSubstate.CHOREOGRAPHING)
         elif self._context.state is CoordinatorState.RETURNING:
-            self._context.transition(CoordinatorState.RETURNING, ReturnSubstate.CHOREOGRAPH_TO_START)
+            from navigation.contracts import ChoreographySourceKind
+            substate = (
+                ReturnSubstate.CHOREOGRAPH_FINAL_APPROACH
+                if start_result.plan is not None and start_result.plan.source_kind is ChoreographySourceKind.FINAL_RETURN
+                else ReturnSubstate.CHOREOGRAPH_TO_START
+            )
+            self._context.transition(CoordinatorState.RETURNING, substate)
         self._clear_pending_replan()
         return True
 
@@ -442,12 +702,14 @@ class Coordinator:
         if self._navigation_state is None:
             return
         current_state = self._navigation_state.robot_state()
+        if current_state is None:
+            return
         if not current_state.pending_replan:
             return
         self._navigation_state.replace_robot_state(
             RobotState(
                 current_state.location,
-                current_state.heading_deg,
+                current_state.world_pose,
                 current_state.progress_source,
                 False,
             )
@@ -455,13 +717,22 @@ class Coordinator:
 
     def handle_execution_interrupt(self, interrupt: ExecutionInterrupt) -> bool:
         """把执行器中断直接交给当前分析器，并自动继续状态机泵。"""
-
+    
+        self.diagnostics.append(
+            "INTERRUPT 到达：action={} outcome={} request={}".format(
+                getattr(interrupt, "action_id", None),
+                getattr(getattr(interrupt, "outcome", None), "value", None),
+                getattr(interrupt, "request_id", None),
+            )
+        )
         analyzer = self._select_analyzer()
         if analyzer is None:
             self.diagnostics.append("当前主状态没有对应分析器")
             return False
         decision = analyzer.analyze_interrupt(interrupt)
-        # 分析器已经完成中断公共投影和业务判断；泵负责提交下一动作或重新规划。
+        self.diagnostics.append(
+            "INTERRUPT 决策：kind={} reason={}".format(decision.kind.value, decision.reason)
+        )
         if self._auto_drive and (decision.kind is not AnalyzerDecisionKind.WAITING or self._context.current_request is None):
             self._pump()
         return decision.kind is not AnalyzerDecisionKind.WAITING or self._context.current_request is None
@@ -543,7 +814,7 @@ class Coordinator:
         self._navigation_state.replace_robot_state(
             RobotState(
                 current_state.location,
-                current_state.heading_deg,
+                current_state.world_pose,
                 current_state.progress_source,
                 True,
             )
@@ -560,3 +831,11 @@ class Coordinator:
 
         self._context.current_action = None
         self._context.current_request = None
+        
+    def _on_executor_interrupt(self, interrupt: ExecutionInterrupt) -> None:
+        """适配 IAsyncExecutor.on_interrupt 的 None 返回协议。
+
+        handle_execution_interrupt 的 bool 返回值仅对测试和调试有意义，
+        执行器回调侧忽略它。
+        """
+        self.handle_execution_interrupt(interrupt)

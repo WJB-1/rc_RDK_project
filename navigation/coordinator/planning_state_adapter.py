@@ -8,11 +8,12 @@ from .states import CoordinatorState
 class CoordinatorPlanningReadAdapter:
     """只读转发机器人、地图、任务和当前阶段，不暴露任何写入方法。"""
 
-    def __init__(self, navigation_state, task_registry, phase_provider, topology=None):
+    def __init__(self, navigation_state, task_registry, phase_provider, topology=None, mission_finished_provider=None):
         self._navigation_state = navigation_state
         self._task_registry = task_registry
         self._phase_provider = phase_provider
         self._topology = topology
+        self._mission_finished_provider = mission_finished_provider
 
     def robot_state(self):
         return self._navigation_state.robot_state()
@@ -40,6 +41,8 @@ class CoordinatorPlanningReadAdapter:
         return PlanningPhase.TASK_PROCESSING
 
     def mission_finished(self):
+        if self._mission_finished_provider is not None:
+            return bool(self._mission_finished_provider())
         if self._task_registry is None:
             return False
         tasks = self._task_registry.list_tasks()

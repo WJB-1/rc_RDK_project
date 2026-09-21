@@ -1,7 +1,8 @@
 """脱困状态的业务分析器。"""
 
 from navigation.contracts import ChoreographyAdvanceStatus, ChoreographyStartStatus
-from navigation.planning import RecoveryPlanOutcome
+from navigation.domain import AtNode
+from navigation.planning import RecoveryPlanOutcome, RecoveryQuery
 from ..states import CoordinatorState, EscapeSubstate
 from .base import AnalyzerDecision, AnalyzerDecisionKind, BaseAnalyzer
 
@@ -17,7 +18,6 @@ class EscapeAnalyzer(BaseAnalyzer):
         if coordinator.active_choreography is not None:
             ack = coordinator._dispatch_current_action()
             if coordinator._last_choreography_status is ChoreographyAdvanceStatus.FINISHED:
-                from ..states import CoordinatorState
                 coordinator._context.transition_main(CoordinatorState.TASK_PROCESSING)
                 return AnalyzerDecision(AnalyzerDecisionKind.TRANSITIONED, "脱困剧本完成，回到任务处理")
             if ack is None:
@@ -31,9 +31,46 @@ class EscapeAnalyzer(BaseAnalyzer):
         return AnalyzerDecision(AnalyzerDecisionKind.WAITING, "脱困评估暂未产生剧本")
 
     def assess_and_replan(self, retry_normal=True):
-        """按前、左、右优先评估方向，最后请求倒车恢复路线。"""
         coordinator = self._coordinator
+        # 供评估失败时回退正常规划，避免误入侧支或倒车。
         task_analyzer = coordinator._analyzers.get(CoordinatorState.TASK_PROCESSING)
+        last_turn = getattr(coordinator, "last_completed_turn", None)
+        current_state = getattr(coordinator, "_navigation_state", None)
+        current_robot = current_state.robot_state() if current_state is not None else None
+        location = getattr(current_robot, "location", None) if current_robot is not None else None
+        location_node_id = getattr(location, "node_id", None)
+        turn_at_current_junction = (
+            last_turn is not None
+            and (
+                current_robot is None
+                or (
+                    isinstance(location, AtNode)
+                    and (
+                        last_turn.junction_id is None
+                        or last_turn.junction_id == location_node_id
+                    )
+                )
+            )
+        )
+        coordinator.diagnostics.append(
+            "EscapeAnalyzer.assess_and_replan：last_turn={} junction_id={} current_location={} "
+            "turn_at_current_junction={} retry_normal={}".format(
+                getattr(last_turn, "action_id", None),
+                getattr(last_turn, "junction_id", None),
+                location_node_id or type(location).__name__,
+                turn_at_current_junction,
+                retry_normal,
+            )
+        )
+        if turn_at_current_junction:
+            coordinator.diagnostics.append(
+                "EscapeAnalyzer 判定需要撤回：source_action={} retrace_trajectory={}".format(
+                    last_turn.action_id, last_turn.retrace_trajectory_id
+                )
+            )
+            if self.start_retrace_turn(last_turn.action_id, last_turn.retrace_trajectory_id):
+                coordinator.diagnostics.append("脱困前检测到当前路口已有正向转弯，先撤回转弯")
+                return True
         if retry_normal and task_analyzer is not None and hasattr(task_analyzer, "plan_normal_route"):
             if task_analyzer.plan_normal_route():
                 return True
@@ -45,13 +82,16 @@ class EscapeAnalyzer(BaseAnalyzer):
         assessment = assess_method()
         if self._is_worth_trying(assessment.forward) and task_analyzer is not None and task_analyzer.plan_normal_route():
             return True
-        for report, side in ((assessment.left, "LEFT"), (assessment.right, "RIGHT")):
+        for side, report in self._ordered_side_reports(assessment):
             if self._is_worth_trying(report) and self.start_side_escape(self._turn_direction_by_name(side)):
                 return True
         recovery_planner = coordinator._recovery_planner
         if recovery_planner is None:
             return False
-        recovery_result = recovery_planner.plan()
+        if current_robot is None or not isinstance(current_robot.location, AtNode):
+            coordinator.diagnostics.append("脱困倒车需要 AtNode 位置")
+            return False
+        recovery_result = recovery_planner.plan(RecoveryQuery(location=current_robot.location))
         if recovery_result.outcome is not RecoveryPlanOutcome.RECOVERABLE or recovery_result.plan is None:
             return False
         return coordinator._load_planning_result(recovery_result.plan)
@@ -75,15 +115,38 @@ class EscapeAnalyzer(BaseAnalyzer):
         coordinator._context.active_progress = result.progress
         return True
 
-    def start_retrace_turn(self, source_action_id):
-        """请求编排器沿原转弯轨迹生成撤回剧本。"""
+    def start_retrace_turn(self, source_action_id, retrace_trajectory_id=None):
         coordinator = self._coordinator
+        coordinator.diagnostics.append(
+            "start_retrace_turn 请求：source_action={} retrace_trajectory={} state={}".format(
+                source_action_id, retrace_trajectory_id, coordinator.state.value
+            )
+        )
+        if coordinator.state is CoordinatorState.TASK_PROCESSING:
+            if coordinator._auto_drive:
+                coordinator._context.transition_main(CoordinatorState.ESCAPE)
+            else:
+                coordinator._context.transition(CoordinatorState.ESCAPE, EscapeSubstate.RETRACE_TURN)
         start_method = getattr(coordinator._choreographer, "start_retrace_turn", None)
         if start_method is None:
+            coordinator.diagnostics.append("start_retrace_turn：编排器未提供接口")
             return False
-        result = start_method(source_action_id)
+        result = start_method(source_action_id, retrace_trajectory_id)
         if result.status is not ChoreographyStartStatus.STARTED or result.plan is None or result.progress is None:
+            coordinator.diagnostics.append(
+                "start_retrace_turn 失败：status={} plan={} progress={}".format(
+                    getattr(result.status, "value", result.status),
+                    result.plan is not None,
+                    result.progress is not None,
+                )
+            )
             return False
+        coordinator.diagnostics.append(
+            "start_retrace_turn 成功：choreography_id={} stages={}".format(
+                getattr(result.plan, "choreography_id", None),
+                len(getattr(result.plan, "stages", ()) or ()),
+            )
+        )
         coordinator._context.active_plan = result.plan
         coordinator._context.active_progress = result.progress
         return True
@@ -94,6 +157,29 @@ class EscapeAnalyzer(BaseAnalyzer):
         if hasattr(report, "worth_trying"):
             return bool(report.worth_trying)
         return getattr(report, "name", "") in ("CLEAR", "OPEN", "UNOBSERVED")
+
+    @classmethod
+    def _ordered_side_reports(cls, assessment):
+        """按确定无阻塞优先、两侧同级时固定右侧优先返回侧支候选。"""
+        reports = (("LEFT", assessment.left), ("RIGHT", assessment.right))
+        eligible = [(side, report) for side, report in reports if cls._is_worth_trying(report)]
+        clear = [
+            (side, report)
+            for side, report in eligible
+            if getattr(report, "status", report) in ("clear", "open")
+            or getattr(getattr(report, "status", report), "name", "") in ("CLEAR", "OPEN")
+        ]
+        if clear:
+            clear_ids = {side for side, _ in clear}
+            return tuple(sorted(
+                eligible,
+                key=lambda item: (
+                    0 if item[0] in clear_ids else 1,
+                    0 if item[0] == "RIGHT" else 1,
+                    item[0],
+                ),
+            ))
+        return tuple(sorted(eligible, key=lambda item: (0 if item[0] == "RIGHT" else 1, item[0])))
 
     @staticmethod
     def _turn_direction_by_name(name):

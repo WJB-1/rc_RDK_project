@@ -41,7 +41,6 @@ class SimWorldSnapshot:
     observation_count: int = 0
     frame_id: Optional[str] = None
 
-
 @dataclass(frozen=True)
 class SimulationSnapshot:
     """SimulationRunner 对外提供的组合调试快照。"""
@@ -58,3 +57,7 @@ class SimulationSnapshot:
     last_perception_frame: Optional[PerceptionFrame] = None
     navigation: Optional[object] = None
     timeline: Tuple[object, ...] = ()
+    # 新增：RobotState 的计划物理位姿，供 Web 对照 world.pose 显示
+    robot_state_pose: Optional[WorldPose] = None
+    # 新增：RobotState 逻辑位置的格式化标签，如 "AtNode(N1)" / "Edge(N1->T1_R, 550mm)"
+    robot_location_label: Optional[str] = None

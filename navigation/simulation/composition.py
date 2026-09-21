@@ -1,6 +1,6 @@
 """仿真导航系统的统一组合根。"""
 
-from navigation.choreography import Choreographer, MotionProfile
+from navigation.choreography.choreographer import Choreographer
 from navigation.coordinator import Coordinator
 from navigation.coordinator.planning_state_adapter import CoordinatorPlanningReadAdapter
 from navigation.domain import AtNode, NavigationStateStore, RobotState, RuntimeMap, Task, TaskKind, TaskRegistry, build_default_topology
@@ -32,40 +32,33 @@ def _compose(seed: int):
     """装配一套彼此隔离的世界、执行器和导航依赖。"""
 
     topology = build_default_topology()
-    junction_start = topology.get_node("J_START")
+    start_node = topology.get_node("START")
+    runtime_map = RuntimeMap()
+    state_store = NavigationStateStore(
+        runtime_map,
+        RobotState(
+            AtNode("START"),
+            WorldPose(start_node.x_mm, start_node.y_mm, 90.0),
+        ),
+    )
+    # 世界位姿由 NavigationState 唯一维护；SimWorld 只读 RobotState.world_pose。
     world = SimWorld(
         topology=topology,
         seed=seed,
-        initial_pose=WorldPose(junction_start.x_mm, junction_start.y_mm, 90.0),
+        initial_pose=WorldPose(start_node.x_mm, start_node.y_mm, 90.0),
+        pose_provider=lambda: state_store.robot_state().world_pose,
     )
     topology = world.topology
-    runtime_map = RuntimeMap()
-    state_store = NavigationStateStore(runtime_map, RobotState(AtNode("J_START"), 90.0))
     task_registry = TaskRegistry(tuple(
         Task("check-in-N{}".format(node_id), TaskKind.CHECK_IN, "N{}".format(node_id))
         for node_id in range(1, 12)
     ))
-    coordinator_holder = {}
-    state_query = CoordinatorPlanningReadAdapter(
-        state_store,
-        task_registry,
-        lambda: coordinator_holder["coordinator"].state,
-        topology,
-        mission_finished_provider=lambda: coordinator_holder["coordinator"].task_requirements_met,
-    )
-    choreographer = Choreographer(
-        topology,
-        MotionProfile(initial_observation_advance_mm=300.0),
-        state_query,
-        task_registry,
-    )
-    route_planner = RoutePlanner(topology, state_query)
+    route_planner = RoutePlanner(topology, None)
     recovery_planner = RecoveryPlanner(topology)
     perception_adapter = PerceptionAdapter(state_store, topology)
     executor = SimExecutor((SimMotionPort(world), SimPerceptionPort(world), SimTaskPort(world)))
     coordinator = Coordinator(
         executor=executor,
-        choreographer=choreographer,
         navigation_state=state_store,
         perception_adapter=perception_adapter,
         topology=topology,
@@ -74,5 +67,4 @@ def _compose(seed: int):
         recovery_planner=recovery_planner,
         culvert_quota=8,
     )
-    coordinator_holder["coordinator"] = coordinator
     return world, executor, NavigationRuntime(coordinator)

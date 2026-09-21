@@ -11,8 +11,8 @@ from .commands import CommandDispatcher
 from .state_bridge import WebStateBridge
 
 _WEB_DIR = Path(__file__).parent
-_NAVIGATION_2_TEMPLATE_DIR = _WEB_DIR / "versions" / "navigation-2.0" / "templates"
-_NAVIGATION_2_STATIC_DIR = _WEB_DIR / "versions" / "navigation-2.0" / "static"
+_NAVIGATION_2_TEMPLATE_DIR = _WEB_DIR / "versions" / "navigation-2.0-simulator" / "templates"
+_NAVIGATION_2_STATIC_DIR = _WEB_DIR / "versions" / "navigation-2.0-simulator" / "static"
 
 
 def create_app(runner: Any) -> Flask:
@@ -28,7 +28,7 @@ def create_app(runner: Any) -> Flask:
     @app.get("/")
     def index():
         """返回新的 Dashboard 页面。"""
-        return render_template("dashboard.html")
+        return render_template("simulator.html")
 
     @app.get("/api/snapshot")
     def snapshot():

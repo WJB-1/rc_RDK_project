@@ -40,6 +40,49 @@ class RouteChoreographyFactory:
             return self._build_recovery(route_or_recovery)
         raise TypeError("start 只接受 RoutePlan 或 RecoveryPlan")
 
+    def start_final_return(self):
+        """定位 J_START 到 START 的有向启动桥，并生成最终驶入中心剧本。"""
+
+        robot_state = self._choreographer._state_query.robot_state()
+        if not isinstance(robot_state.location, AtNode) or robot_state.location.node_id != "J_START":
+            return self._rejected_start("最终返场必须从 J_START 路口中心开始")
+        candidates = tuple(
+            edge for edge in self._choreographer._topology.outgoing_cruise_edges("J_START")
+            if edge.to_junction == "START"
+        )
+        if len(candidates) != 1:
+            return self._rejected_start("J_START 到 START 的有向返场边不唯一或不存在")
+        edge = candidates[0]
+        turn_stage = self._choreographer._stage(
+            0, "final_turn", ChoreographyStageKind.TURN_AT_JUNCTION,
+            edge.traversal_id, "J_START",
+        )
+        stage = self._choreographer._stage(
+            1, "final_correct", ChoreographyStageKind.CORRECT_AT_JUNCTION,
+            edge.traversal_id, "J_START",
+        )
+        drive_stage = self._choreographer._stage(
+            2, "final_return", ChoreographyStageKind.DRIVE_TO_NEXT_CENTER,
+            edge.traversal_id, "START",
+        )
+        stop_stage = self._choreographer._stage(
+            3, "final_stop", ChoreographyStageKind.STOP_AT_START,
+            edge.traversal_id, "START",
+        )
+        source_id = "final-return:J_START->START"
+        choreography_id = self._choreographer._choreography_id(
+            source_id, (turn_stage.stage_id, stage.stage_id, stop_stage.stage_id)
+        )
+        plan = ChoreographyPlan(
+            choreography_id, source_id, ChoreographySourceKind.FINAL_RETURN,
+            0, (edge.traversal_id,), (turn_stage, stage, drive_stage, stop_stage),
+        )
+        return ChoreographyStartResult(
+            ChoreographyStartStatus.STARTED,
+            plan,
+            ChoreographyProgress(choreography_id, 0),
+        )
+
     def handle_map_update(self, plan, progress, update):
         """检查新增地图事实是否命中尚未执行的路线，并在涵洞命中时内部替换剧本。"""
 
@@ -129,9 +172,19 @@ class RouteChoreographyFactory:
                 0, "culvert_post", ChoreographyStageKind.OBSERVE_POST_TURN,
                 traversal_id, from_node_id,
             ))
-        if ChoreographyStageKind.DRIVE_TO_NEXT_CENTER not in completed_kinds:
+        if not any(
+            kind in completed_kinds
+            for kind in (
+                ChoreographyStageKind.DRIVE_TO_NEXT_CENTER,
+                ChoreographyStageKind.DRIVE_TO_TURN_WINDOW,
+            )
+        ):
             replacements.append(self._choreographer._stage(
-                0, "culvert_center", ChoreographyStageKind.DRIVE_TO_NEXT_CENTER,
+                0, "culvert_correct", ChoreographyStageKind.CORRECT_AT_JUNCTION,
+                traversal_id, from_node_id,
+            ))
+            replacements.append(self._choreographer._stage(
+                0, "culvert_turn_window", ChoreographyStageKind.DRIVE_TO_TURN_WINDOW,
                 traversal_id, to_node_id,
             ))
         # 涵洞任务在抵达另一端路口后执行，运动收口仍统一为路口中心。
@@ -175,7 +228,7 @@ class RouteChoreographyFactory:
             difference = self._choreographer._turn_difference_deg(
                 cruise_edge.from_junction,
                 cruise_edge.to_junction,
-                robot_state.heading_deg,
+                robot_state.world_pose.yaw_deg,
             )
             if side is TurnDirection.LEFT and abs(difference - 90.0) < 0.000001:
                 traversal_id = cruise_edge.traversal_id
@@ -213,15 +266,15 @@ class RouteChoreographyFactory:
             ChoreographyStartStatus.STARTED, plan, ChoreographyProgress(choreography_id, 0)
         )
 
-    def start_retrace_turn(self, source_action_id):
+    def start_retrace_turn(self, source_action_id, retrace_trajectory_id=None):
         """生成引用原前向动作的同轨迹撤回剧本。"""
 
-        if not source_action_id:
+        if not source_action_id or not retrace_trajectory_id:
             return ChoreographyStartResult(
                 ChoreographyStartStatus.REJECTED,
                 rejection=ChoreographyRejection(
                     ChoreographyRejectionCode.MISSING_RETRACE_SOURCE,
-                    "撤回转弯缺少原前向动作标识",
+                    "撤回转弯缺少原动作或反向轨迹标识",
                 ),
             )
         robot_state = self._choreographer._state_query.robot_state()
@@ -233,7 +286,9 @@ class RouteChoreographyFactory:
         )
         stage = ChoreographyStage(
             base_stage.stage_id, base_stage.kind, base_stage.traversal_id,
-            base_stage.node_id, source_action_id=source_action_id,
+            base_stage.node_id,
+            source_action_id=source_action_id,
+            retrace_trajectory_id=retrace_trajectory_id,
         )
         source_id = "junction-retrace:{}".format(robot_state.location.node_id)
         choreography_id = self._choreographer._choreography_id(
@@ -255,19 +310,16 @@ class RouteChoreographyFactory:
             cruise_edge = self._choreographer._topology.get_cruise_edge(
                 step.from_junction, step.to_junction
             )
-            stages.extend((
-                self._choreographer._stage(
-                    step_index, "pre", ChoreographyStageKind.OBSERVE_PRE_ENTRY,
+            # 第一步：为第一条边插入转向阶段，保证机器人先对准进入边的方向。
+            # 若机器人已对准（heading_difference 为 0），StageCompiler 会自动跳过该虚拟阶段。
+            if step_index == 0:
+                stages.append(self._choreographer._stage(
+                    step_index, "align_first", ChoreographyStageKind.TURN_AT_JUNCTION,
                     step.traversal_id, step.from_junction,
-                ),
-                self._choreographer._stage(
-                    step_index, "turn", ChoreographyStageKind.TURN_AT_JUNCTION,
-                    step.traversal_id, step.from_junction,
-                ),
-                self._choreographer._stage(
-                    step_index, "post", ChoreographyStageKind.OBSERVE_POST_TURN,
-                    step.traversal_id, step.from_junction,
-                ),
+                ))
+            stages.append(self._choreographer._stage(
+                step_index, "pre", ChoreographyStageKind.OBSERVE_PRE_ENTRY,
+                step.traversal_id, step.from_junction,
             ))
             if self._choreographer._needs_observation_zone(
                 cruise_edge.road_kind, cruise_edge.length_mm
@@ -278,14 +330,48 @@ class RouteChoreographyFactory:
                         step.traversal_id, None,
                     ),
                     self._choreographer._stage(
+                        step_index, "zone_correct", ChoreographyStageKind.CORRECT_AT_OBSERVATION_ZONE,
+                        step.traversal_id, None,
+                    ),
+                    self._choreographer._stage(
                         step_index, "zone_observe", ChoreographyStageKind.OBSERVE_AT_ZONE,
                         step.traversal_id, None,
                     ),
                 ))
             stages.append(self._choreographer._stage(
-                step_index, "center", ChoreographyStageKind.DRIVE_TO_NEXT_CENTER,
+                step_index, "turn_window", ChoreographyStageKind.DRIVE_TO_TURN_WINDOW,
                 step.traversal_id, step.to_junction,
             ))
+            if step_index + 1 < len(route.steps):
+                next_step = route.steps[step_index + 1]
+                stages.extend((
+                    self._choreographer._stage(
+                        step_index, "turn", ChoreographyStageKind.TURN_AT_JUNCTION,
+                        next_step.traversal_id, step.to_junction,
+                    ),
+                    self._choreographer._stage(
+                        step_index, "post", ChoreographyStageKind.OBSERVE_POST_TURN,
+                        next_step.traversal_id, step.to_junction,
+                    ),
+                    self._choreographer._stage(
+                        step_index, "junction_correct", ChoreographyStageKind.CORRECT_AT_JUNCTION,
+                        next_step.traversal_id, step.to_junction,
+                    ),
+                ))
+        selected_goal = getattr(route, "selected_goal", None)
+        task_id = getattr(selected_goal, "task_id", None)
+        if route.steps and task_id is not None:
+            # 有任务：交给任务系统在目标路口完成，剧本以 EXECUTE_TASK 收尾。
+            final_step = route.steps[-1]
+            stages.append(ChoreographyStage(
+                "stage:task:{}".format(task_id),
+                ChoreographyStageKind.EXECUTE_TASK,
+                final_step.traversal_id,
+                final_step.to_junction,
+                task_id,
+            ))
+        # 无任务目标（如探索目标）无需追加动作：
+        # 最后一步 DRIVE_TO_TURN_WINDOW 的 effect 已经把逻辑位置吸附为 AtNode。
         frozen_stages = tuple(stages)
         choreography_id = self._choreographer._choreography_id(
             route.plan_id, tuple(stage.stage_id for stage in frozen_stages)
