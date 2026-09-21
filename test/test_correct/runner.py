@@ -94,6 +94,8 @@ class DebugRunner:
         from perception.devices.camera import CameraManager
         from perception.algorithms.lane.tracker import LaneTracker
         settings = yaml.safe_load((PROJECT_ROOT / "config" / "settings.yaml").read_text(encoding="utf-8")) or {}
+        from perception.profiles import apply_vision_profile
+        settings = apply_vision_profile(settings)
         camera = CameraManager(settings)
         if not camera.initialize():
             raise RuntimeError("camera initialization failed")

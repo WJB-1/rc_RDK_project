@@ -126,6 +126,8 @@ class RescueBrain:
 
             with open(self.config_path, 'r', encoding='utf-8') as f:
                 self.settings = yaml.safe_load(f)
+            from perception.profiles import apply_vision_profile
+            self.settings = apply_vision_profile(self.settings)
 
             self.logger.info(f"配置文件加载成功: {self.config_path}")
             return True

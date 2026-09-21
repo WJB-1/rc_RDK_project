@@ -8,6 +8,23 @@ from config.vehicle import get_vehicle_profile
 _PROFILE_PATH = Path(__file__).with_name("vision_profile.yaml")
 
 
+def apply_vision_profile(settings):
+    """Overlay perception-owned settings from the repository vision profile."""
+    import copy
+
+    merged = copy.deepcopy(settings or {})
+
+    def merge(base, overlay):
+        for key, value in overlay.items():
+            if isinstance(value, dict) and isinstance(base.get(key), dict):
+                merge(base[key], value)
+            else:
+                base[key] = copy.deepcopy(value)
+
+    merge(merged, load_vision_profile())
+    return merged
+
+
 def load_vision_profile():
     import yaml
 
