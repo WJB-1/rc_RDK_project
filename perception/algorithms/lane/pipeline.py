@@ -141,6 +141,7 @@ class LanePipeline:
                 "total_ms": (time.time() - start_time) * 1000,
                 "inference_ms": self.edge_engine.last_inference_ms,
                 "postprocess_ms": self.edge_engine.last_postprocess_ms,
+                "stages_ms": dict(get_frame_timings()),
             }
 
             return LanePipelineResult(

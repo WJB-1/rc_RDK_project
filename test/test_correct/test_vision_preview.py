@@ -168,6 +168,25 @@ class VisionPreviewTests(unittest.TestCase):
         self.assertEqual(response.mimetype, "image/jpeg")
         self.assertTrue(response.data.startswith(b"\xff\xd8"))
 
+    def test_status_exposes_vision_timing_and_lane_metrics(self):
+        from runner import DebugRunner
+
+        runner = DebugRunner("loopback", 115200, 5002, serial_factory=lambda *args, **kwargs: None)
+        raw = np.zeros((120, 160, 3), dtype=np.uint8)
+        runner.update_vision_preview(
+            raw, np.zeros((120, 160), dtype=np.uint8), np.zeros((80, 80), dtype=np.uint8),
+            {"lane_angle_rad": 0.1, "pid_error_mm": 12.5, "quality_score": 0.8},
+            12.5, False, 23.0,
+            diagnostics={"debug_capture": {"metrics": {"raw_hough_count": 8, "template_confidence": 0.8}}},
+            timing={"total_ms": 23.0, "inference_ms": 11.0, "postprocess_ms": 6.0},
+        )
+
+        payload = runner._create_app().test_client().get("/api/status").get_json()
+
+        self.assertEqual(payload["vision_diagnostics"]["timing_ms"]["inference_ms"], 11.0)
+        self.assertEqual(payload["vision_diagnostics"]["metrics"]["raw_hough_count"], 8)
+        self.assertEqual(payload["vision_diagnostics"]["lane"]["offset_mm"], 12.5)
+
 
 if __name__ == "__main__":
     unittest.main()

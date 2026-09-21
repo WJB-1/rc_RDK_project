@@ -174,7 +174,7 @@ class DebugRunner:
 
     def snapshot(self) -> dict:
         with self._state_lock:
-            return {
+            snapshot = {
                 "state": self._state.value,
                 "offset_mm": round(self._last_offset_mm, 1),
                 "error": self._last_error,
@@ -191,6 +191,26 @@ class DebugRunner:
                     and getattr(self._vision_tracker, "semantic_gate_enabled", False)
                 ),
             }
+        with self._vision_preview_lock:
+            preview = self._vision_preview
+            if preview is None:
+                snapshot["vision_diagnostics"] = {}
+            else:
+                capture = preview["diagnostics"].get("debug_capture") or {}
+                lane_state = preview["lane_state"]
+                snapshot["vision_diagnostics"] = {
+                    "process_ms": preview["process_ms"],
+                    "timing_ms": dict(preview["timing"]),
+                    "metrics": dict(capture.get("metrics") or {}),
+                    "lane": {
+                        "offset_mm": preview["offset_mm"],
+                        "yaw_deg": math.degrees(lane_state.get("lane_angle_rad", 0.0)),
+                        "yaw_source": lane_state.get("lane_angle_source"),
+                        "quality_score": lane_state.get("quality_score"),
+                        "intersection": preview["is_intersection"],
+                    },
+                }
+        return snapshot
 
     def update_vision_preview(self, raw_frame, clean_mask, bev_mask, lane_state, offset_mm, is_intersection, process_ms,
                               camera_pitch_deg=40.0, physical_track_width_mm=450.0, original_view=None,
@@ -570,6 +590,7 @@ _PAGE = """<!doctype html>
 <option value="lane_bev">平行坐标系模板匹配</option>
 <option value="ground_bev">地面坐标系车道与中心线</option>
 </select><div class="preview"><img id="visionImage" alt="vision preview"><span id="visionHint">Waiting for vision frames...</span></div></section>
+<h3>Vision Diagnostics</h3><pre id="visionDiagnostics">等待视觉帧...</pre>
 <h3>TX/RX Log</h3><pre id="log"></pre>
 <script>
 let visionUrl=null;
@@ -577,6 +598,6 @@ async function send(command, extra={}){const r=await fetch('/api/command',{metho
 function straight(){send('straight',{direction:document.getElementById('motionDirection').value,distance_mm:Number(document.getElementById('distance').value)})}
 function turn(command){send(command,{direction:document.getElementById('motionDirection').value})}
 async function refreshVision(){const image=document.getElementById('visionImage');const hint=document.getElementById('visionHint');const view=document.getElementById('visionView').value;try{const r=await fetch(`/api/vision?view=${encodeURIComponent(view)}&t=${Date.now()}`);if(r.ok){if(visionUrl)URL.revokeObjectURL(visionUrl);visionUrl=URL.createObjectURL(await r.blob());image.src=visionUrl;image.style.display='block';hint.style.display='none';}else{image.removeAttribute('src');image.style.display='none';hint.style.display='block';}}catch(e){image.removeAttribute('src');image.style.display='none';hint.style.display='block';}}
-async function refresh(){try{const d=await (await fetch('/api/status')).json();document.getElementById('state').textContent=d.state;document.getElementById('offset').textContent=d.offset_mm;document.getElementById('error').textContent=d.error||'--';document.getElementById('log').textContent=d.log.map(x=>`${x.time} ${x.direction} ${x.label} ${x.hex}`).join('\\n');if(d.vision_frame_id)refreshVision();}catch(e){}}
+async function refresh(){try{const d=await (await fetch('/api/status')).json();document.getElementById('state').textContent=d.state;document.getElementById('offset').textContent=d.offset_mm;document.getElementById('error').textContent=d.error||'--';document.getElementById('visionDiagnostics').textContent=Object.keys(d.vision_diagnostics||{}).length?JSON.stringify(d.vision_diagnostics,null,2):'等待视觉帧...';document.getElementById('log').textContent=d.log.map(x=>`${x.time} ${x.direction} ${x.label} ${x.hex}`).join('\\n');if(d.vision_frame_id)refreshVision();}catch(e){}}
 setInterval(refresh,500);refresh();
 </script>"""
