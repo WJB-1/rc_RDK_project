@@ -361,27 +361,37 @@ class TemplateDistanceLaneSelector(GroundIPMLanePairSelector):
     # ------------------------------------------------------------------
     # 新地面系：偏航角 / 偏移量计算
     # ------------------------------------------------------------------
-    def _compute_ground_yaw_offset(self, left_src, right_src):
-        """用 ground_camera 参数在新地面系里计算偏航/偏移。
-
-        Returns:
-            (offset_mm, lane_angle_rad, theta_source, center_img_p1, center_img_p2)
-            或 None（表示新地面系不可用，调用方走 BEV fallback）
-        """
+    def _compute_ground_yaw_offset(self, left_bev, right_bev):
+        """lane-IPM BEV → 图像 → ground_camera 地面系，计算偏航和横移。"""
         if self.new_ground is None:
             return None
 
+        lane_matrix = self._matrix_for_profile("lane")
+        inv_lane_matrix = np.linalg.inv(lane_matrix)
+
+        def _to_ground_pts(bev_segment):
+            if bev_segment is None:
+                return []
+            # 模板匹配后的 BEV 线段，使用 lane-IPM 的逆变换还原至图像。
+            with block("lane.bev_to_image"):
+                bev_f = np.asarray(bev_segment, dtype=np.float32).reshape(1, 2, 2)
+                img_back = cv2.perspectiveTransform(bev_f, inv_lane_matrix)[0]
+            back_line = {
+                "x1": float(img_back[0][0]), "y1": float(img_back[0][1]),
+                "x2": float(img_back[1][0]), "y2": float(img_back[1][1]),
+            }
+            # 3) 图像 → 地面（ground_camera 外参）
+            with block("lane.image_to_new_ground"):
+                return self.new_ground.source_line_to_ground(back_line)
+
         with block("lane.source_to_new_ground"):
-            left_ground_pts = (self.new_ground.source_line_to_ground(left_src)
-                               if left_src is not None else [])
-            right_ground_pts = (self.new_ground.source_line_to_ground(right_src)
-                                if right_src is not None else [])
+            left_ground_pts = _to_ground_pts(left_bev)
+            right_ground_pts = _to_ground_pts(right_bev)
 
         with block("lane.fit_new_ground"):
             left_fit = self.new_ground.fit_centerline(left_ground_pts)
             right_fit = self.new_ground.fit_centerline(right_ground_pts)
 
-        # 缓存供可视化使用
         self._last_new_ground_left_pts = list(left_ground_pts)
         self._last_new_ground_right_pts = list(right_ground_pts)
 
@@ -523,10 +533,7 @@ class TemplateDistanceLaneSelector(GroundIPMLanePairSelector):
         # ============================================================
         # 偏航角和偏移量：新地面系（ground_camera），失败则 BEV fallback
         # ============================================================
-        left_src = left_info["source_line"]
-        right_src = right_info["source_line"]
-
-        ground_result = self._compute_ground_yaw_offset(left_src, right_src)
+        ground_result = self._compute_ground_yaw_offset(left_segment, right_segment)
         if ground_result is not None:
             offset_mm, lane_angle_rad, theta_source, center_img_p1, center_img_p2 = ground_result
             if center_img_p1 is None or center_img_p2 is None:
