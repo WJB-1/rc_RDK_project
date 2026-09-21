@@ -13,7 +13,6 @@ import numpy as np
 from perception.algorithms.core.timing import reset_frame, block, get_frame_timings
 from perception.algorithms.core.mask_utils import clean_mask_by_cc
 from .line_detection import lines_to_mask
-from perception.diagnostics.ipm_drawer import draw_debug_panel
 
 from .types import LanePipelineResult
 
@@ -120,20 +119,7 @@ class LanePipeline:
                 else "HoughLinesP + PCA merge (a3d8)"
             )
 
-            if self.debug_render_enabled:
-                with block("tracker.draw_debug_panel"):
-                    debug_frame = draw_debug_panel(
-                        clean_mask=clean_mask,
-                        bev_mask=bev_mask,
-                        lane_state=lane_state,
-                        raw_image=original_view,
-                        camera_pitch_deg=self.ipm.pitch_deg,
-                        physical_track_width_mm=self.cfg.lane_width_mm,
-                        noise_mask=noise_mask,
-                        semantic_mask=semantic_mask,
-                    )
-            else:
-                debug_frame = original_view.copy()
+            debug_frame = original_view.copy()
 
             if self.debug_capture_enabled:
                 with block("tracker.capture_debug"):
@@ -178,74 +164,39 @@ class LanePipeline:
                        bev_mask, original_view, renderer):
         edge_engine = self.edge_engine
         lane_selector = self.selector
+        hough_view = processing_input.copy()
+        for line in getattr(edge_engine, "last_lines", []) or []:
+            cv2.line(
+                hough_view,
+                (round(line["x1"]), round(line["y1"])),
+                (round(line["x2"]), round(line["y2"])),
+                (0, 255, 0), 2, cv2.LINE_AA,
+            )
 
         capture = {
-            "enhanced": getattr(edge_engine, "last_enhanced", None),
-            "edge_prob": getattr(edge_engine, "last_probability", None),
-            "binary": getattr(edge_engine, "last_binary", None),
-            "closed": getattr(edge_engine, "last_closed", None),
-            "labels": getattr(edge_engine, "last_label_map", None),
-            "n_labels": int(getattr(edge_engine, "last_n_labels", 0)),
-            "skeleton": getattr(edge_engine, "last_skeleton", None),
-            "hough_lines": list(getattr(edge_engine, "last_raw_lines", []) or []),
-
-            "clean_mask": clean_mask,
-            "bev_mask": bev_mask,
-            "original_view": original_view,
-
-            "ground_segments": list(getattr(lane_selector, "ground_segments", []) or []),
-            "merged": list(getattr(lane_selector, "merged_segments", []) or []),
-            "candidates": dict(getattr(lane_selector, "candidate_slots", {}) or {}),
-            "template": dict(self.template_x_at_ref_mm or {}),
-            "candidate_radius_mm": float(
-                self.matching_cfg.get("candidate_radius_first_frame_mm", 40.0)
-            ),
-            "y_ref_mm": float(self.matching_cfg.get("y_ref_mm", 500.0)),
-
-            "result": getattr(lane_selector, "last_match_result", None),
-            "lane_state": dict(lane_state or {}),
-
-            "original_input": processing_input,
-            "ground_to_pixel": getattr(self.ipm, "ground_to_pixel", None),
-            "scale_up_x": 1.0,
-            "scale_up_y": 1.0,
-
-            "canvas": getattr(lane_selector, "bev_canvas", None),
+            "lane_views": {
+                "binary": getattr(edge_engine, "last_binary", None),
+                "hough": hough_view,
+                "lane_bev": bev_mask,
+                "ground_bev": (
+                    renderer.render_new_ground_bev()
+                    if getattr(lane_selector, "new_ground", None) is not None else None
+                ),
+                "overlay": original_view,
+            },
+            "metrics": {
+                "raw_hough_count": len(getattr(edge_engine, "last_raw_lines", []) or []),
+                "merged_line_count": len(getattr(edge_engine, "last_lines", []) or []),
+                "template_confidence": lane_state.get("template_confidence"),
+                "template_residual_mm": lane_state.get("template_residual_mm"),
+                "template_delta_mm": lane_state.get("template_delta_mm"),
+                "lane_angle_deg": (getattr(lane_selector, "final_pair", None) or {}).get(
+                    "lane_angle_deg"
+                ),
+                "offset_mm": lane_state.get("pid_error_mm"),
+                "theta_source": lane_state.get("lane_angle_source"),
+            },
         }
-
-        if capture["canvas"] is None:
-            try:
-                from perception.diagnostics.lane_debug_viz import BevCanvas
-                capture["canvas"] = BevCanvas(
-                    x_min=self.bev_cfg.get("x_min", -600.0),
-                    x_max=self.bev_cfg.get("x_max", 600.0),
-                    y_min=self.bev_cfg.get("y_min", -250.0),
-                    y_max=self.bev_cfg.get("y_max", 800.0),
-                    ppm=self.bev_cfg.get("ppm", 0.9),
-                )
-            except Exception:
-                capture["canvas"] = None
-
-        # 新地面系可视化：只有 Template selector 有 new_ground 属性
-        if getattr(lane_selector, "new_ground", None) is not None:
-            try:
-                capture["new_ground_bev"] = renderer.render_new_ground_bev()
-            except Exception as error:
-                print(f"[LanePipeline] render_new_ground_bev failed: {error}")
-                capture["new_ground_bev"] = None
-
-            try:
-                capture["new_ground_original"] = (
-                    renderer.render_original_with_ground_centerline(processing_input)
-                )
-            except Exception as error:
-                print(
-                    f"[LanePipeline] render_original_with_ground_centerline failed: {error}"
-                )
-                capture["new_ground_original"] = None
-        else:
-            capture["new_ground_bev"] = None
-            capture["new_ground_original"] = None
 
         self.last_debug_capture = capture
         return capture

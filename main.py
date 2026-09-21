@@ -33,7 +33,7 @@ import yaml
 
 from utils.logger import get_logger
 from perception.devices.camera import CameraManager
-from perception.pipelines.lane_tracker import LaneTracker
+from perception.algorithms.lane.tracker import LaneTracker
 from web import WebPushServer
 from navigation.state_machine import AgentStateMachine
 from navigation.domain.topology import get_topology
@@ -250,6 +250,7 @@ class RescueBrain:
                     cmd_callback=self._on_debug_cmd,
                     mode="real",   # 真机模式：不注册/阻断 /simulator 与 /api/sim/* 仿真接口
                 )
+                self.lane_tracker.set_debug_capture_enabled(True)
                 topo = get_topology()
                 self.web.set_map_topology(
                     nodes={name: node.to_dict() for name, node in topo.nodes.items()},
@@ -460,8 +461,13 @@ class RescueBrain:
             return
 
         lane_state = self.lane_tracker.last_lane_state if self.lane_tracker is not None else {}
+        debug_capture = (
+            self.lane_tracker.last_debug_capture if self.lane_tracker is not None else {}
+        )
         self.web.update(
             seg_frame=seg_frame,
+            lane_views=debug_capture.get("lane_views"),
+            lane_metrics=debug_capture.get("metrics"),
             offset_mm=offset_mm,
             is_intersection=is_intersection,
             semantic_gate_available=bool(self.lane_tracker and self.lane_tracker.semantic_engine is not None),

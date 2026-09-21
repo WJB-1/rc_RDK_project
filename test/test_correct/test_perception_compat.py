@@ -54,9 +54,7 @@ class PerceptionCompatibilityTests(unittest.TestCase):
                 return frame.copy()
 
         original_renderer = lane_pipeline._make_renderer
-        original_debug_panel = lane_pipeline.draw_debug_panel
         lane_pipeline._make_renderer = lambda selector: Renderer()
-        lane_pipeline.draw_debug_panel = lambda **kwargs: self.fail("debug panel must be skipped")
         try:
             undistorter = Undistorter()
             pipeline = LanePipeline(
@@ -69,7 +67,6 @@ class PerceptionCompatibilityTests(unittest.TestCase):
             result = pipeline.process(np.zeros((6, 8, 3), dtype=np.uint8))
         finally:
             lane_pipeline._make_renderer = original_renderer
-            lane_pipeline.draw_debug_panel = original_debug_panel
 
         self.assertEqual(undistorter.received_shape, (3, 4, 3))
         self.assertEqual(result.debug_frame.shape, (3, 4, 3))

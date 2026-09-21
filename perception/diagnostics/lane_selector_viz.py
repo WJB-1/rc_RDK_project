@@ -119,23 +119,6 @@ class LaneSelectorRenderer:
         self._draw_vehicle(view)
         cv2.circle(view, tuple(np.round(s.vehicle_point).astype(int)), 4, (0, 255, 255), -1)
 
-        if s.template_match is not None:
-            delta = s.template_match.get("delta", 0.0)
-            rms = s.template_match.get("rms", 0.0)
-            n_matched = s.template_match.get("n_matched", 0)
-            conf = s.template_conf.get("confidence", 0.0) if s.template_conf else 0.0
-            n_lanes = s.template_conf.get("n_lanes", 0) if s.template_conf else 0
-            for index, line in enumerate((
-                f"delta={delta:+.1f} mm | rms={rms:.2f} mm",
-                f"conf={conf:.2f} | matched={n_matched} | lanes={n_lanes}",
-            )):
-                cv2.putText(view, line, (10, 25 + 20 * index),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.48, (255, 255, 255), 2, cv2.LINE_AA)
-        else:
-            cv2.putText(view, f"cand={len(s.candidate_bev_segments)} | pair: none",
-                        (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (255, 255, 255), 2, cv2.LINE_AA)
-        cv2.putText(view, "solid=matched | dashed=inferred", (10, 48),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.42, (220, 220, 220), 1, cv2.LINE_AA)
         return view
 
     def _draw_bev_ground_ipm(self):
@@ -187,11 +170,6 @@ class LaneSelectorRenderer:
     def _draw_original_template(self, processing_frame):
         s = self.s
         view = processing_frame.copy()
-        for line in s._source_candidates:
-            cv2.line(view, tuple(np.round([line["x1"], line["y1"]]).astype(int)),
-                     tuple(np.round([line["x2"], line["y2"]]).astype(int)),
-                     (255, 100, 0), 1, cv2.LINE_AA)
-
         if s.template_identities is not None:
             y_low = 0.0
             y_high = (s.canvas_h - 1.0) / s.pixel_per_mm
@@ -227,28 +205,6 @@ class LaneSelectorRenderer:
                             cv2.FONT_HERSHEY_SIMPLEX, 0.55,
                             (255, 0, 255), 2, cv2.LINE_AA)
 
-        h, w = view.shape[:2]
-        cx = w // 2
-        dash_len, gap_len = 12, 8
-        y = 0
-        while y < h:
-            y_end = min(y + dash_len, h)
-            cv2.line(view, (cx, y), (cx, y_end), (0, 255, 255), 1, cv2.LINE_AA)
-            y += dash_len + gap_len
-        cv2.putText(view, "image center", (cx + 5, 18),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1, cv2.LINE_AA)
-
-        if s.final_pair is not None:
-            angle_deg = float(s.final_pair.get("lane_angle_deg", 0.0))
-            offset_mm = float(s.final_pair.get("offset_mm", 0.0))
-            source = s.final_pair.get("theta_source", "?")
-            for i, text in enumerate((
-                f"yaw = {angle_deg:+.3f} deg ({source})",
-                f"offset = {offset_mm:+.1f} mm",
-            )):
-                cv2.putText(view, text, (10, h - 40 + i * 24),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.6,
-                            (255, 255, 255), 2, cv2.LINE_AA)
         return view
 
     def _draw_original_ground_ipm(self, processing_frame):
@@ -345,17 +301,6 @@ class LaneSelectorRenderer:
             draw_pts(cpts, (255, 0, 255), 2)
             mid = cpts[len(cpts) // 2]
             um, vm = g2b(*mid)
-            yaw_deg = math.degrees(math.atan(a_c))
-            cv2.putText(canvas, f"yaw={yaw_deg:+.3f}", (um + 6, vm),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.45,
-                        (255, 0, 255), 1, cv2.LINE_AA)
-
-        src = getattr(s, "_last_new_ground_source", "?")
-        cv2.putText(canvas, f"NEW GROUND BEV  ({src})", (10, 22),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 2, cv2.LINE_AA)
-        cv2.putText(canvas, "L=green R=red C=magenta  x=0=yellow  x=+-100=gray",
-                    (10, H - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.4,
-                    (200, 200, 200), 1, cv2.LINE_AA)
         return canvas
 
     def render_original_with_ground_centerline(self, processing_frame):

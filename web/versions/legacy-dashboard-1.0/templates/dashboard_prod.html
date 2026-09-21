@@ -103,6 +103,10 @@ body {
     font-size: 11px;
     color: #aaa;
 }
+.lane-view-tabs { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+.lane-view-tabs button { background: #263238; color: #ddd; border: 1px solid #4a6572; padding: 4px 6px; border-radius: 3px; cursor: pointer; font-size: 11px; }
+.lane-view-tabs button.active { background: #3498db; color: #fff; }
+.lane-metrics { white-space: pre-wrap; font: 11px/1.45 Consolas, monospace; color: #b8c7ce; background: #111; border: 1px solid #333; border-radius: 4px; padding: 7px; min-height: 82px; }
 
 /* ---- 地图容器 ---- */
 .map-container {
@@ -312,6 +316,14 @@ body {
                 <span id="semanticGateStatus">--</span>
             </label>
         </div>
+        <div class="lane-view-tabs" id="laneViewTabs">
+            <button class="active" data-view="overlay" onclick="selectLaneView('overlay')">原图叠加</button>
+            <button data-view="binary" onclick="selectLaneView('binary')">二值边缘</button>
+            <button data-view="hough" onclick="selectLaneView('hough')">融合线段</button>
+            <button data-view="lane_bev" onclick="selectLaneView('lane_bev')">平行 BEV</button>
+            <button data-view="ground_bev" onclick="selectLaneView('ground_bev')">地面系</button>
+        </div>
+        <pre id="laneMetrics" class="lane-metrics">等待车道调试数据…</pre>
         <div class="path-info">
             <div class="panel-title">路径规划</div>
             <div class="path-list" id="pathList">等待数据...</div>
@@ -595,6 +607,46 @@ let ws = null;
 let lastFrameTime = Date.now();
 let frameCount = 0;
 let fps = 0;
+let selectedLaneView = 'overlay';
+let latestLaneViews = {};
+const laneViewLabels = {
+    overlay: '原图模板线与中心线',
+    binary: '边缘检测二值化结果',
+    hough: '原图上的融合 Hough 线段',
+    lane_bev: '平行坐标系：线段与模板匹配',
+    ground_bev: '地面坐标系：车道线与中心线',
+};
+
+function selectLaneView(name) {
+    selectedLaneView = name;
+    document.querySelectorAll('#laneViewTabs button').forEach(button => {
+        button.classList.toggle('active', button.dataset.view === name);
+    });
+    const label = document.querySelector('.video-label');
+    if (label) label.textContent = laneViewLabels[name] || name;
+    const image = latestLaneViews[name];
+    if (image) document.getElementById('segImage').src = 'data:image/jpeg;base64,' + image;
+}
+
+function updateLaneDebug(views, metrics) {
+    latestLaneViews = views;
+    if (!latestLaneViews[selectedLaneView] && latestLaneViews.overlay) {
+        selectLaneView('overlay');
+    } else {
+        selectLaneView(selectedLaneView);
+    }
+    const lines = [
+        `原始 Hough: ${metrics.raw_hough_count ?? '--'}`,
+        `融合线段: ${metrics.merged_line_count ?? '--'}`,
+        `模板置信度: ${metrics.template_confidence ?? '--'}`,
+        `模板残差: ${metrics.template_residual_mm ?? '--'} mm`,
+        `模板横移: ${metrics.template_delta_mm ?? '--'} mm`,
+        `偏航角: ${metrics.lane_angle_deg ?? '--'} deg`,
+        `横向偏移: ${metrics.offset_mm ?? '--'} mm`,
+        `偏航来源: ${metrics.theta_source ?? '--'}`,
+    ];
+    document.getElementById('laneMetrics').textContent = lines.join('\n');
+}
 
 function connectWebSocket() {
     let fallbackTimer = null;
@@ -657,9 +709,7 @@ function onWsMessage(event) {
     document.getElementById('fpsDisplay').textContent =
         `FPS: ${fps} | 延迟: ${latency}ms`;
 
-    if (data.seg_image) {
-        document.getElementById('segImage').src = 'data:image/jpeg;base64,' + data.seg_image;
-    }
+    updateLaneDebug(data.lane_views || {}, data.lane_metrics || {});
 
     // 小车位置统一由前端模拟器 simTick 维护（唯一写入者），
     // 后端 WS 的 position 不再写入 sim.pos，避免多来源争抢导致瞬移/卡顿。

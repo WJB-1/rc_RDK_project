@@ -129,6 +129,8 @@ class WebPushServer:
         # --- 数据缓存 ---
         self._lock = threading.Lock()
         self._seg_frame = None
+        self._lane_views = {}
+        self._lane_metrics = {}
         self._offset_mm = 0.0
         self._is_intersection = False
         self._quality_score = 0.0
@@ -168,13 +170,21 @@ class WebPushServer:
     # ------------------------------------------------------------------
     # 供主程序调用的更新接口
     # ------------------------------------------------------------------
-    def update(self, seg_frame=None, offset_mm=0.0, is_intersection=False,
+    def update(self, seg_frame=None, lane_views=None, lane_metrics=None,
+               offset_mm=0.0, is_intersection=False,
                quality_score=0.0, semantic_gate_available=None,
                semantic_gate_enabled=None):
         """更新感知层数据"""
         with self._lock:
             if seg_frame is not None:
                 self._seg_frame = seg_frame.copy()
+            if lane_views is not None:
+                self._lane_views = {
+                    name: image.copy() for name, image in lane_views.items()
+                    if image is not None
+                }
+            if lane_metrics is not None:
+                self._lane_metrics = dict(lane_metrics)
             self._offset_mm = offset_mm
             self._is_intersection = is_intersection
             self._quality_score = quality_score
@@ -331,21 +341,24 @@ class WebPushServer:
                     "all_dists": self._base_map_data.get("all_dists", {}),
                 })
 
-            if self._seg_frame is not None and cv2 is not None:
-                try:
-                    h, w = self._seg_frame.shape[:2]
-                    if w > 400 or h > 400:
-                        scale = 400.0 / max(w, h)
-                        thumb = cv2.resize(self._seg_frame, None, fx=scale, fy=scale,
-                                          interpolation=cv2.INTER_NEAREST)
-                    else:
-                        thumb = self._seg_frame
-                    _, buf = cv2.imencode('.jpg', thumb, [cv2.IMWRITE_JPEG_QUALITY, 40])
-                    data["seg_image"] = base64.b64encode(buf).decode('ascii')
-                except Exception:
-                    data["seg_image"] = None
-            else:
-                data["seg_image"] = None
+            data["lane_metrics"] = dict(self._lane_metrics)
+            data["lane_views"] = {}
+            if cv2 is not None:
+                for name, image in self._lane_views.items():
+                    try:
+                        height, width = image.shape[:2]
+                        if width > 640 or height > 480:
+                            scale = min(640.0 / width, 480.0 / height)
+                            image = cv2.resize(
+                                image, None, fx=scale, fy=scale,
+                                interpolation=cv2.INTER_NEAREST,
+                            )
+                        _, buffer = cv2.imencode(
+                            ".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, 55],
+                        )
+                        data["lane_views"][name] = base64.b64encode(buffer).decode("ascii")
+                    except Exception:
+                        continue
 
             # 仿真状态
             if self._sim_scene is not None:
