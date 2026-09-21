@@ -105,7 +105,10 @@ class VisionPreviewTests(unittest.TestCase):
         original_view[20:80, 20:80] = (0, 0, 255)
         self.assertEqual(
             set(VIEW_NAMES),
-            {"overlay", "binary", "hough", "lane_bev", "ground_bev"},
+            {
+                "overlay", "binary", "hough", "lane_bev", "ground_bev",
+                "semantic_overlay", "semantic_bev", "semantic_ground",
+            },
         )
         for view in VIEW_NAMES:
             encoded = render_preview(view, raw, clean, bev, state, 40.0, 450.0, original_view=original_view)

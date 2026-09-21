@@ -55,6 +55,7 @@ class LaneConfig:
     confidence_cfg: dict
     bev_cfg: dict
     semantic_gate: dict
+    semantic_lane: dict
     undistort_camera: dict
 
 
@@ -82,44 +83,14 @@ def _load_camera(section: dict, defaults: dict) -> CameraConfig:
     )
 
 
-def _legacy_base_intrinsics(legacy_ipm: dict) -> dict:
-    """旧 math_ipm 兼容默认值。"""
-    return {
-        "img_w": int(legacy_ipm.get("img_w", 1920)),
-        "img_h": int(legacy_ipm.get("img_h", 1080)),
-        "fx_px": float(legacy_ipm.get("fx_px", 1131.5665939049366)),
-        "fy_px": float(legacy_ipm.get("fy_px", 1131.5665939049366)),
-        "cx_px": float(legacy_ipm.get("cx_px", 951.0970902161366)),
-        "cy_px": float(legacy_ipm.get("cy_px", 553.6989838702775)),
-        "focal_length_mm": float(legacy_ipm.get("focal_length_mm", 2.8)),
-        "pixel_size_mm": float(legacy_ipm.get("pixel_size_mm", 0.003)),
-        "camera_height_mm": float(legacy_ipm.get("camera_height_mm", 190.0)),
-        "pitch_deg": float(legacy_ipm.get("pitch_deg", 40.0)),
-        "roll_deg": 0.0,
-        "yaw_deg": 0.0,
-    }
-
-
 def load_lane_config(settings: dict) -> LaneConfig:
-    lane_cfg = dict(settings.get("lane_detection", {}) or {})
-    legacy_ipm = dict(settings.get("math_ipm", {}) or {})
-    legacy_edge = dict(settings.get("edge_detection", {}) or {})
-    legacy_track = dict(settings.get("track", {}) or {})
-    legacy_vehicle = dict(settings.get("vehicle_geometry", {}) or {})
+    lane_cfg = dict(settings["lane_detection"])
+    edge_cfg = dict(settings["edge_detection"])
+    vehicle_geometry = dict(settings["vehicle_geometry"])
+    ipm_section = dict(lane_cfg["ipm_camera"])
+    ipm_camera = _load_camera(ipm_section, ipm_section)
 
-    base_defaults = _legacy_base_intrinsics(legacy_ipm)
-
-    # ---- 第一套：IPM 相机（lane_detection.ipm_camera > math_ipm） ----
-    ipm_section = dict(lane_cfg.get("ipm_camera", {}) or {})
-    if not ipm_section:
-        ipm_section = dict(legacy_ipm)
-    ipm_camera = _load_camera(ipm_section, base_defaults)
-
-    # ---- 第二套：地面相机（lane_detection.ground_camera > ipm_camera 兜底） ----
-    ground_section = dict(lane_cfg.get("ground_camera", {}) or {})
-    if not ground_section:
-        # 向后兼容：没有单独配置时，退化为 ipm_camera
-        ground_section = dict(ipm_section)
+    ground_section = dict(lane_cfg["ground_camera"])
     ground_defaults = {
         "img_w": ipm_camera.img_w,
         "img_h": ipm_camera.img_h,
@@ -143,12 +114,7 @@ def load_lane_config(settings: dict) -> LaneConfig:
     blind_spot_mm = float(ipm_section.get("blind_spot_mm", 90.0))
 
     # ---- 网络输入尺寸 ----
-    input_size = lane_cfg.get("input_size")
-    if input_size is None:
-        input_width = int(legacy_edge.get("input_width", 512))
-        input_height = int(legacy_edge.get("input_height", 384))
-    else:
-        input_width, input_height = map(int, input_size)
+    input_width, input_height = map(int, lane_cfg["input_size"])
 
     return LaneConfig(
         ipm_camera=ipm_camera,
@@ -159,19 +125,15 @@ def load_lane_config(settings: dict) -> LaneConfig:
         blind_spot_mm=blind_spot_mm,
         input_width=input_width,
         input_height=input_height,
-        lane_width_mm=float(
-            lane_cfg.get("lane_width_mm", legacy_track.get("lane_width_mm", 200.0))
-        ),
-        robot_geometry=dict(lane_cfg.get("robot_geometry", legacy_vehicle) or {}),
-        template_x_at_ref_mm=dict(lane_cfg.get("template_x_at_ref_mm", {}) or {}),
-        identity_weights=dict(lane_cfg.get("identity_weights", {}) or {}),
-        edge_cfg=dict(legacy_edge or {}),
-        matching_cfg=dict(lane_cfg.get("matching", {}) or {}),
-        confidence_cfg=dict(lane_cfg.get("confidence", {}) or {}),
-        bev_cfg=dict(lane_cfg.get("bev", {}) or {}),
-        semantic_gate=dict(legacy_edge.get("semantic_gate", {}) or {}),
-        undistort_camera=dict(
-            lane_cfg.get("undistort_camera",
-                        legacy_ipm.get("camera_calibration", {})) or {}
-        ),
+        lane_width_mm=float(lane_cfg["lane_width_mm"]),
+        robot_geometry=vehicle_geometry,
+        template_x_at_ref_mm=dict(lane_cfg["template_x_at_ref_mm"]),
+        identity_weights=dict(lane_cfg["identity_weights"]),
+        edge_cfg=edge_cfg,
+        matching_cfg=dict(lane_cfg["matching"]),
+        confidence_cfg=dict(lane_cfg["confidence"]),
+        bev_cfg=dict(lane_cfg["bev"]),
+        semantic_gate=dict(edge_cfg["semantic_gate"]),
+        semantic_lane=dict(lane_cfg.get("semantic_lane", {})),
+        undistort_camera=dict(lane_cfg["undistort_camera"]),
     )

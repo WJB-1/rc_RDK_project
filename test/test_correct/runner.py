@@ -181,7 +181,15 @@ class DebugRunner:
                 "pending_action": self._pending_action.name if self._pending_action else None,
                 "log": list(self._log),
                 "vision_frame_id": self._vision_preview_sequence,
-                "vision_views": list(VIEW_NAMES),
+                "vision_views": (
+                    ["semantic_overlay", "semantic_bev", "semantic_ground"]
+                    if self._vision_tracker is not None
+                    and getattr(
+                        getattr(self._vision_tracker, "pipeline", None),
+                        "semantic_lane_detector", None,
+                    ) is not None
+                    else ["overlay", "binary", "hough", "lane_bev", "ground_bev"]
+                ),
                 "semantic_gate_available": bool(
                     self._vision_tracker is not None
                     and getattr(self._vision_tracker, "semantic_engine", None) is not None
@@ -594,10 +602,13 @@ _PAGE = """<!doctype html>
 <h3>TX/RX Log</h3><pre id="log"></pre>
 <script>
 let visionUrl=null;
+const visionLabels={overlay:'原图模板线与中心线',binary:'边缘检测二值化结果',hough:'原图融合 Hough 线段',lane_bev:'平行坐标系模板匹配',ground_bev:'地面坐标系车道与中心线',semantic_overlay:'语义分割覆盖图',semantic_bev:'平行域边缘与距离门',semantic_ground:'地面坐标系车道与中心线'};
+function syncVisionViews(views){const select=document.getElementById('visionView'),keys=views.join(',');if(select.dataset.keys===keys)return;select.dataset.keys=keys;select.innerHTML=views.map(key=>`<option value="${key}">${visionLabels[key]||key}</option>`).join('');}
 async function send(command, extra={}){const r=await fetch('/api/command',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({command,...extra})});const d=await r.json();if(!d.ok)alert(d.error);}
 function straight(){send('straight',{direction:document.getElementById('motionDirection').value,distance_mm:Number(document.getElementById('distance').value)})}
 function turn(command){send(command,{direction:document.getElementById('motionDirection').value})}
 async function refreshVision(){const image=document.getElementById('visionImage');const hint=document.getElementById('visionHint');const view=document.getElementById('visionView').value;try{const r=await fetch(`/api/vision?view=${encodeURIComponent(view)}&t=${Date.now()}`);if(r.ok){if(visionUrl)URL.revokeObjectURL(visionUrl);visionUrl=URL.createObjectURL(await r.blob());image.src=visionUrl;image.style.display='block';hint.style.display='none';}else{image.removeAttribute('src');image.style.display='none';hint.style.display='block';}}catch(e){image.removeAttribute('src');image.style.display='none';hint.style.display='block';}}
 async function refresh(){try{const d=await (await fetch('/api/status')).json();document.getElementById('state').textContent=d.state;document.getElementById('offset').textContent=d.offset_mm;document.getElementById('error').textContent=d.error||'--';document.getElementById('visionDiagnostics').textContent=Object.keys(d.vision_diagnostics||{}).length?JSON.stringify(d.vision_diagnostics,null,2):'等待视觉帧...';document.getElementById('log').textContent=d.log.map(x=>`${x.time} ${x.direction} ${x.label} ${x.hex}`).join('\\n');if(d.vision_frame_id)refreshVision();}catch(e){}}
-setInterval(refresh,500);refresh();
+async function refreshWithViews(){try{const status=await (await fetch('/api/status')).json();syncVisionViews(status.vision_views||[]);}catch(e){}return refresh();}
+setInterval(refreshWithViews,500);refreshWithViews();
 </script>"""

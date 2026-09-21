@@ -8,6 +8,9 @@ VIEW_NAMES = {
     "hough": "原图融合 Hough 线段",
     "lane_bev": "平行坐标系模板匹配",
     "ground_bev": "地面坐标系车道与中心线",
+    "semantic_overlay": "语义分割覆盖图",
+    "semantic_bev": "平行域边界与距离门",
+    "semantic_ground": "语义车道地面坐标系",
 }
 
 
@@ -64,6 +67,8 @@ def _fallback_view(view_name, raw_image, clean_mask, bev_mask, original_view, di
             _as_bgr(raw_image), diagnostics.get("merged_lines"), diagnostics.get("source_size")
         )
     if view_name == "lane_bev":
+        return bev_mask
+    if view_name == "semantic_ground":
         return bev_mask
     return None
 

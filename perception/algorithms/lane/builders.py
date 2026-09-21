@@ -6,6 +6,7 @@ from perception.models.pidinet import PiDiNetEngine
 from perception.models.bisenet import SegmentationEngine
 from .ground_ipm_selector import GroundIPMLanePairSelector
 from .template_selector import TemplateDistanceLaneSelector
+from .semantic_lane import SemanticLaneDetector
 
 from .config import load_lane_config, LaneConfig
 from .pipeline import LanePipeline
@@ -34,7 +35,7 @@ def build_edge_engine(cfg: LaneConfig):
 
 
 def build_semantic_engine(cfg: LaneConfig):
-    sem_cfg = cfg.semantic_gate
+    sem_cfg = cfg.semantic_lane if cfg.semantic_lane.get("enabled", False) else cfg.semantic_gate
     if not sem_cfg.get("enabled", False) or not sem_cfg.get("available", True):
         return None
     model_path = _abs_model_path(sem_cfg.get("model_path", "models/bisenetv2_lane_x5.bin"))
@@ -113,6 +114,17 @@ def build_lane_pipeline(settings: dict) -> LanePipeline:
     )
     ipm = build_ipm(cfg)
     selector = build_selector(cfg, edge_engine, ipm, semantic_gate_enabled)
+    semantic_lane_detector = None
+    if cfg.semantic_lane.get("enabled", False):
+        semantic_lane_detector = SemanticLaneDetector(
+            pixel_per_mm=cfg.pixel_per_mm,
+            bev_width=cfg.canvas_w,
+            lane_width_mm=cfg.lane_width_mm,
+            distance_tolerance_mm=float(cfg.semantic_lane.get("distance_tolerance_mm", 20.0)),
+            parallel_tolerance_deg=float(cfg.semantic_lane.get("parallel_tolerance_deg", 3.0)),
+            min_segment_length_px=int(cfg.semantic_lane.get("min_segment_length_px", 30)),
+            max_curve_residual_px=float(cfg.semantic_lane.get("max_curve_residual_px", 8.0)),
+        )
     return LanePipeline(
         cfg=cfg,
         undistorter=undistorter,
@@ -122,4 +134,5 @@ def build_lane_pipeline(settings: dict) -> LanePipeline:
         ipm=ipm,
         semantic_gate_enabled=semantic_gate_enabled,
         settings=settings,
+        semantic_lane_detector=semantic_lane_detector,
     )

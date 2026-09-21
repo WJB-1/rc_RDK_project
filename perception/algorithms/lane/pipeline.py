@@ -25,7 +25,7 @@ def _make_renderer(selector):
 
 class LanePipeline:
     def __init__(self, cfg, undistorter, edge_engine, semantic_engine,
-                 selector, ipm, semantic_gate_enabled, settings):
+                 selector, ipm, semantic_gate_enabled, settings, semantic_lane_detector=None):
         self.cfg = cfg
         self.undistorter = undistorter
         self.edge_engine = edge_engine
@@ -33,6 +33,7 @@ class LanePipeline:
         self.selector = selector
         self.ipm = ipm
         self.semantic_gate_enabled = semantic_gate_enabled
+        self.semantic_lane_detector = semantic_lane_detector
         self.settings = settings
         self.debug = settings.get("debug", {}).get("show_video", True)
 
@@ -83,16 +84,27 @@ class LanePipeline:
                 edge_mask = self.edge_engine.inference(processing_input)
 
             semantic_mask = None
-            if self.semantic_gate_enabled and self.semantic_engine is not None:
+            if (self.semantic_gate_enabled or self.semantic_lane_detector is not None) and self.semantic_engine is not None:
                 with block("tracker.semantic_inference"):
                     semantic_raw = self.semantic_engine.inference(processing_input)
                     semantic_mask, _ = clean_mask_by_cc(
                         semantic_raw, min_bottom_y=semantic_raw.shape[0] - 10,
                     )
 
+            semantic_result = None
             with block("tracker.selector_analyze"):
+                if self.semantic_lane_detector is not None and semantic_mask is not None:
+                    semantic_result = self.semantic_lane_detector.analyze(
+                        semantic_mask, self.selector._matrix_for_profile("lane")
+                    )
+                semantic_lines = semantic_result.get("accepted_image_lines", []) if semantic_result else []
                 lane_state = self.selector.analyze(
-                    self.edge_engine.last_lines, semantic_mask=semantic_mask,
+                    semantic_lines if semantic_result and semantic_result["accepted"] else self.edge_engine.last_lines,
+                    semantic_mask=semantic_mask,
+                )
+                lane_state["lane_method"] = (
+                    "semantic_boundary" if semantic_result and semantic_result["accepted"]
+                    else "template_fallback"
                 )
 
             selected_lines = self.selector.detected_source_lines
@@ -114,7 +126,8 @@ class LanePipeline:
             lane_state["raw_line_count"] = len(self.edge_engine.last_raw_lines)
             lane_state["line_count"] = len(self.edge_engine.last_lines)
             lane_state["line_method"] = (
-                "HoughLinesP + PCA merge + six-line template distance"
+                "semantic boundary + template fallback"
+                if self.semantic_lane_detector is not None else "HoughLinesP + PCA merge + six-line template distance"
                 if hasattr(self.selector, "template_x_at_ref_mm")
                 else "HoughLinesP + PCA merge (a3d8)"
             )
@@ -132,6 +145,8 @@ class LanePipeline:
                             bev_mask=bev_mask,
                             original_view=original_view,
                             renderer=renderer,
+                            semantic_mask=semantic_mask,
+                            semantic_result=semantic_result,
                         )
                     except Exception as error:
                         self.last_debug_capture = {}
@@ -163,7 +178,7 @@ class LanePipeline:
     # Debug capture
     # ------------------------------------------------------------------
     def _capture_debug(self, raw_frame, processing_input, lane_state, clean_mask,
-                       bev_mask, original_view, renderer):
+                       bev_mask, original_view, renderer, semantic_mask=None, semantic_result=None):
         edge_engine = self.edge_engine
         lane_selector = self.selector
         hough_view = raw_frame.copy()
@@ -198,9 +213,33 @@ class LanePipeline:
                 "theta_source": lane_state.get("lane_angle_source"),
             },
         }
+        if semantic_result is not None:
+            capture["semantic_lane"] = semantic_result
+            capture["lane_views"].update({
+                "semantic_overlay": self._draw_semantic_overlay(processing_input, semantic_mask),
+                "semantic_bev": self._draw_semantic_bev(semantic_result),
+                "semantic_ground": renderer.render_new_ground_bev(),
+            })
 
         self.last_debug_capture = capture
         return capture
+
+    @staticmethod
+    def _draw_semantic_overlay(image, mask):
+        view = image.copy()
+        if mask is not None:
+            overlay = np.zeros_like(view)
+            overlay[np.asarray(mask) > 0] = (60, 220, 60)
+            view = cv2.addWeighted(view, 0.72, overlay, 0.45, 0)
+        return view
+
+    def _draw_semantic_bev(self, result):
+        view = np.zeros((self.selector.canvas_h, self.selector.canvas_w, 3), dtype=np.uint8)
+        for segment in result.get("rejected_bev_lines", []):
+            cv2.line(view, tuple(np.round(segment[0]).astype(int)), tuple(np.round(segment[1]).astype(int)), (0, 90, 255), 2)
+        for segment in result.get("accepted_bev_lines", []):
+            cv2.line(view, tuple(np.round(segment[0]).astype(int)), tuple(np.round(segment[1]).astype(int)), (0, 255, 0), 3)
+        return view
 
     # ------------------------------------------------------------------
     # 阶段耗时日志
