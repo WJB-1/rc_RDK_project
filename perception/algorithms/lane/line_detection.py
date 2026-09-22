@@ -31,7 +31,6 @@ def thin_binary(binary: np.ndarray) -> np.ndarray:
 def postprocess_edge_probability(probability: np.ndarray, threshold: float = 0.35) -> np.ndarray:
     probability = np.asarray(probability, dtype=np.float32)
     binary = (probability >= float(threshold)).astype(np.uint8) * 255
-    binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
     return thin_binary(binary)
 
 

@@ -5,6 +5,17 @@ import numpy as np
 
 
 class SemanticLaneTests(unittest.TestCase):
+    def test_auto_mode_uses_template_only_on_the_frame_after_semantic_failure(self):
+        from perception.algorithms.lane.pipeline import LanePipeline
+
+        pipeline = LanePipeline.__new__(LanePipeline)
+        pipeline.semantic_lane_mode = "auto"
+        pipeline._auto_template_next = False
+
+        self.assertFalse(pipeline._should_run_template())
+        pipeline._auto_template_next = True
+        self.assertTrue(pipeline._should_run_template())
+
     def test_semantic_bev_renders_warped_edges_and_gate_colours(self):
         from perception.algorithms.lane.pipeline import LanePipeline
 

@@ -41,6 +41,7 @@ class LanePipeline:
         )
         if self.semantic_lane_mode not in {"template", "semantic", "auto"}:
             self.semantic_lane_mode = "auto" if semantic_lane_detector is not None else "template"
+        self._auto_template_next = False
         self.settings = settings
         self.debug = settings.get("debug", {}).get("show_video", True)
 
@@ -87,12 +88,15 @@ class LanePipeline:
             with block("tracker.undistort"):
                 processing_input = self.undistorter.apply(processing_input)
 
-            with block("tracker.edge_inference"):
-                edge_mask = self.edge_engine.inference(processing_input)
+            run_template = self._should_run_template()
+            edge_mask = np.zeros(processing_input.shape[:2], dtype=np.uint8)
+            if run_template:
+                with block("tracker.edge_inference"):
+                    edge_mask = self.edge_engine.inference(processing_input)
 
             semantic_mask = None
             semantic_result = None
-            semantic_requested = self.semantic_lane_mode in {"semantic", "auto"}
+            semantic_requested = not run_template and self.semantic_lane_mode in {"semantic", "auto"}
             if semantic_requested and self.semantic_engine is not None:
                 with block("tracker.semantic_inference"):
                     semantic_raw = self.semantic_engine.inference(processing_input)
@@ -106,7 +110,7 @@ class LanePipeline:
                         semantic_mask, self.selector._matrix_for_profile("lane")
                     )
                 semantic_accepted = bool(semantic_result and semantic_result["accepted"])
-                if self.semantic_lane_mode == "template":
+                if run_template:
                     source_lines = self.edge_engine.last_lines
                     lane_method = "template"
                 elif semantic_accepted:
@@ -124,10 +128,16 @@ class LanePipeline:
                 )
                 lane_state["lane_method"] = lane_method
                 lane_state["frame_dropped"] = lane_method == "semantic_invalid_drop"
+                if self.semantic_lane_mode == "auto":
+                    self._auto_template_next = lane_method == "semantic_invalid_drop"
 
             selected_lines = self.selector.detected_source_lines
             with block("tracker.lines_to_mask"):
-                line_mask = lines_to_mask(self.edge_engine.last_lines, edge_mask.shape, thickness=3)
+                line_mask = lines_to_mask(
+                    self.edge_engine.last_lines if run_template else source_lines,
+                    edge_mask.shape,
+                    thickness=3,
+                )
                 clean_mask = lines_to_mask(selected_lines, edge_mask.shape, thickness=4)
                 if not np.any(clean_mask):
                     clean_mask = line_mask
@@ -135,16 +145,20 @@ class LanePipeline:
 
             renderer = _make_renderer(self.selector)
 
-            with block("tracker.draw_bev"):
-                bev_mask = renderer.draw_bev_view()
+            if run_template:
+                with block("tracker.draw_bev"):
+                    bev_mask = renderer.draw_bev_view()
+                with block("tracker.draw_original"):
+                    original_view = renderer.draw_original_view(processing_input)
+            else:
+                with block("tracker.draw_bev"):
+                    bev_mask = renderer.render_new_ground_bev()
+                original_view = processing_input.copy()
 
-            with block("tracker.draw_original"):
-                original_view = renderer.draw_original_view(processing_input)
-
-            lane_state["raw_line_count"] = len(self.edge_engine.last_raw_lines)
-            lane_state["line_count"] = len(self.edge_engine.last_lines)
+            lane_state["raw_line_count"] = len(self.edge_engine.last_raw_lines) if run_template else 0
+            lane_state["line_count"] = len(self.edge_engine.last_lines) if run_template else len(source_lines)
             lane_state["line_method"] = (
-                "semantic boundary + template fallback"
+                "semantic boundary + next-frame template fallback"
                 if self.semantic_lane_mode == "auto" else "semantic boundary (invalid frames dropped)"
                 if self.semantic_lane_mode == "semantic" else "HoughLinesP + PCA merge + six-line template distance"
                 if hasattr(self.selector, "template_x_at_ref_mm")
@@ -166,6 +180,7 @@ class LanePipeline:
                             renderer=renderer,
                             semantic_mask=semantic_mask,
                             semantic_result=semantic_result,
+                            ground_bev=bev_mask if not run_template else None,
                         )
                     except Exception as error:
                         self.last_debug_capture = {}
@@ -197,7 +212,8 @@ class LanePipeline:
     # Debug capture
     # ------------------------------------------------------------------
     def _capture_debug(self, raw_frame, processing_input, lane_state, clean_mask,
-                       bev_mask, original_view, renderer, semantic_mask=None, semantic_result=None):
+                       bev_mask, original_view, renderer, semantic_mask=None, semantic_result=None,
+                       ground_bev=None):
         edge_engine = self.edge_engine
         lane_selector = self.selector
         hough_view = raw_frame.copy()
@@ -216,7 +232,7 @@ class LanePipeline:
                 "binary": getattr(edge_engine, "last_binary", None),
                 "hough": hough_view,
                 "lane_bev": bev_mask,
-                "ground_bev": renderer.render_new_ground_bev(),
+                "ground_bev": ground_bev if ground_bev is not None else renderer.render_new_ground_bev(),
                 "overlay": original_view,
             },
             "metrics": {
@@ -245,7 +261,7 @@ class LanePipeline:
                 "semantic_bev": self._draw_semantic_bev(
                     semantic_debug, self.selector._matrix_for_profile("lane")
                 ),
-                "semantic_ground": renderer.render_new_ground_bev(),
+                "semantic_ground": ground_bev if ground_bev is not None else renderer.render_new_ground_bev(),
             })
 
         self.last_debug_capture = capture
@@ -301,6 +317,12 @@ class LanePipeline:
 
     def reset(self):
         self.last_debug_capture = {}
+        self._auto_template_next = False
+
+    def _should_run_template(self) -> bool:
+        return self.semantic_lane_mode == "template" or (
+            self.semantic_lane_mode == "auto" and self._auto_template_next
+        )
 
     def set_semantic_lane_mode(self, mode: str) -> str:
         mode = str(mode).strip().lower()
@@ -311,6 +333,7 @@ class LanePipeline:
         ):
             raise RuntimeError("semantic lane detector is unavailable")
         self.semantic_lane_mode = mode
+        self._auto_template_next = False
         return mode
 
     def set_debug_capture_enabled(self, enabled: bool) -> bool:

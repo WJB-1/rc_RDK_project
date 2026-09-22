@@ -361,17 +361,20 @@ class TemplateDistanceLaneSelector(GroundIPMLanePairSelector):
     # ------------------------------------------------------------------
     # 新地面系：偏航角 / 偏移量计算
     # ------------------------------------------------------------------
-    def _compute_ground_yaw_offset(self, left_bev, right_bev):
-        """lane-IPM BEV → 图像 → ground_camera 地面系，计算偏航和横移。"""
+    def _compute_ground_yaw_offset(self, left_bev, right_bev, left_source=None, right_source=None):
+        """将已保留的原图线段直接投影至 ground_camera 地面系。"""
         if self.new_ground is None:
             return None
 
         lane_matrix = self._matrix_for_profile("lane")
         inv_lane_matrix = np.linalg.inv(lane_matrix)
 
-        def _to_ground_pts(bev_segment):
+        def _to_ground_pts(bev_segment, source_line):
             if bev_segment is None:
                 return []
+            if source_line is not None:
+                with block("lane.image_to_new_ground"):
+                    return self.new_ground.source_line_to_ground(source_line)
             # 模板匹配后的 BEV 线段，使用 lane-IPM 的逆变换还原至图像。
             with block("lane.bev_to_image"):
                 bev_f = np.asarray(bev_segment, dtype=np.float32).reshape(1, 2, 2)
@@ -385,8 +388,8 @@ class TemplateDistanceLaneSelector(GroundIPMLanePairSelector):
                 return self.new_ground.source_line_to_ground(back_line)
 
         with block("lane.source_to_new_ground"):
-            left_ground_pts = _to_ground_pts(left_bev)
-            right_ground_pts = _to_ground_pts(right_bev)
+            left_ground_pts = _to_ground_pts(left_bev, left_source)
+            right_ground_pts = _to_ground_pts(right_bev, right_source)
 
         with block("lane.fit_new_ground"):
             left_fit = self.new_ground.fit_centerline(left_ground_pts)
@@ -533,7 +536,12 @@ class TemplateDistanceLaneSelector(GroundIPMLanePairSelector):
         # ============================================================
         # 偏航角和偏移量：新地面系（ground_camera），失败则 BEV fallback
         # ============================================================
-        ground_result = self._compute_ground_yaw_offset(left_segment, right_segment)
+        ground_result = self._compute_ground_yaw_offset(
+            left_segment,
+            right_segment,
+            left_info["source_line"],
+            right_info["source_line"],
+        )
         if ground_result is not None:
             offset_mm, lane_angle_rad, theta_source, center_img_p1, center_img_p2 = ground_result
             if center_img_p1 is None or center_img_p2 is None:
