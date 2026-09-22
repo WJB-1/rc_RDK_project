@@ -114,11 +114,13 @@ lane_detection:
     yaw_deg: 0.0
 
   semantic_lane:
-    enabled: false
-    available: false
-    model_path: "models/lane_semantic_x5.bin"
-    input_size: 512
-    target_class: 1
+    enabled: true
+    available: true
+    model_path: "models/yolov8n_seg_road_x5.bin"
+    input_size: 640
+    confidence_threshold: 0.25
+    iou_threshold: 0.70
+    mask_threshold: 0.50
     distance_tolerance_mm: 20.0
     parallel_tolerance_deg: 3.0
     min_segment_length_px: 30

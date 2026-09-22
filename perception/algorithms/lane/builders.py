@@ -4,6 +4,7 @@ from pathlib import Path
 from perception.algorithms.core.ipm import MathematicalIPM
 from perception.models.pidinet import PiDiNetEngine
 from perception.models.bisenet import SegmentationEngine
+from perception.models.yolo_road_seg import YoloRoadSegmentationEngine
 from .ground_ipm_selector import GroundIPMLanePairSelector
 from .template_selector import TemplateDistanceLaneSelector
 from .semantic_lane import SemanticLaneDetector
@@ -35,7 +36,18 @@ def build_edge_engine(cfg: LaneConfig):
 
 
 def build_semantic_engine(cfg: LaneConfig):
-    sem_cfg = cfg.semantic_lane if cfg.semantic_lane.get("enabled", False) else cfg.semantic_gate
+    if cfg.semantic_lane.get("enabled", False):
+        sem_cfg = cfg.semantic_lane
+        if not sem_cfg.get("available", True):
+            return None
+        return YoloRoadSegmentationEngine(
+            model_path=_abs_model_path(sem_cfg["model_path"]),
+            input_size=int(sem_cfg.get("input_size", 640)),
+            confidence_threshold=float(sem_cfg.get("confidence_threshold", 0.25)),
+            iou_threshold=float(sem_cfg.get("iou_threshold", 0.7)),
+            mask_threshold=float(sem_cfg.get("mask_threshold", 0.5)),
+        )
+    sem_cfg = cfg.semantic_gate
     if not sem_cfg.get("enabled", False) or not sem_cfg.get("available", True):
         return None
     model_path = _abs_model_path(sem_cfg.get("model_path", "models/bisenetv2_lane_x5.bin"))
