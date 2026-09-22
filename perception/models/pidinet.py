@@ -9,6 +9,7 @@ from perception.algorithms.lane.line_detection import (
     draw_lines,
     erode_edge_segments,
     postprocess_edge_probability,
+    thin_binary,
 )
 
 
@@ -122,7 +123,9 @@ class PiDiNetEngine:
         with block("edge.threshold"):
             thresholded = (probability >= self.edge_threshold).astype(np.uint8) * 255
         with block("edge.erode"):
-            binary = erode_edge_segments(thresholded)
+            eroded = erode_edge_segments(thresholded)
+        with block("edge.thin"):
+            binary = thin_binary(eroded)
         with block("edge.component_centerline"):
             centerlines = detect_component_centerlines(binary)
         with block("edge.connected_components"):
@@ -132,8 +135,8 @@ class PiDiNetEngine:
         self.last_probability = probability
         self.last_enhanced = enhanced
         self.last_binary = binary
-        self.last_closed = binary
-        self.last_skeleton = None
+        self.last_closed = eroded
+        self.last_skeleton = binary
         self.last_label_map = label_map
         self.last_n_labels = int(n_labels)
         self.last_raw_lines = centerlines
