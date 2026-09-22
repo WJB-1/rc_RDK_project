@@ -9,7 +9,6 @@ from perception.algorithms.lane.line_detection import (
     draw_lines,
     merge_lines,
     postprocess_edge_probability,
-    thin_binary,
 )
 
 
@@ -122,10 +121,7 @@ class PiDiNetEngine:
         postprocess_started = time.perf_counter()
         with block("edge.threshold"):
             thresholded = (probability >= self.edge_threshold).astype(np.uint8) * 255
-        with block("edge.close"):
-            closed = cv2.morphologyEx(thresholded, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
-        with block("edge.thin"):
-            binary = thin_binary(closed)
+        binary = thresholded
         with block("edge.hough"):
             raw_lines = detect_lines(binary)
         with block("edge.merge"):
@@ -141,8 +137,8 @@ class PiDiNetEngine:
         self.last_probability = probability
         self.last_enhanced = enhanced
         self.last_binary = binary
-        self.last_closed = closed
-        self.last_skeleton = binary
+        self.last_closed = binary
+        self.last_skeleton = None
         self.last_label_map = label_map
         self.last_n_labels = int(n_labels)
         self.last_raw_lines = raw_lines

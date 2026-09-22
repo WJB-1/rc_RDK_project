@@ -11,27 +11,9 @@ import numpy as np
 from .constants import ANGLE_TOL_DEG, NORMAL_DIST_TOL, MIN_LINE_LENGTH
 
 
-def thin_binary(binary: np.ndarray) -> np.ndarray:
-    binary = np.where(binary > 0, 255, 0).astype(np.uint8)
-    ximgproc = getattr(cv2, "ximgproc", None)
-    if ximgproc is not None and hasattr(ximgproc, "thinning"):
-        return ximgproc.thinning(binary, thinningType=ximgproc.THINNING_ZHANGSUEN)
-
-    skeleton = np.zeros_like(binary)
-    current = binary.copy()
-    kernel = cv2.getStructuringElement(cv2.MORPH_CROSS, (3, 3))
-    while np.any(current):
-        eroded = cv2.erode(current, kernel)
-        opened = cv2.dilate(eroded, kernel)
-        skeleton = cv2.bitwise_or(skeleton, cv2.subtract(current, opened))
-        current = eroded
-    return skeleton
-
-
 def postprocess_edge_probability(probability: np.ndarray, threshold: float = 0.35) -> np.ndarray:
     probability = np.asarray(probability, dtype=np.float32)
-    binary = (probability >= float(threshold)).astype(np.uint8) * 255
-    return thin_binary(binary)
+    return (probability >= float(threshold)).astype(np.uint8) * 255
 
 
 def _line_params(line):
