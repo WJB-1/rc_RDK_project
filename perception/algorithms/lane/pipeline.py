@@ -261,7 +261,7 @@ class LanePipeline:
                 "semantic_bev": self._draw_semantic_bev(
                     semantic_debug, self.selector._matrix_for_profile("lane")
                 ),
-                "semantic_ground": ground_bev if ground_bev is not None else renderer.render_new_ground_bev(),
+                "semantic_ground": self._draw_semantic_ground(renderer, semantic_result),
             })
 
         self.last_debug_capture = capture
@@ -271,9 +271,29 @@ class LanePipeline:
     def _draw_semantic_overlay(image, mask):
         view = image.copy()
         if mask is not None:
-            overlay = np.zeros_like(view)
-            overlay[np.asarray(mask) > 0] = (60, 220, 60)
-            view = cv2.addWeighted(view, 0.72, overlay, 0.45, 0)
+            mask_pixels = np.asarray(mask) > 0
+            overlay = np.empty_like(view)
+            overlay[:] = (60, 220, 60)
+            blended = cv2.addWeighted(view, 0.55, overlay, 0.45, 0)
+            view[mask_pixels] = blended[mask_pixels]
+        return view
+
+    def _draw_semantic_ground(self, renderer, semantic_result):
+        view = renderer.render_new_ground_bev()
+        projector = getattr(self.selector, "new_ground", None)
+        if projector is None or not semantic_result:
+            return view
+        height, width = view.shape[:2]
+        def ground_pixel(point):
+            x, y = point
+            return (int(round(40 + (x + 600.0) * 0.5)),
+                    int(round(height - 40 - y * 0.5)))
+        for line in semantic_result.get("accepted_image_lines", []):
+            points = projector.source_line_to_ground(line)
+            if len(points) < 2:
+                continue
+            pixels = [ground_pixel(point) for point in points]
+            cv2.polylines(view, [np.asarray(pixels, dtype=np.int32)], False, (0, 255, 0), 3)
         return view
 
     def _draw_semantic_bev(self, result, parallel_matrix):
