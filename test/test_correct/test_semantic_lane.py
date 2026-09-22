@@ -5,6 +5,18 @@ import numpy as np
 
 
 class SemanticLaneTests(unittest.TestCase):
+    def test_component_centerline_extracts_one_axis_from_a_thick_segment(self):
+        from perception.algorithms.lane.line_detection import detect_component_centerlines
+
+        binary = np.zeros((120, 160), dtype=np.uint8)
+        cv2.rectangle(binary, (70, 20), (78, 100), 255, -1)
+
+        lines = detect_component_centerlines(binary, min_length=50.0)
+
+        self.assertEqual(len(lines), 1)
+        self.assertAlmostEqual((lines[0]["x1"] + lines[0]["x2"]) * 0.5, 74.0, delta=1.0)
+        self.assertGreater(lines[0]["length"], 75.0)
+
     def test_auto_mode_uses_template_only_on_the_frame_after_semantic_failure(self):
         from perception.algorithms.lane.pipeline import LanePipeline
 

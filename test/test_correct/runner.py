@@ -610,7 +610,7 @@ _PAGE = """<!doctype html>
 <section class="vision"><h3>Vision Inference</h3><select id="visionView" onchange="refreshVision()">
 <option value="overlay">原图模板线与中心线</option>
 <option value="binary">边缘检测二值化结果</option>
-<option value="hough">原图融合 Hough 线段</option>
+<option value="hough">原图粗线段中心轴</option>
 <option value="lane_bev">平行坐标系模板匹配</option>
 <option value="ground_bev">地面坐标系车道与中心线</option>
 </select><div class="preview"><img id="visionImage" alt="vision preview"><span id="visionHint">Waiting for vision frames...</span></div></section>
@@ -618,7 +618,7 @@ _PAGE = """<!doctype html>
 <h3>TX/RX Log</h3><pre id="log"></pre>
 <script>
 let visionUrl=null;
-const visionLabels={overlay:'原图模板线与中心线',binary:'边缘检测二值化结果',hough:'原图融合 Hough 线段',lane_bev:'平行坐标系模板匹配',ground_bev:'地面坐标系车道与中心线',semantic_overlay:'语义分割覆盖图',semantic_bev:'平行域边缘与距离门',semantic_ground:'地面坐标系车道与中心线'};
+const visionLabels={overlay:'原图模板线与中心线',binary:'边缘检测二值化结果',hough:'原图粗线段中心轴',lane_bev:'平行坐标系模板匹配',ground_bev:'地面坐标系车道与中心线',semantic_overlay:'语义分割覆盖图',semantic_bev:'平行域边缘与距离门',semantic_ground:'地面坐标系车道与中心线'};
 function syncVisionViews(views){const select=document.getElementById('visionView'),keys=views.join(',');if(select.dataset.keys===keys)return;select.dataset.keys=keys;select.innerHTML=views.map(key=>`<option value="${key}">${visionLabels[key]||key}</option>`).join('');}
 async function send(command, extra={}){const r=await fetch('/api/command',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({command,...extra})});const d=await r.json();if(!d.ok)alert(d.error);}
 function straight(){send('straight',{direction:document.getElementById('motionDirection').value,distance_mm:Number(document.getElementById('distance').value)})}

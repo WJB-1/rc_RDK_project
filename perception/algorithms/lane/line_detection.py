@@ -16,6 +16,41 @@ def postprocess_edge_probability(probability: np.ndarray, threshold: float = 0.3
     return (probability >= float(threshold)).astype(np.uint8) * 255
 
 
+def detect_component_centerlines(binary: np.ndarray, min_length=30.0):
+    """Fit one center axis to each connected thick edge segment."""
+    binary = np.where(np.asarray(binary) > 0, 255, 0).astype(np.uint8)
+    label_count, labels, stats, _ = cv2.connectedComponentsWithStats(binary, connectivity=8)
+    centerlines = []
+    for label in range(1, label_count):
+        x, y, width, height, area = stats[label]
+        if area < 4:
+            continue
+        points = np.column_stack(np.where(labels == label))[:, ::-1].astype(np.float32)
+        vx, vy, x0, y0 = cv2.fitLine(points, cv2.DIST_L2, 0, 0.01, 0.01).reshape(4)
+        direction = np.array([vx, vy], dtype=np.float64)
+        norm = float(np.linalg.norm(direction))
+        if norm < 1e-6:
+            continue
+        direction /= norm
+        origin = np.array([x0, y0], dtype=np.float64)
+        projections = (points - origin) @ direction
+        first = origin + direction * float(projections.min())
+        second = origin + direction * float(projections.max())
+        length = float(np.linalg.norm(second - first))
+        if length < float(min_length):
+            continue
+        angle = math.degrees(math.atan2(float(direction[1]), float(direction[0]))) % 180.0
+        centerlines.append({
+            "x1": float(first[0]), "y1": float(first[1]),
+            "x2": float(second[0]), "y2": float(second[1]),
+            "length": length,
+            "angle_deg": angle,
+            "orientation": _orientation(angle),
+            "component_area": int(area),
+        })
+    return sorted(centerlines, key=lambda line: line["length"], reverse=True)
+
+
 def _line_params(line):
     x1, y1, x2, y2 = line["x1"], line["y1"], line["x2"], line["y2"]
     dx, dy = x2 - x1, y2 - y1

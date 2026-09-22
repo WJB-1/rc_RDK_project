@@ -5,9 +5,8 @@ import cv2
 import numpy as np
 
 from perception.algorithms.lane.line_detection import (
-    detect_lines,
+    detect_component_centerlines,
     draw_lines,
-    merge_lines,
     postprocess_edge_probability,
 )
 
@@ -122,14 +121,8 @@ class PiDiNetEngine:
         with block("edge.threshold"):
             thresholded = (probability >= self.edge_threshold).astype(np.uint8) * 255
         binary = thresholded
-        with block("edge.hough"):
-            raw_lines = detect_lines(binary)
-        with block("edge.merge"):
-            merged_lines = merge_lines(
-                raw_lines,
-                angle_tol_deg=self.angle_tol_deg,
-                normal_dist_tol=self.normal_dist_tol,
-            )
+        with block("edge.component_centerline"):
+            centerlines = detect_component_centerlines(binary)
         with block("edge.connected_components"):
             n_labels, label_map = cv2.connectedComponents(binary)
         self.last_postprocess_ms = (time.perf_counter() - postprocess_started) * 1000.0
@@ -141,8 +134,8 @@ class PiDiNetEngine:
         self.last_skeleton = None
         self.last_label_map = label_map
         self.last_n_labels = int(n_labels)
-        self.last_raw_lines = raw_lines
-        self.last_lines = merged_lines
+        self.last_raw_lines = centerlines
+        self.last_lines = centerlines
         return binary
     
     def render_lines(self, frame: np.ndarray) -> np.ndarray:
