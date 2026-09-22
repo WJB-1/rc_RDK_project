@@ -96,6 +96,10 @@ class SimTaskPort(_SimPort):
     EXPLORATION_DISTANCE_MM = 300.0
 
     def _complete(self, command):
+        if str(command.task_id).startswith("check-in-"):
+            result = self.world.execute_task(command)
+            return TargetCompletion(result.outcome, result.timestamp, task_result=result.task_result,
+                                    error_code=result.error_code)
         exploration = self.world.execute_task_drive(self.EXPLORATION_DISTANCE_MM)
         if exploration.outcome is not ExecutionOutcome.COMPLETED:
             return TargetCompletion(

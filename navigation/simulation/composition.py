@@ -65,6 +65,6 @@ def _compose(seed: int):
         task_registry=task_registry,
         route_planner=route_planner,
         recovery_planner=recovery_planner,
-        culvert_quota=8,
+        culvert_quota=0,
     )
     return world, executor, NavigationRuntime(coordinator)
