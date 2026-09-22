@@ -125,6 +125,12 @@ class DebugRunner:
             raise RuntimeError(f"串口打开失败: {error}") from error
 
     def handle_command(self, command: str, payload: dict):
+        if command == "set_lane_detection_mode":
+            if self._vision_tracker is None:
+                self._prepare_vision()
+            mode = self._vision_tracker.set_semantic_lane_mode(payload.get("mode", ""))
+            self._append_log("LOCAL", "LANE_MODE", mode.encode("ascii"))
+            return
         if command == "set_semantic_gate":
             if self._vision_tracker is None:
                 self._prepare_vision()
@@ -173,6 +179,13 @@ class DebugRunner:
         self._send(frame, command)
 
     def snapshot(self) -> dict:
+        pipeline = getattr(self._vision_tracker, "pipeline", None)
+        semantic_available = bool(
+            pipeline is not None
+            and getattr(pipeline, "semantic_lane_detector", None) is not None
+            and getattr(pipeline, "semantic_engine", None) is not None
+        )
+        lane_detection_mode = getattr(pipeline, "semantic_lane_mode", "template")
         with self._state_lock:
             snapshot = {
                 "state": self._state.value,
@@ -183,13 +196,11 @@ class DebugRunner:
                 "vision_frame_id": self._vision_preview_sequence,
                 "vision_views": (
                     ["semantic_overlay", "semantic_bev", "semantic_ground"]
-                    if self._vision_tracker is not None
-                    and getattr(
-                        getattr(self._vision_tracker, "pipeline", None),
-                        "semantic_lane_detector", None,
-                    ) is not None
+                    if lane_detection_mode in {"semantic", "auto"} and semantic_available
                     else ["overlay", "binary", "hough", "lane_bev", "ground_bev"]
                 ),
+                "lane_detection_mode": lane_detection_mode,
+                "semantic_lane_available": semantic_available,
                 "semantic_gate_available": bool(
                     self._vision_tracker is not None
                     and getattr(self._vision_tracker, "semantic_engine", None) is not None
@@ -591,6 +602,7 @@ _PAGE = """<!doctype html>
 <p>运动方向：<select id="motionDirection"><option value="forward">前向</option><option value="backward">后向</option></select></p>
 <p>直行距离(mm)：<input id="distance" type="number" value="500" min="1" max="65535"><button onclick="straight()">直行</button></p>
 <p>转向：<button onclick="turn('turn_left')">左转 90°</button><button onclick="turn('turn_right')">右转 90°</button></p>
+<p>车道检测：<select id="laneDetectionMode" onchange="setLaneDetectionMode(this.value)"><option value="template">模板</option><option value="semantic">分割</option><option value="auto">自动</option></select> <span id="laneDetectionModeState"></span></p>
 <section class="vision"><h3>Vision Inference</h3><select id="visionView" onchange="refreshVision()">
 <option value="overlay">原图模板线与中心线</option>
 <option value="binary">边缘检测二值化结果</option>
@@ -607,8 +619,8 @@ function syncVisionViews(views){const select=document.getElementById('visionView
 async function send(command, extra={}){const r=await fetch('/api/command',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({command,...extra})});const d=await r.json();if(!d.ok)alert(d.error);}
 function straight(){send('straight',{direction:document.getElementById('motionDirection').value,distance_mm:Number(document.getElementById('distance').value)})}
 function turn(command){send(command,{direction:document.getElementById('motionDirection').value})}
+async function setLaneDetectionMode(mode){await send('set_lane_detection_mode',{mode});}
 async function refreshVision(){const image=document.getElementById('visionImage');const hint=document.getElementById('visionHint');const view=document.getElementById('visionView').value;try{const r=await fetch(`/api/vision?view=${encodeURIComponent(view)}&t=${Date.now()}`);if(r.ok){if(visionUrl)URL.revokeObjectURL(visionUrl);visionUrl=URL.createObjectURL(await r.blob());image.src=visionUrl;image.style.display='block';hint.style.display='none';}else{image.removeAttribute('src');image.style.display='none';hint.style.display='block';}}catch(e){image.removeAttribute('src');image.style.display='none';hint.style.display='block';}}
-async function refresh(){try{const d=await (await fetch('/api/status')).json();document.getElementById('state').textContent=d.state;document.getElementById('offset').textContent=d.offset_mm;document.getElementById('error').textContent=d.error||'--';document.getElementById('visionDiagnostics').textContent=Object.keys(d.vision_diagnostics||{}).length?JSON.stringify(d.vision_diagnostics,null,2):'等待视觉帧...';document.getElementById('log').textContent=d.log.map(x=>`${x.time} ${x.direction} ${x.label} ${x.hex}`).join('\\n');if(d.vision_frame_id)refreshVision();}catch(e){}}
-async function refreshWithViews(){try{const status=await (await fetch('/api/status')).json();syncVisionViews(status.vision_views||[]);}catch(e){}return refresh();}
-setInterval(refreshWithViews,500);refreshWithViews();
+async function refresh(){try{const d=await (await fetch('/api/status')).json();document.getElementById('state').textContent=d.state;document.getElementById('offset').textContent=d.offset_mm;document.getElementById('error').textContent=d.error||'--';syncVisionViews(d.vision_views||[]);const mode=document.getElementById('laneDetectionMode');mode.value=d.lane_detection_mode||'template';mode.querySelector('option[value="semantic"]').disabled=!d.semantic_lane_available;mode.querySelector('option[value="auto"]').disabled=!d.semantic_lane_available;document.getElementById('laneDetectionModeState').textContent=d.semantic_lane_available?'':'（分割模型不可用）';document.getElementById('visionDiagnostics').textContent=Object.keys(d.vision_diagnostics||{}).length?JSON.stringify(d.vision_diagnostics,null,2):'等待视觉帧...';document.getElementById('log').textContent=d.log.map(x=>`${x.time} ${x.direction} ${x.label} ${x.hex}`).join('\\n');if(d.vision_frame_id)refreshVision();}catch(e){}}
+setInterval(refresh,500);refresh();
 </script>"""

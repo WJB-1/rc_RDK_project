@@ -5,6 +5,32 @@ import numpy as np
 
 
 class SemanticLaneTests(unittest.TestCase):
+    def test_lane_mode_accepts_template_semantic_and_auto(self):
+        from perception.algorithms.lane.pipeline import LanePipeline
+
+        pipeline = LanePipeline.__new__(LanePipeline)
+        pipeline.semantic_lane_detector = object()
+        pipeline.semantic_engine = object()
+        pipeline.semantic_lane_mode = "auto"
+
+        self.assertEqual(pipeline.set_semantic_lane_mode("template"), "template")
+        self.assertEqual(pipeline.set_semantic_lane_mode("semantic"), "semantic")
+        self.assertEqual(pipeline.set_semantic_lane_mode("auto"), "auto")
+        with self.assertRaises(ValueError):
+            pipeline.set_semantic_lane_mode("invalid")
+
+    def test_lane_mode_rejects_semantic_when_detector_is_unavailable(self):
+        from perception.algorithms.lane.pipeline import LanePipeline
+
+        pipeline = LanePipeline.__new__(LanePipeline)
+        pipeline.semantic_lane_detector = None
+        pipeline.semantic_engine = None
+        pipeline.semantic_lane_mode = "template"
+
+        self.assertEqual(pipeline.set_semantic_lane_mode("template"), "template")
+        with self.assertRaises(RuntimeError):
+            pipeline.set_semantic_lane_mode("semantic")
+
     def test_detector_reassembles_split_boundaries_and_accepts_parallel_lane(self):
         from perception.algorithms.lane.semantic_lane import SemanticLaneDetector
 

@@ -34,6 +34,13 @@ class LanePipeline:
         self.ipm = ipm
         self.semantic_gate_enabled = semantic_gate_enabled
         self.semantic_lane_detector = semantic_lane_detector
+        semantic_cfg = getattr(cfg, "semantic_lane", {}) or {}
+        configured_mode = str(semantic_cfg.get("mode", "auto")).lower()
+        self.semantic_lane_mode = (
+            configured_mode if semantic_lane_detector is not None else "template"
+        )
+        if self.semantic_lane_mode not in {"template", "semantic", "auto"}:
+            self.semantic_lane_mode = "auto" if semantic_lane_detector is not None else "template"
         self.settings = settings
         self.debug = settings.get("debug", {}).get("show_video", True)
 
@@ -84,28 +91,39 @@ class LanePipeline:
                 edge_mask = self.edge_engine.inference(processing_input)
 
             semantic_mask = None
-            if (self.semantic_gate_enabled or self.semantic_lane_detector is not None) and self.semantic_engine is not None:
+            semantic_result = None
+            semantic_requested = self.semantic_lane_mode in {"semantic", "auto"}
+            if semantic_requested and self.semantic_engine is not None:
                 with block("tracker.semantic_inference"):
                     semantic_raw = self.semantic_engine.inference(processing_input)
                     semantic_mask, _ = clean_mask_by_cc(
                         semantic_raw, min_bottom_y=semantic_raw.shape[0] - 10,
                     )
 
-            semantic_result = None
             with block("tracker.selector_analyze"):
                 if self.semantic_lane_detector is not None and semantic_mask is not None:
                     semantic_result = self.semantic_lane_detector.analyze(
                         semantic_mask, self.selector._matrix_for_profile("lane")
                     )
-                semantic_lines = semantic_result.get("accepted_image_lines", []) if semantic_result else []
+                semantic_accepted = bool(semantic_result and semantic_result["accepted"])
+                if self.semantic_lane_mode == "template":
+                    source_lines = self.edge_engine.last_lines
+                    lane_method = "template"
+                elif semantic_accepted:
+                    source_lines = semantic_result["accepted_image_lines"]
+                    lane_method = "semantic_boundary"
+                elif self.semantic_lane_mode == "auto":
+                    source_lines = self.edge_engine.last_lines
+                    lane_method = "template_fallback"
+                else:
+                    source_lines = []
+                    lane_method = "semantic_invalid_drop"
                 lane_state = self.selector.analyze(
-                    semantic_lines if semantic_result and semantic_result["accepted"] else self.edge_engine.last_lines,
+                    source_lines,
                     semantic_mask=semantic_mask,
                 )
-                lane_state["lane_method"] = (
-                    "semantic_boundary" if semantic_result and semantic_result["accepted"]
-                    else "template_fallback"
-                )
+                lane_state["lane_method"] = lane_method
+                lane_state["frame_dropped"] = lane_method == "semantic_invalid_drop"
 
             selected_lines = self.selector.detected_source_lines
             with block("tracker.lines_to_mask"):
@@ -127,7 +145,8 @@ class LanePipeline:
             lane_state["line_count"] = len(self.edge_engine.last_lines)
             lane_state["line_method"] = (
                 "semantic boundary + template fallback"
-                if self.semantic_lane_detector is not None else "HoughLinesP + PCA merge + six-line template distance"
+                if self.semantic_lane_mode == "auto" else "semantic boundary (invalid frames dropped)"
+                if self.semantic_lane_mode == "semantic" else "HoughLinesP + PCA merge + six-line template distance"
                 if hasattr(self.selector, "template_x_at_ref_mm")
                 else "HoughLinesP + PCA merge (a3d8)"
             )
@@ -265,6 +284,17 @@ class LanePipeline:
 
     def reset(self):
         self.last_debug_capture = {}
+
+    def set_semantic_lane_mode(self, mode: str) -> str:
+        mode = str(mode).strip().lower()
+        if mode not in {"template", "semantic", "auto"}:
+            raise ValueError("lane detection mode must be template, semantic, or auto")
+        if mode != "template" and (
+            self.semantic_lane_detector is None or self.semantic_engine is None
+        ):
+            raise RuntimeError("semantic lane detector is unavailable")
+        self.semantic_lane_mode = mode
+        return mode
 
     def set_debug_capture_enabled(self, enabled: bool) -> bool:
         self.debug_capture_enabled = bool(enabled)

@@ -116,6 +116,7 @@ lane_detection:
   semantic_lane:
     enabled: true
     available: true
+    mode: auto
     model_path: "models/yolov8n_seg_road_x5.bin"
     input_size: 640
     confidence_threshold: 0.25

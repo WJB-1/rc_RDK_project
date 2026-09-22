@@ -55,6 +55,13 @@ class LaneTracker:
         self.lane_selector.semantic_gate = self.pipeline.semantic_gate_enabled
         return self.pipeline.semantic_gate_enabled
 
+    @property
+    def semantic_lane_mode(self) -> str:
+        return self.pipeline.semantic_lane_mode
+
+    def set_semantic_lane_mode(self, mode: str) -> str:
+        return self.pipeline.set_semantic_lane_mode(mode)
+
     def set_debug_capture_enabled(self, enabled: bool) -> bool:
         return self.pipeline.set_debug_capture_enabled(enabled)
 
