@@ -22,7 +22,7 @@ edge_detection:
   model_path: "models/pidinet_small_dil_512x384_x5_bayese.bin"
   input_width: 512
   input_height: 384
-  threshold: 0.25
+  threshold: 0.40
   angle_tol_deg: 3.0
   normal_dist_tol: 8.0
   semantic_gate:

@@ -16,6 +16,11 @@ def postprocess_edge_probability(probability: np.ndarray, threshold: float = 0.3
     return (probability >= float(threshold)).astype(np.uint8) * 255
 
 
+def erode_edge_segments(binary: np.ndarray) -> np.ndarray:
+    binary = np.where(np.asarray(binary) > 0, 255, 0).astype(np.uint8)
+    return cv2.erode(binary, np.ones((3, 3), dtype=np.uint8), iterations=1)
+
+
 def detect_component_centerlines(binary: np.ndarray, min_length=30.0):
     """Fit one center axis to each connected thick edge segment."""
     binary = np.where(np.asarray(binary) > 0, 255, 0).astype(np.uint8)

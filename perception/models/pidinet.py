@@ -7,6 +7,7 @@ import numpy as np
 from perception.algorithms.lane.line_detection import (
     detect_component_centerlines,
     draw_lines,
+    erode_edge_segments,
     postprocess_edge_probability,
 )
 
@@ -120,7 +121,8 @@ class PiDiNetEngine:
         postprocess_started = time.perf_counter()
         with block("edge.threshold"):
             thresholded = (probability >= self.edge_threshold).astype(np.uint8) * 255
-        binary = thresholded
+        with block("edge.erode"):
+            binary = erode_edge_segments(thresholded)
         with block("edge.component_centerline"):
             centerlines = detect_component_centerlines(binary)
         with block("edge.connected_components"):

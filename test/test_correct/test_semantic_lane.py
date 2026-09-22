@@ -5,6 +5,19 @@ import numpy as np
 
 
 class SemanticLaneTests(unittest.TestCase):
+    def test_single_erosion_separates_thick_segments_joined_by_a_thin_bridge(self):
+        from perception.algorithms.lane.line_detection import erode_edge_segments
+
+        binary = np.zeros((80, 100), dtype=np.uint8)
+        cv2.rectangle(binary, (20, 10), (28, 70), 255, -1)
+        cv2.rectangle(binary, (60, 10), (68, 70), 255, -1)
+        cv2.line(binary, (28, 40), (60, 40), 255, 1)
+
+        separated = erode_edge_segments(binary)
+        labels, _ = cv2.connectedComponents(separated)
+
+        self.assertEqual(labels - 1, 2)
+
     def test_component_centerline_extracts_one_axis_from_a_thick_segment(self):
         from perception.algorithms.lane.line_detection import detect_component_centerlines
 
