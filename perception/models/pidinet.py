@@ -60,12 +60,13 @@ def scale_lines_to_frame(lines, source_size, frame_shape):
 
 class PiDiNetEngine:
     def __init__(self, model_path: str, input_size=(512, 384), edge_threshold=0.25,
-                 angle_tol_deg=3.0, normal_dist_tol=8.0):
+                 angle_tol_deg=3.0, normal_dist_tol=8.0, centerline_max_gap_px=80.0):
         self.model_path = str(Path(model_path))
         self.input_width, self.input_height = input_size
         self.edge_threshold = float(edge_threshold)
         self.angle_tol_deg = float(angle_tol_deg)
         self.normal_dist_tol = float(normal_dist_tol)
+        self.centerline_max_gap_px = float(centerline_max_gap_px)
         try:
             from hobot_dnn import pyeasy_dnn as dnn
         except ImportError as error:
@@ -129,7 +130,7 @@ class PiDiNetEngine:
             binary = remove_skeleton_border(thin_binary(eroded))
         with block("edge.component_centerline"):
             centerlines, label_map, n_labels = detect_component_centerlines(
-                binary, return_labels=True
+                binary, max_gap_px=self.centerline_max_gap_px, return_labels=True
             )
         self.last_postprocess_ms = (time.perf_counter() - postprocess_started) * 1000.0
 

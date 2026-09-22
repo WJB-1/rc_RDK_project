@@ -32,6 +32,7 @@ def build_edge_engine(cfg: LaneConfig):
         edge_threshold=float(edge_cfg.get("threshold", 0.25)),
         angle_tol_deg=float(edge_cfg.get("angle_tol_deg", 3.0)),
         normal_dist_tol=float(edge_cfg.get("normal_dist_tol", 8.0)),
+        centerline_max_gap_px=float(edge_cfg.get("centerline_max_gap_px", 80.0)),
     )
 
 

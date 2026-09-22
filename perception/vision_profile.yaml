@@ -25,6 +25,7 @@ edge_detection:
   threshold: 0.40
   angle_tol_deg: 3.0
   normal_dist_tol: 8.0
+  centerline_max_gap_px: 80.0
   semantic_gate:
     enabled: false
     model_path: "models/bisenetv2_lane_x5.bin"
@@ -175,7 +176,7 @@ lane_detection:
   # ---- 边缘二值化 ----
   edge:
     threshold: 64
-    skeleton_close_kernel: 3
+    skeleton_close_kernel: 10
 
   # ---- 模板匹配 ----
   matching:

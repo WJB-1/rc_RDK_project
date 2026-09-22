@@ -46,6 +46,19 @@ class SemanticLaneTests(unittest.TestCase):
         self.assertAlmostEqual((lines[0]["x1"] + lines[0]["x2"]) * 0.5, 74.0, delta=1.0)
         self.assertGreater(lines[0]["length"], 75.0)
 
+    def test_component_centerline_merges_collinear_segments_across_a_gap(self):
+        from perception.algorithms.lane.line_detection import detect_component_centerlines
+
+        binary = np.zeros((160, 160), dtype=np.uint8)
+        cv2.line(binary, (80, 20), (80, 65), 255, 1)
+        cv2.line(binary, (80, 90), (80, 140), 255, 1)
+
+        lines = detect_component_centerlines(binary, min_length=30.0, max_gap_px=30.0)
+
+        self.assertEqual(len(lines), 1)
+        self.assertGreater(lines[0]["length"], 115.0)
+        self.assertEqual(lines[0]["merged_from"], 2)
+
     def test_auto_mode_uses_template_only_on_the_frame_after_semantic_failure(self):
         from perception.algorithms.lane.pipeline import LanePipeline
 

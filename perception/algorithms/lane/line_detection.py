@@ -47,21 +47,19 @@ def erode_edge_segments(binary: np.ndarray) -> np.ndarray:
     return cv2.erode(binary, np.ones((4, 4), dtype=np.uint8), iterations=1)
 
 
-def detect_component_centerlines(binary: np.ndarray, min_length=30.0, return_labels=False):
-    """Fit one center axis to each connected thick edge segment."""
+def detect_component_centerlines(binary: np.ndarray, min_length=30.0, max_gap_px=80.0,
+                                 normal_tolerance_px=6.0, return_labels=False):
+    """Fit and merge collinear center axes from disconnected skeleton components."""
     binary = np.where(np.asarray(binary) > 0, 255, 0).astype(np.uint8)
     label_count, labels, stats, _ = cv2.connectedComponentsWithStats(binary, connectivity=8)
-    centerlines = []
-    ys, xs = np.nonzero(labels)
-    component_points = {}
-    for label, x_coord, y_coord in zip(labels[ys, xs], xs, ys):
-        if label > 0:
-            component_points.setdefault(int(label), []).append((x_coord, y_coord))
+    components = []
     for label in range(1, label_count):
         x, y, width, height, area = stats[label]
         if area < 4:
             continue
-        points = np.asarray(component_points.get(label, ()), dtype=np.float32)
+        component_labels = labels[y:y + height, x:x + width]
+        point_rows, point_columns = np.where(component_labels == label)
+        points = np.column_stack((point_columns + x, point_rows + y)).astype(np.float32)
         if len(points) < 2:
             continue
         vx, vy, x0, y0 = cv2.fitLine(points, cv2.DIST_L2, 0, 0.01, 0.01).reshape(4)
@@ -70,6 +68,71 @@ def detect_component_centerlines(binary: np.ndarray, min_length=30.0, return_lab
         if norm < 1e-6:
             continue
         direction /= norm
+        if direction[1] < 0 or (abs(direction[1]) < 1e-6 and direction[0] < 0):
+            direction = -direction
+        origin = np.array([x0, y0], dtype=np.float64)
+        projections = (points - origin) @ direction
+        first = origin + direction * float(projections.min())
+        second = origin + direction * float(projections.max())
+        length = float(np.linalg.norm(second - first))
+        components.append({
+            "points": points,
+            "first": first,
+            "second": second,
+            "direction": direction,
+            "midpoint": (first + second) * 0.5,
+            "length": length,
+            "area": int(area),
+        })
+
+    parent = list(range(len(components)))
+
+    def find(index):
+        while parent[index] != index:
+            parent[index] = parent[parent[index]]
+            index = parent[index]
+        return index
+
+    def union(first_index, second_index):
+        first_root, second_root = find(first_index), find(second_index)
+        if first_root != second_root:
+            parent[second_root] = first_root
+
+    min_cosine = math.cos(math.radians(5.0))
+    for first_index, first_component in enumerate(components):
+        direction = first_component["direction"]
+        normal = np.array([-direction[1], direction[0]])
+        first_interval = sorted((
+            float(first_component["first"] @ direction),
+            float(first_component["second"] @ direction),
+        ))
+        for second_index in range(first_index + 1, len(components)):
+            second_component = components[second_index]
+            if abs(float(direction @ second_component["direction"])) < min_cosine:
+                continue
+            lateral_distance = abs(float(
+                (second_component["midpoint"] - first_component["midpoint"]) @ normal
+            ))
+            if lateral_distance > float(normal_tolerance_px):
+                continue
+            second_interval = sorted((
+                float(second_component["first"] @ direction),
+                float(second_component["second"] @ direction),
+            ))
+            gap = max(0.0, second_interval[0] - first_interval[1], first_interval[0] - second_interval[1])
+            if gap <= float(max_gap_px):
+                union(first_index, second_index)
+
+    groups = {}
+    for index in range(len(components)):
+        groups.setdefault(find(index), []).append(index)
+
+    centerlines = []
+    for indices in groups.values():
+        points = np.vstack([components[index]["points"] for index in indices]).astype(np.float32)
+        vx, vy, x0, y0 = cv2.fitLine(points, cv2.DIST_L2, 0, 0.01, 0.01).reshape(4)
+        direction = np.array([vx, vy], dtype=np.float64)
+        direction /= max(float(np.linalg.norm(direction)), 1e-6)
         origin = np.array([x0, y0], dtype=np.float64)
         projections = (points - origin) @ direction
         first = origin + direction * float(projections.min())
@@ -84,7 +147,8 @@ def detect_component_centerlines(binary: np.ndarray, min_length=30.0, return_lab
             "length": length,
             "angle_deg": angle,
             "orientation": _orientation(angle),
-            "component_area": int(area),
+            "component_area": sum(components[index]["area"] for index in indices),
+            "merged_from": len(indices),
         })
     centerlines = sorted(centerlines, key=lambda line: line["length"], reverse=True)
     return (centerlines, labels, int(label_count)) if return_labels else centerlines
