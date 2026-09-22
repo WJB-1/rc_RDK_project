@@ -11,6 +11,26 @@ if str(TEST_CORRECT_ROOT) not in sys.path:
 
 
 class VisionPreviewTests(unittest.TestCase):
+    def test_auto_mode_uses_template_views_for_a_template_fallback_frame(self):
+        from runner import DebugRunner
+
+        pipeline = type("Pipeline", (), {
+            "semantic_lane_detector": object(),
+            "semantic_engine": object(),
+            "semantic_lane_mode": "auto",
+        })()
+        tracker = type("Tracker", (), {
+            "pipeline": pipeline,
+            "last_lane_state": {"lane_method": "template"},
+        })()
+        runner = DebugRunner("loopback", 115200, 5002, serial_factory=lambda *args, **kwargs: None)
+        runner._vision_tracker = tracker
+
+        self.assertEqual(
+            runner.snapshot()["vision_views"],
+            ["overlay", "binary", "hough", "lane_bev", "ground_bev"],
+        )
+
     def test_undistort_parameters_scale_intrinsics_to_input_frame(self):
         from perception.algorithms.lane.undistort import build_undistort_parameters
 

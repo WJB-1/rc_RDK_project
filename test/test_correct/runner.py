@@ -186,6 +186,9 @@ class DebugRunner:
             and getattr(pipeline, "semantic_engine", None) is not None
         )
         lane_detection_mode = getattr(pipeline, "semantic_lane_mode", "template")
+        lane_method = getattr(self._vision_tracker, "last_lane_state", {}) or {}
+        lane_method = lane_method.get("lane_method", "")
+        semantic_frame = lane_method in {"semantic_boundary", "semantic_invalid_drop"}
         with self._state_lock:
             snapshot = {
                 "state": self._state.value,
@@ -196,7 +199,8 @@ class DebugRunner:
                 "vision_frame_id": self._vision_preview_sequence,
                 "vision_views": (
                     ["semantic_overlay", "semantic_bev", "semantic_ground"]
-                    if lane_detection_mode in {"semantic", "auto"} and semantic_available
+                    if lane_detection_mode == "semantic"
+                    or (lane_detection_mode == "auto" and semantic_available and semantic_frame)
                     else ["overlay", "binary", "hough", "lane_bev", "ground_bev"]
                 ),
                 "lane_detection_mode": lane_detection_mode,
