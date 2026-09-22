@@ -5,6 +5,25 @@ import numpy as np
 
 
 class SemanticLaneTests(unittest.TestCase):
+    def test_semantic_bev_renders_warped_edges_and_gate_colours(self):
+        from perception.algorithms.lane.pipeline import LanePipeline
+
+        pipeline = LanePipeline.__new__(LanePipeline)
+        pipeline.selector = type("Selector", (), {"canvas_w": 100, "canvas_h": 100})()
+        edge = np.zeros((100, 100), dtype=np.uint8)
+        edge[10, 10] = 255
+        result = {
+            "edge_mask": edge,
+            "accepted_bev_lines": [np.array([[20.0, 20.0], [20.0, 80.0]])],
+            "rejected_bev_lines": [np.array([[70.0, 20.0], [70.0, 80.0]])],
+        }
+
+        image = pipeline._draw_semantic_bev(result, np.eye(3, dtype=np.float64))
+
+        self.assertTrue(np.all(image[10, 10] > 0))
+        self.assertGreater(int(image[50, 20, 1]), int(image[50, 20, 2]))
+        self.assertGreater(int(image[50, 70, 2]), int(image[50, 70, 1]))
+
     def test_lane_mode_accepts_template_semantic_and_auto(self):
         from perception.algorithms.lane.pipeline import LanePipeline
 

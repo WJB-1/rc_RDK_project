@@ -232,11 +232,19 @@ class LanePipeline:
                 "theta_source": lane_state.get("lane_angle_source"),
             },
         }
-        if semantic_result is not None:
-            capture["semantic_lane"] = semantic_result
+        if semantic_mask is not None:
+            semantic_debug = semantic_result or {
+                "edge_mask": cv2.Canny(np.asarray(semantic_mask, dtype=np.uint8), 50, 150),
+                "accepted_bev_lines": [],
+                "rejected_bev_lines": [],
+            }
+            if semantic_result is not None:
+                capture["semantic_lane"] = semantic_result
             capture["lane_views"].update({
                 "semantic_overlay": self._draw_semantic_overlay(processing_input, semantic_mask),
-                "semantic_bev": self._draw_semantic_bev(semantic_result),
+                "semantic_bev": self._draw_semantic_bev(
+                    semantic_debug, self.selector._matrix_for_profile("lane")
+                ),
                 "semantic_ground": renderer.render_new_ground_bev(),
             })
 
@@ -252,8 +260,17 @@ class LanePipeline:
             view = cv2.addWeighted(view, 0.72, overlay, 0.45, 0)
         return view
 
-    def _draw_semantic_bev(self, result):
-        view = np.zeros((self.selector.canvas_h, self.selector.canvas_w, 3), dtype=np.uint8)
+    def _draw_semantic_bev(self, result, parallel_matrix):
+        edge_mask = np.asarray(result.get("edge_mask"), dtype=np.uint8)
+        if edge_mask.ndim != 2:
+            edge_mask = np.zeros((self.selector.canvas_h, self.selector.canvas_w), dtype=np.uint8)
+        warped_edges = cv2.warpPerspective(
+            edge_mask,
+            np.asarray(parallel_matrix, dtype=np.float64),
+            (self.selector.canvas_w, self.selector.canvas_h),
+            flags=cv2.INTER_NEAREST,
+        )
+        view = cv2.cvtColor(warped_edges, cv2.COLOR_GRAY2BGR)
         for segment in result.get("rejected_bev_lines", []):
             cv2.line(view, tuple(np.round(segment[0]).astype(int)), tuple(np.round(segment[1]).astype(int)), (0, 90, 255), 2)
         for segment in result.get("accepted_bev_lines", []):
