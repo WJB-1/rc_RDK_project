@@ -84,6 +84,14 @@ def render_preview(view_name, raw_image, clean_mask, bev_mask, lane_state, camer
     debug_capture = diagnostics.get("debug_capture") or {}
     lane_views = debug_capture.get("lane_views") or {}
     image = lane_views.get(view_name)
+    if debug_capture.get("semantic_lane"):
+        semantic_image = {
+            "binary": lane_views.get("semantic_overlay"),
+            "lane_bev": lane_views.get("semantic_bev"),
+            "ground_bev": lane_views.get("semantic_ground"),
+        }.get(view_name)
+        if semantic_image is not None:
+            image = semantic_image
     if image is None:
         image = _fallback_view(view_name, raw_image, clean_mask, bev_mask, original_view, diagnostics)
     image = _resize_for_transfer(_as_bgr(image), max_size)

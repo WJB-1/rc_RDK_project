@@ -162,6 +162,28 @@ class VisionPreviewTests(unittest.TestCase):
         image = cv2.imdecode(np.frombuffer(encoded, dtype=np.uint8), cv2.IMREAD_COLOR)
         self.assertGreater(int(image[50, 100, 2]), 100)
 
+    def test_semantic_capture_supplies_mask_and_bev_to_common_views(self):
+        from vision_preview import render_preview
+
+        raw = np.zeros((80, 120, 3), dtype=np.uint8)
+        semantic_overlay = raw.copy()
+        semantic_overlay[20:60, 40:80] = (0, 255, 0)
+        semantic_bev = np.zeros((60, 60, 3), dtype=np.uint8)
+        semantic_bev[15:45, 25:35] = (255, 0, 0)
+        capture = {
+            "semantic_lane": {"accepted": True},
+            "lane_views": {
+                "semantic_overlay": semantic_overlay,
+                "semantic_bev": semantic_bev,
+            }
+        }
+        for view, expected in (("binary", semantic_overlay), ("lane_bev", semantic_bev)):
+            encoded = render_preview(
+                view, raw, None, None, {}, diagnostics={"debug_capture": capture}
+            )
+            image = cv2.imdecode(np.frombuffer(encoded, dtype=np.uint8), cv2.IMREAD_COLOR)
+            self.assertGreater(int(image[expected.shape[0] // 2, expected.shape[1] // 2].max()), 0)
+
     def test_offline_page_only_lists_lane_debug_views_and_defaults_to_overlay(self):
         from offline_runner import OFFLINE_PAGE, OfflineVisionRunner
 
