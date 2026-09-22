@@ -254,8 +254,14 @@ class LanePipeline:
                 "accepted_bev_lines": [],
                 "rejected_bev_lines": [],
             }
-            if semantic_result is not None:
-                capture["semantic_lane"] = semantic_result
+            capture["semantic_lane"] = semantic_result or {
+                "accepted": False,
+                "fallback_reason": "semantic_detector_no_result",
+                "image_lines": [],
+                "accepted_image_lines": [],
+                "accepted_bev_lines": [],
+                "rejected_bev_lines": [],
+            }
             capture["lane_views"].update({
                 "semantic_overlay": self._draw_semantic_overlay(processing_input, semantic_mask),
                 "semantic_bev": self._draw_semantic_bev(
@@ -288,7 +294,7 @@ class LanePipeline:
             x, y = point
             return (int(round(40 + (x + 600.0) * 0.5)),
                     int(round(height - 40 - y * 0.5)))
-        for line in semantic_result.get("accepted_image_lines", []):
+        for line in semantic_result.get("image_lines", []):
             points = projector.source_line_to_ground(line)
             if len(points) < 2:
                 continue
