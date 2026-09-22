@@ -27,6 +27,16 @@ def thin_binary(binary: np.ndarray) -> np.ndarray:
     return skeleton
 
 
+def remove_skeleton_border(skeleton: np.ndarray, border: int = 1) -> np.ndarray:
+    skeleton = np.where(np.asarray(skeleton) > 0, 255, 0).astype(np.uint8)
+    border = max(1, int(border))
+    skeleton[:border, :] = 0
+    skeleton[-border:, :] = 0
+    skeleton[:, :border] = 0
+    skeleton[:, -border:] = 0
+    return skeleton
+
+
 def postprocess_edge_probability(probability: np.ndarray, threshold: float = 0.35) -> np.ndarray:
     probability = np.asarray(probability, dtype=np.float32)
     return (probability >= float(threshold)).astype(np.uint8) * 255
@@ -37,16 +47,23 @@ def erode_edge_segments(binary: np.ndarray) -> np.ndarray:
     return cv2.erode(binary, np.ones((4, 4), dtype=np.uint8), iterations=1)
 
 
-def detect_component_centerlines(binary: np.ndarray, min_length=30.0):
+def detect_component_centerlines(binary: np.ndarray, min_length=30.0, return_labels=False):
     """Fit one center axis to each connected thick edge segment."""
     binary = np.where(np.asarray(binary) > 0, 255, 0).astype(np.uint8)
     label_count, labels, stats, _ = cv2.connectedComponentsWithStats(binary, connectivity=8)
     centerlines = []
+    ys, xs = np.nonzero(labels)
+    component_points = {}
+    for label, x_coord, y_coord in zip(labels[ys, xs], xs, ys):
+        if label > 0:
+            component_points.setdefault(int(label), []).append((x_coord, y_coord))
     for label in range(1, label_count):
         x, y, width, height, area = stats[label]
         if area < 4:
             continue
-        points = np.column_stack(np.where(labels == label))[:, ::-1].astype(np.float32)
+        points = np.asarray(component_points.get(label, ()), dtype=np.float32)
+        if len(points) < 2:
+            continue
         vx, vy, x0, y0 = cv2.fitLine(points, cv2.DIST_L2, 0, 0.01, 0.01).reshape(4)
         direction = np.array([vx, vy], dtype=np.float64)
         norm = float(np.linalg.norm(direction))
@@ -69,7 +86,8 @@ def detect_component_centerlines(binary: np.ndarray, min_length=30.0):
             "orientation": _orientation(angle),
             "component_area": int(area),
         })
-    return sorted(centerlines, key=lambda line: line["length"], reverse=True)
+    centerlines = sorted(centerlines, key=lambda line: line["length"], reverse=True)
+    return (centerlines, labels, int(label_count)) if return_labels else centerlines
 
 
 def _line_params(line):

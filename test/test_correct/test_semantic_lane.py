@@ -19,16 +19,20 @@ class SemanticLaneTests(unittest.TestCase):
         self.assertEqual(labels - 1, 2)
 
     def test_skeletonization_runs_on_eroded_edges(self):
-        from perception.algorithms.lane.line_detection import thin_binary
+        from perception.algorithms.lane.line_detection import remove_skeleton_border, thin_binary
 
         binary = np.zeros((80, 100), dtype=np.uint8)
         cv2.rectangle(binary, (45, 10), (55, 70), 255, -1)
         eroded = cv2.erode(binary, np.ones((4, 4), dtype=np.uint8), iterations=1)
 
         skeleton = thin_binary(eroded)
+        skeleton[0, :] = 255
+        skeleton[:, 0] = 255
+        skeleton = remove_skeleton_border(skeleton)
 
         self.assertLess(np.count_nonzero(skeleton), np.count_nonzero(eroded))
         self.assertGreater(np.count_nonzero(skeleton), 40)
+        self.assertEqual(int(np.count_nonzero(skeleton[0, :])), 0)
 
     def test_component_centerline_extracts_one_axis_from_a_thick_segment(self):
         from perception.algorithms.lane.line_detection import detect_component_centerlines
