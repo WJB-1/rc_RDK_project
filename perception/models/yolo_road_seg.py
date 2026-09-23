@@ -33,6 +33,26 @@ def _nms(boxes, scores, iou_threshold):
     return np.asarray(keep, dtype=np.int32)
 
 
+def _prototype_spatial_shape(prototypes, expected_image_size):
+    values = np.asarray(prototypes)
+    if values.ndim >= 3 and values.shape[-3] == 32:
+        return int(values.shape[-2]), int(values.shape[-1])
+    if values.size % 32:
+        raise ValueError(f"unexpected YOLOv8-seg prototype size: {values.size}")
+    pixel_count = values.size // 32
+    expected_width, expected_height = map(int, expected_image_size)
+    expected_shape = (expected_height // 4, expected_width // 4)
+    if expected_shape[0] * expected_shape[1] == pixel_count:
+        return expected_shape
+    square_side = int(round(pixel_count ** 0.5))
+    if square_side * square_side == pixel_count:
+        return square_side, square_side
+    raise ValueError(
+        "cannot infer YOLOv8-seg prototype shape: "
+        f"got {values.size} values for expected input {expected_width}x{expected_height}"
+    )
+
+
 def decode_yolov8_seg_outputs(predictions, prototypes, image_size,
                                confidence_threshold=0.25, iou_threshold=0.7,
                                mask_threshold=0.5):
@@ -40,16 +60,13 @@ def decode_yolov8_seg_outputs(predictions, prototypes, image_size,
     image_width, image_height = image_size
     predictions = np.asarray(predictions, dtype=np.float32).reshape(37, -1).T
     prototype_values = np.asarray(prototypes, dtype=np.float32)
-    expected_proto_height = image_height // 4
-    expected_proto_width = image_width // 4
-    expected_proto_size = 32 * expected_proto_height * expected_proto_width
-    if prototype_values.size != expected_proto_size:
+    proto_height, proto_width = _prototype_spatial_shape(prototype_values, image_size)
+    if (proto_width * 4, proto_height * 4) != (image_width, image_height):
         raise ValueError(
-            "unexpected YOLOv8-seg prototype size: "
-            f"got {prototype_values.size}, expected {expected_proto_size} "
-            f"for input {image_width}x{image_height}"
+            "YOLOv8-seg output does not match decoder canvas: "
+            f"prototype={proto_width}x{proto_height}, canvas={image_width}x{image_height}"
         )
-    prototypes = prototype_values.reshape(32, expected_proto_height, expected_proto_width)
+    prototypes = prototype_values.reshape(32, proto_height, proto_width)
     scores = predictions[:, 4]
     if scores.min() < 0.0 or scores.max() > 1.0:
         scores = _sigmoid(scores)
@@ -102,23 +119,55 @@ class YoloRoadSegmentationEngine:
             self.input_width, self.input_height = map(int, input_size)
         else:
             self.input_width = self.input_height = int(input_size)
+        self.model_input_width, self.model_input_height = self._model_input_size(
+            self.model, (self.input_width, self.input_height)
+        )
         self.confidence_threshold = float(confidence_threshold)
         self.iou_threshold = float(iou_threshold)
         self.mask_threshold = float(mask_threshold)
         self.last_detections = []
 
-    def inference(self, frame):
+    @staticmethod
+    def _model_input_size(model, fallback):
+        try:
+            shape = tuple(int(value) for value in model.inputs[0].properties.shape)
+        except (AttributeError, IndexError, TypeError, ValueError):
+            return tuple(map(int, fallback))
+        if len(shape) >= 4 and shape[-1] in (1, 3):
+            return shape[-2], shape[-3]
+        if len(shape) >= 4 and shape[-3] in (1, 3):
+            return shape[-1], shape[-2]
+        spatial = [value for value in shape if value > 4]
+        if len(spatial) >= 2:
+            return spatial[-1], spatial[-2]
+        return tuple(map(int, fallback))
+
+    def _forward(self, frame, model_width, model_height):
         height, width = frame.shape[:2]
-        scale = min(self.input_width / width, self.input_height / height)
+        scale = min(model_width / width, model_height / height)
         resized_size = (round(width * scale), round(height * scale))
         resized = cv2.resize(frame, resized_size, interpolation=cv2.INTER_AREA)
-        top = (self.input_height - resized_size[1]) // 2
-        left = (self.input_width - resized_size[0]) // 2
-        letterboxed = np.zeros((self.input_height, self.input_width, 3), dtype=np.uint8)
+        top = (model_height - resized_size[1]) // 2
+        left = (model_width - resized_size[0]) // 2
+        letterboxed = np.zeros((model_height, model_width, 3), dtype=np.uint8)
         letterboxed[top:top + resized_size[1], left:left + resized_size[0]] = resized
         outputs = self.model.forward([_bgr2nv12(letterboxed)])
+        return outputs, resized_size, top, left
+
+    def inference(self, frame):
+        height, width = frame.shape[:2]
+        model_width, model_height = self.model_input_width, self.model_input_height
+        outputs, resized_size, top, left = self._forward(frame, model_width, model_height)
+        proto_height, proto_width = _prototype_spatial_shape(
+            outputs[1].buffer, (model_width, model_height)
+        )
+        observed_size = (proto_width * 4, proto_height * 4)
+        if observed_size != (model_width, model_height):
+            model_width, model_height = observed_size
+            self.model_input_width, self.model_input_height = observed_size
+            outputs, resized_size, top, left = self._forward(frame, model_width, model_height)
         mask, self.last_detections = decode_yolov8_seg_outputs(
-            outputs[0].buffer, outputs[1].buffer, (self.input_width, self.input_height),
+            outputs[0].buffer, outputs[1].buffer, (model_width, model_height),
             self.confidence_threshold, self.iou_threshold, self.mask_threshold,
         )
         content = mask[top:top + resized_size[1], left:left + resized_size[0]]

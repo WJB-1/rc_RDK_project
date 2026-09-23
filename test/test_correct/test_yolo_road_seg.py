@@ -4,6 +4,13 @@ import numpy as np
 
 
 class YoloRoadSegTests(unittest.TestCase):
+    def test_prototype_shape_reveals_square_compiled_model(self):
+        from perception.models.yolo_road_seg import _prototype_spatial_shape
+
+        flattened = np.zeros(32 * 160 * 160, dtype=np.float32)
+
+        self.assertEqual(_prototype_spatial_shape(flattened, (640, 480)), (160, 160))
+
     def test_decoder_supports_640_by_480_model_outputs(self):
         from perception.models.yolo_road_seg import decode_yolov8_seg_outputs
 
