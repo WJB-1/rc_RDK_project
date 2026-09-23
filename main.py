@@ -195,9 +195,7 @@ class RescueBrain:
             self.bridge = RobotBridge(agent=self.agent)
 
             # 尝试连接实际串口
-            serial_cfg = self.settings.get('serial', {})
-            port = serial_cfg.get('port', '/dev/ttyS1')
-            baudrate = serial_cfg.get('baudrate', 115200)
+            port, baudrate = _load_motion_connection_config()
 
             # --- 串口自诊断 ---
             # 1) 确认配置是否真的读到了 serial 段（读不到会落默认 /dev/ttyUSB0）
@@ -807,15 +805,25 @@ class RescueBrain:
         self.logger.info("程序已停止")
 
 
-def run_hardware_motion_simulation(serial_port: str, baudrate: int = 115200,
+def _load_motion_connection_config():
+    with (PROJECT_ROOT / "motion/settings.yaml").open("r", encoding="utf-8") as stream:
+        settings = yaml.safe_load(stream) or {}
+    return (
+        settings.get("serial_port", "/dev/ttyS2"),
+        settings.get("baudrate", 115200),
+    )
+
+
+def run_hardware_motion_simulation(serial_port: str = None, baudrate: int = None,
                                    seed: int = 0, step_interval_s: float = 0.01):
     """Run Navigation 2.0 with real motion and simulated perception/tasks."""
 
     from navigation.simulation import build_hardware_motion_simulation_runner
 
+    configured_port, configured_baudrate = _load_motion_connection_config()
     runner = build_hardware_motion_simulation_runner(
-        serial_port=serial_port,
-        baudrate=baudrate,
+        serial_port=serial_port or configured_port,
+        baudrate=baudrate or configured_baudrate,
         seed=seed,
     )
     try:
@@ -842,14 +850,14 @@ def _parse_cli_args(argv=None):
     )
     parser.add_argument(
         "--serial-port",
-        default="/dev/ttyS1",
-        help="STM32 serial device (default: /dev/ttyS1)",
+        default=None,
+        help="temporarily override motion/settings.yaml serial_port",
     )
     parser.add_argument(
         "--baudrate",
         type=int,
-        default=115200,
-        help="STM32 serial baudrate (default: 115200)",
+        default=None,
+        help="temporarily override motion/settings.yaml baudrate",
     )
     parser.add_argument(
         "--simulation-seed",
