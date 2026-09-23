@@ -10,7 +10,7 @@ from navigation.runtime import NavigationRuntime
 
 from .executor import SimExecutor
 from .ports import SimMotionPort, SimPerceptionPort, SimTaskPort
-from .runner import SimulationRunner
+from .runner import HardwareMotionSimulationRunner, SimulationRunner
 from .world import SimWorld
 from navigation.domain.state import WorldPose
 
@@ -28,7 +28,29 @@ def build_simulation_runner(seed: int = 0) -> SimulationRunner:
     )
 
 
-def _compose(seed: int):
+def build_hardware_motion_simulation_runner(serial_port: str, baudrate: int = 115200,
+                                            transport_factory=None, seed: int = 0):
+    """创建真机运动、仿真观察和仿真打卡共存的导航联调会话。"""
+
+    from motion.port import MotionPort
+    from motion.serial_transport import SerialTransport
+
+    if transport_factory is None:
+        transport = SerialTransport(serial_port, baudrate)
+    else:
+        transport = transport_factory(serial_port, baudrate)
+    motion_port = MotionPort(transport)
+    world, executor, runtime = _compose(seed, motion_port=motion_port)
+    return HardwareMotionSimulationRunner(
+        motion_port=motion_port,
+        world=world,
+        executor=executor,
+        navigation_runtime=runtime,
+        seed=seed,
+    )
+
+
+def _compose(seed: int, motion_port=None):
     """装配一套彼此隔离的世界、执行器和导航依赖。"""
 
     topology = build_default_topology()
@@ -56,7 +78,12 @@ def _compose(seed: int):
     route_planner = RoutePlanner(topology, None)
     recovery_planner = RecoveryPlanner(topology)
     perception_adapter = PerceptionAdapter(state_store, topology)
-    executor = SimExecutor((SimMotionPort(world), SimPerceptionPort(world), SimTaskPort(world)))
+    simulation_ports = (SimPerceptionPort(world), SimTaskPort(world))
+    if motion_port is None:
+        executor = SimExecutor((SimMotionPort(world), *simulation_ports))
+    else:
+        from .executor import HybridExecutor
+        executor = HybridExecutor(motion_port, simulation_ports)
     coordinator = Coordinator(
         executor=executor,
         navigation_state=state_store,

@@ -153,3 +153,19 @@ class SimulationRunner:
             robot_state_pose=robot_state_pose,
             robot_location_label=robot_location_label,
         )
+
+
+class HardwareMotionSimulationRunner(SimulationRunner):
+    """保持仿真感知与任务，但把运动请求交给真实 STM32 的会话。"""
+
+    def __init__(self, motion_port, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.motion_port = motion_port
+
+    def start(self) -> None:
+        self.motion_port.start()
+        super().start()
+
+    def stop(self) -> None:
+        super().stop()
+        self.motion_port.stop()

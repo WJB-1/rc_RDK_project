@@ -161,16 +161,33 @@ class MotionPort:
     def _complete(self, payload):
         result = payload[1] if len(payload) > 1 else 2
         outcome = {0: ExecutionOutcome.COMPLETED, 1: ExecutionOutcome.CANCELLED, 2: ExecutionOutcome.ACTUATOR_FAILURE, 3: ExecutionOutcome.TIMEOUT}.get(result, ExecutionOutcome.FAILED)
-        self._publish(outcome, error_code="STM32_RESULT_{}".format(result))
+        self._publish(
+            outcome,
+            error_code="STM32_RESULT_{}".format(result),
+            odometry_delta_mm=self._fallback_odometry_delta_mm(outcome),
+        )
 
-    def _publish(self, outcome, error_code=None):
+    def _fallback_odometry_delta_mm(self, outcome):
+        if outcome is not ExecutionOutcome.COMPLETED or self._active is None:
+            return None
+        command = self._active.command
+        if isinstance(command, (DriveExecutionCommand, ReverseExecutionCommand)):
+            return command.distance_mm
+        return None
+
+    def _publish(self, outcome, error_code=None, odometry_delta_mm=None):
         sink, self._sink = self._sink, None
         if self._active is not None:
             self._stop_vision(self._active.request_id)
         self._active = None
         self._cancel_requested = False
         if sink is not None:
-            completion = TargetCompletion(outcome, self._clock(), error_code=error_code)
+            completion = TargetCompletion(
+                outcome,
+                self._clock(),
+                odometry_delta_mm=odometry_delta_mm,
+                error_code=error_code,
+            )
             sink.publish(completion) if hasattr(sink, "publish") else sink(completion)
 
     def _stop_vision(self, request_id):

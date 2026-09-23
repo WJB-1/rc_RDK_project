@@ -3,7 +3,7 @@
 from typing import Iterable
 
 from navigation.contracts import ExecutionTargetPort
-from navigation.execution.router import RoutedExecutor
+from navigation.execution.router import RealExecutor, RoutedExecutor
 from navigation.contracts import ExecutionEnvironment
 
 
@@ -28,4 +28,24 @@ class SimExecutor(RoutedExecutor):
     def has_pending(self) -> bool:
         """返回是否存在待推进的虚拟终局。"""
 
+        return any(getattr(port, "has_pending", lambda: False)() for port in self._simulation_ports)
+
+
+class HybridExecutor(RealExecutor):
+    """真实运动与仿真感知、任务端口共存的联调执行器。"""
+
+    def __init__(self, motion_port, simulation_ports: Iterable[ExecutionTargetPort]) -> None:
+        self._simulation_ports = tuple(simulation_ports)
+        super().__init__((motion_port, *self._simulation_ports))
+
+    def complete_next(self) -> bool:
+        """只推进仿真端口；真机运动必须等待 STM32 异步完成回包。"""
+
+        for port in self._simulation_ports:
+            if getattr(port, "has_pending", lambda: False)():
+                port.complete_next()
+                return True
+        return False
+
+    def has_pending(self) -> bool:
         return any(getattr(port, "has_pending", lambda: False)() for port in self._simulation_ports)
