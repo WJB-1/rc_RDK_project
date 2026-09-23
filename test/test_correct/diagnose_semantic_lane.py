@@ -216,6 +216,7 @@ class SemanticRuntime:
         cleaned_mask = result.get("clean_mask", mask)
         stages["boundary_gate_ms"] = (time.perf_counter() - stage_started) * 1000
         source_lines = result["accepted_image_lines"] if result["accepted"] else []
+        stage_started = time.perf_counter()
         lane_state = self.selector.analyze(source_lines, semantic_mask=mask)
         lane_state["lane_method"] = "semantic_boundary"
         lane_state["frame_dropped"] = not result["accepted"]

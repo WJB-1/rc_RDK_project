@@ -169,17 +169,23 @@ class LanePipeline:
                     clean_mask = line_mask
                 noise_mask = cv2.bitwise_and(edge_mask, cv2.bitwise_not(line_mask))
 
-            renderer = _make_renderer(self.selector)
+            render_views = self.debug_render_enabled or self.debug_capture_enabled
+            renderer = _make_renderer(self.selector) if render_views else None
 
-            if run_template:
+            if render_views and run_template:
                 with block("tracker.draw_bev"):
                     bev_mask = renderer.draw_bev_view()
                 with block("tracker.draw_original"):
                     original_view = renderer.draw_original_view(processing_input)
-            else:
+            elif render_views:
                 with block("tracker.draw_bev"):
                     bev_mask = renderer.render_new_ground_bev()
                 original_view = processing_input.copy()
+            else:
+                canvas_height = int(getattr(self.selector, "canvas_h", processing_input.shape[0]))
+                canvas_width = int(getattr(self.selector, "canvas_w", processing_input.shape[1]))
+                bev_mask = np.zeros((canvas_height, canvas_width), dtype=np.uint8)
+                original_view = processing_input
 
             lane_state["raw_line_count"] = len(self.edge_engine.last_raw_lines) if run_template else 0
             lane_state["line_count"] = len(self.edge_engine.last_lines) if run_template else len(source_lines)
