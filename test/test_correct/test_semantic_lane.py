@@ -46,19 +46,19 @@ class SemanticLaneTests(unittest.TestCase):
         self.assertEqual(len(lines), 2)
         self.assertGreaterEqual(int(np.count_nonzero(edge)), 200)
 
-    def test_boundary_growth_splits_multiple_lines_at_slope_change(self):
+    def test_hough_detects_multiple_lines_at_boundary_slope_change(self):
         from perception.algorithms.lane.semantic_lane import SemanticLaneDetector
 
-        points = [(40, y) for y in range(10, 60)]
-        points.extend((40 + (y - 59), y) for y in range(60, 110))
-        detector = SemanticLaneDetector(
-            1.0, 160, 80, min_line_pixels=15, line_growth_angle_deg=8.0,
-        )
+        mask = np.zeros((180, 220), dtype=np.uint8)
+        polygon = np.array([(40, 10), (40, 80), (80, 170),
+                            (180, 170), (180, 80), (180, 10)])
+        cv2.fillPoly(mask, [polygon], 255)
+        detector = SemanticLaneDetector(1.0, 220, 100, min_segment_length_px=20)
 
-        segments = detector._grow_line_segments(points)
+        _, lines, raw_count, _ = detector._extract_side_lines(mask)
 
-        self.assertGreaterEqual(len(segments), 2)
-        self.assertTrue(all(len(segment) >= 15 for segment in segments))
+        self.assertGreaterEqual(raw_count, 2)
+        self.assertGreaterEqual(len(lines), 2)
 
     def test_angle_template_uses_left_origin_baseline(self):
         from perception.algorithms.lane.angle_template import template_positions_for_angle

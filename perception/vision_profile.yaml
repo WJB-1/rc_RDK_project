@@ -128,10 +128,8 @@ lane_detection:
     min_segment_length_px: 30
     max_curve_residual_px: 8.0
     template_pair_ids: ["0", "1"]
-    distance_tolerance_mm: 5.0
+    distance_tolerance_ratio: 0.50
     component_gap_px: 10
-    min_line_pixels: 20
-    line_growth_angle_deg: 8.0
 
   # ---- 模型输入尺寸 ----
   input_size: [512, 384]

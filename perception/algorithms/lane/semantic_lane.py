@@ -6,6 +6,7 @@ import cv2
 import numpy as np
 
 from .angle_template import template_positions_for_angle
+from .line_detection import detect_lines, merge_lines
 from .line_geometry import (
     _line_normal_distance, _segment_parallel_angle_deg, _y_overlap_px,
 )
@@ -18,8 +19,7 @@ class SemanticLaneDetector:
                  distance_tolerance_mm=20.0, parallel_tolerance_deg=3.0,
                  min_segment_length_px=30, max_curve_residual_px=8.0,
                  template_pair_ids=("0", "1"), template_x_at_ref_mm=None,
-                 component_gap_px=10, min_line_pixels=20,
-                 line_growth_angle_deg=8.0):
+                 component_gap_px=10, distance_tolerance_ratio=0.5):
         self.pixel_per_mm = float(pixel_per_mm)
         self.bev_width = int(bev_width)
         self.lane_width_mm = float(lane_width_mm)
@@ -30,8 +30,7 @@ class SemanticLaneDetector:
         self.template_pair_ids = tuple(template_pair_ids)
         self.template_x_at_ref_mm = dict(template_x_at_ref_mm or {})
         self.component_gap_px = max(0, int(component_gap_px))
-        self.min_line_pixels = max(2, int(min_line_pixels))
-        self.line_growth_angle_deg = float(line_growth_angle_deg)
+        self.distance_tolerance_ratio = max(0.0, float(distance_tolerance_ratio))
 
     def _select_ground_component(self, mask, bottom_margin_px=10):
         binary = np.where(np.asarray(mask) > 0, 255, 0).astype(np.uint8)
@@ -90,49 +89,6 @@ class SemanticLaneDetector:
             return np.empty((0, 2), dtype=np.float32)
         return cv2.perspectiveTransform(values, np.asarray(matrix, dtype=np.float64))[0]
 
-    @staticmethod
-    def _line_angle_deg(line):
-        return math.degrees(math.atan2(line["x2"] - line["x1"],
-                                       line["y2"] - line["y1"]))
-
-    @staticmethod
-    def _angle_delta_deg(first, second):
-        return abs((float(first) - float(second) + 90.0) % 180.0 - 90.0)
-
-    def _grow_line_segments(self, points):
-        ordered = np.asarray(points, dtype=np.float32).reshape(-1, 2)
-        if len(ordered) < self.min_line_pixels:
-            return []
-        segments = []
-        start = 0
-        while start + self.min_line_pixels <= len(ordered):
-            end = start + self.min_line_pixels
-            base_line = self._line_from_points(ordered[start:end])
-            if base_line is None:
-                start += 1
-                continue
-            base_angle = self._line_angle_deg(base_line)
-            accepted_end = end
-            while end < len(ordered):
-                candidate = self._line_from_points(ordered[start:end + 1])
-                if candidate is None:
-                    break
-                angle_changed = self._angle_delta_deg(
-                    self._line_angle_deg(candidate), base_angle
-                ) > self.line_growth_angle_deg
-                residual_changed = candidate["curve_residual_px"] > self.max_curve_residual_px
-                if angle_changed or residual_changed:
-                    break
-                end += 1
-                accepted_end = end
-            segment = ordered[start:accepted_end]
-            if len(segment) >= self.min_line_pixels:
-                segments.append(segment)
-            if accepted_end >= len(ordered):
-                break
-            start = max(start + 1, accepted_end - 1)
-        return segments
-
     def _extract_side_lines(self, mask):
         binary = np.asarray(mask, dtype=np.uint8) > 0
         edge = np.zeros_like(np.asarray(mask, dtype=np.uint8))
@@ -148,20 +104,36 @@ class SemanticLaneDetector:
             sides["left"].append((left_x, y))
             if right_x != left_x:
                 sides["right"].append((right_x, y))
+        raw_lines = detect_lines(edge)
+        merged_lines = merge_lines(raw_lines, min_length=self.min_segment_length_px)
         lines = []
         boundary_points = {}
-        for side, points in sides.items():
-            for segment_index, segment in enumerate(self._grow_line_segments(points)):
-                line = self._line_from_points(segment)
-                if line is None or line["curve_residual_px"] > self.max_curve_residual_px:
-                    continue
-                boundary_key = f"{side}_{segment_index}"
-                line["side"] = side
-                line["boundary_key"] = boundary_key
-                line["pixel_count"] = len(segment)
-                lines.append(line)
-                boundary_points[boundary_key] = segment
-        return edge, lines, sum(bool(points) for points in sides.values()), boundary_points
+        side_arrays = {
+            side: np.asarray(points, dtype=np.float32) for side, points in sides.items() if points
+        }
+        for line_index, line in enumerate(merged_lines):
+            midpoint_y = (line["y1"] + line["y2"]) * 0.5
+            midpoint_x = (line["x1"] + line["x2"]) * 0.5
+            distances = {}
+            for side, points in side_arrays.items():
+                expected_x = np.interp(midpoint_y, points[:, 1], points[:, 0])
+                distances[side] = abs(midpoint_x - expected_x)
+            if not distances:
+                continue
+            side = min(distances, key=distances.get)
+            points = side_arrays[side]
+            low_y, high_y = sorted((line["y1"], line["y2"]))
+            segment = points[(points[:, 1] >= low_y) & (points[:, 1] <= high_y)]
+            if len(segment) < 2:
+                segment = np.asarray([[line["x1"], line["y1"]],
+                                      [line["x2"], line["y2"]]], dtype=np.float32)
+            boundary_key = f"{side}_{line_index}"
+            line["side"] = side
+            line["boundary_key"] = boundary_key
+            line["pixel_count"] = len(segment)
+            lines.append(line)
+            boundary_points[boundary_key] = segment
+        return edge, lines, len(raw_lines), boundary_points
 
     def analyze(self, semantic_mask, parallel_matrix):
         mask, component = self._select_ground_component(semantic_mask)
@@ -179,8 +151,8 @@ class SemanticLaneDetector:
                 ], dtype=np.float32))
         pair_measurements = []
         candidates = []
-        min_mm = self.lane_width_mm - self.distance_tolerance_mm
-        max_mm = self.lane_width_mm + self.distance_tolerance_mm
+        min_mm = self.lane_width_mm * (1.0 - self.distance_tolerance_ratio)
+        max_mm = self.lane_width_mm * (1.0 + self.distance_tolerance_ratio)
         for first_index in range(len(bev_lines)):
             for second_index in range(first_index + 1, len(bev_lines)):
                 first, second = bev_lines[first_index], bev_lines[second_index]
@@ -199,8 +171,8 @@ class SemanticLaneDetector:
                 if first_id not in template or second_id not in template:
                     template = self.template_x_at_ref_mm
                 expected_distance_mm = abs(float(template[first_id]) - float(template[second_id]))
-                pair_min_mm = expected_distance_mm - self.distance_tolerance_mm
-                pair_max_mm = expected_distance_mm + self.distance_tolerance_mm
+                pair_min_mm = expected_distance_mm * (1.0 - self.distance_tolerance_ratio)
+                pair_max_mm = expected_distance_mm * (1.0 + self.distance_tolerance_ratio)
                 overlap_ok = _y_overlap_px(first, second)
                 parallel_ok = angle_deg is not None and angle_deg <= self.parallel_tolerance_deg
                 distance_ok = distance_mm is not None and pair_min_mm <= distance_mm <= pair_max_mm
