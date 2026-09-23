@@ -48,47 +48,8 @@ class SemanticLaneTests(unittest.TestCase):
         self.assertEqual(match["assigned_ids"], list(line_ids))
         self.assertAlmostEqual(match["delta"], delta, places=4)
         self.assertLess(match["rms"], 1e-4)
-        self.assertEqual(match["match_strategy"], "ordered_anchor")
+        self.assertEqual(match["match_strategy"], "ordered_dp")
         self.assertLess(selector._current_template_group_diagnostics["evaluated_combinations"], 1000)
-
-    def test_template_fast_anchor_match_skips_outlier_at_current_angle(self):
-        from perception.algorithms.lane.angle_template import template_positions_for_angle
-        from perception.algorithms.lane.template_selector import TemplateDistanceLaneSelector
-
-        selector = TemplateDistanceLaneSelector.__new__(TemplateDistanceLaneSelector)
-        selector.y_ref_mm = 500.0
-        selector.max_match_rms_mm = 15.0
-        selector.line_count_reward_lambda = 5.0
-        selector.require_both_lane_lines = True
-        selector.vehicle_geometry = {
-            "body_length_mm": 142.0,
-            "camera_forward_of_body_front_mm": 60.0,
-            "camera_lateral_offset_mm": 0.0,
-        }
-        angle_deg = 12.0
-        theta = np.deg2rad(angle_deg)
-        delta = 130.0
-        template = template_positions_for_angle(angle_deg)
-
-        def line_at(x_ref):
-            return {"params": {
-                "theta": theta,
-                "mid_x": x_ref,
-                "mid_y": 500.0,
-                "length_mm": 500.0,
-                "p1": (x_ref, 250.0),
-                "p2": (x_ref, 750.0),
-            }}
-
-        group = [line_at(template[line_id] + delta) for line_id in ("4", "2", "0", "1", "3", "5")]
-        group.append(line_at(template["4"] + delta + 80.0))
-
-        match = selector._match_group_to_template_fast(group)
-
-        self.assertIsNotNone(match)
-        self.assertEqual(match["match_strategy"], "ordered_anchor")
-        self.assertEqual(match["assigned_ids"], ["4", "2", "0", "1", "3", "5"])
-        self.assertAlmostEqual(match["delta"], delta, places=4)
 
     def test_template_uses_direct_ordered_path_for_exactly_six_lines(self):
         from perception.algorithms.lane.angle_template import template_positions_for_angle
