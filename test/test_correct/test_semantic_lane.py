@@ -395,7 +395,9 @@ class SemanticLaneTests(unittest.TestCase):
         selector = type("Selector", (), {})()
         selector.vehicle_center = np.array([50.0, 90.0])
         selector.pixel_per_mm = 1.0
-        selector._forward_direction = staticmethod(lambda segment: np.array([0.0, -1.0]))
+        selector._compute_ground_yaw_offset = lambda left, right, left_image, right_image: (
+            12.5, np.deg2rad(4.0), "new_ground_pair", (40.0, 80.0), (60.0, 20.0)
+        )
         selector._empty_state = lambda reason: {"drop_reason": reason, "frame_dropped": True}
         pipeline.selector = selector
         image_lines = [
@@ -415,7 +417,8 @@ class SemanticLaneTests(unittest.TestCase):
         state = pipeline._semantic_lane_state(result)
 
         self.assertFalse(state["frame_dropped"])
-        self.assertEqual(state["lane_angle_source"], "semantic_parallel_pair")
+        self.assertEqual(state["lane_angle_source"], "new_ground_pair")
+        self.assertAlmostEqual(state["pid_error_mm"], 12.5)
         self.assertAlmostEqual(state["quality_score"], 0.9)
         self.assertEqual(len(selector.detected_source_lines), 2)
 
