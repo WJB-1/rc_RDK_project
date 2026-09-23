@@ -2,6 +2,7 @@
 
 from typing import Callable, Optional
 import time
+import threading
 
 from navigation.domain import build_default_topology
 from .executor import SimExecutor
@@ -29,6 +30,10 @@ class SimulationRunner:
         self._last_outcome = None
         self._last_perception_frame = None
         self._timeline = []
+        self._debug_mode = "manual"
+        self._auto_stop = threading.Event()
+        self._auto_thread = None
+        self._step_lock = threading.Lock()
 
     @property
     def world(self):
@@ -63,6 +68,8 @@ class SimulationRunner:
         self._paused = False
         if self._navigation_runtime is not None:
             self._navigation_runtime.start()
+        if self._debug_mode == "auto":
+            self._start_auto_loop()
 
     def pause(self) -> None:
         """暂停异步事件推进，不改变世界或导航状态。"""
@@ -82,17 +89,19 @@ class SimulationRunner:
         self._stopped = True
         self._running = False
         self._paused = False
+        self._auto_stop.set()
 
     def step(self) -> bool:
         """推进一个待完成端口事件，暂停、停止或无事件时返回 False。"""
 
         if not self._running or self._paused or self._stopped:
             return False
-        if not self._executor.complete_next():
-            return False
-        self._completed_action_count += 1
-        self._timeline.append((self._world.snapshot().now, self._completed_action_count))
-        return True
+        with self._step_lock:
+            if not self._executor.complete_next():
+                return False
+            self._completed_action_count += 1
+            self._timeline.append((self._world.snapshot().now, self._completed_action_count))
+            return True
 
     def step_once(self) -> bool:
         """Advance one simulated port event while preserving pause state."""
@@ -103,6 +112,31 @@ class SimulationRunner:
             return self.step()
         finally:
             self._paused = was_paused
+
+    @property
+    def debug_mode(self) -> str:
+        return self._debug_mode
+
+    def set_mode(self, mode: str) -> str:
+        selected = str(mode or "").lower()
+        if selected not in ("manual", "auto"):
+            raise ValueError("mode must be manual or auto")
+        self._debug_mode = selected
+        if selected == "auto" and self._running and not self._stopped:
+            self._start_auto_loop()
+        return selected
+
+    def _start_auto_loop(self) -> None:
+        if self._auto_thread is not None and self._auto_thread.is_alive():
+            return
+        self._auto_stop.clear()
+        self._auto_thread = threading.Thread(target=self._auto_loop, daemon=True)
+        self._auto_thread.start()
+
+    def _auto_loop(self) -> None:
+        while not self._auto_stop.wait(0.02):
+            if self._debug_mode == "auto" and not self._paused:
+                self.step()
 
     def run_until_observation(self, limit: int = 100) -> bool:
         """最多单步 limit 次，直到世界产生一帧观察结果。"""

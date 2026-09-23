@@ -36,6 +36,7 @@ class WebStateBridge:
         simulation_data = _json_value(simulation)
         if not isinstance(simulation_data, dict):
             simulation_data = {"value": simulation_data}
+        simulation_data["debug_mode"] = getattr(self._runner, "debug_mode", "manual")
         navigation_snapshot = getattr(simulation, "navigation", None)
         if navigation_snapshot is None:
             runtime = getattr(self._runner, "navigation_runtime", None) or getattr(self._runner, "runtime", None)

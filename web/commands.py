@@ -13,6 +13,7 @@ class SimulationCommand(Enum):
     STEP = "STEP"
     STOP = "STOP"
     RESET = "RESET"
+    SET_MODE = "SET_MODE"
 
 
 @dataclass(frozen=True)
@@ -56,6 +57,8 @@ class CommandDispatcher:
                 value = self._runner.reset(seed)
             elif selected is SimulationCommand.STEP:
                 value = getattr(self._runner, "step_once", self._runner.step)()
+            elif selected is SimulationCommand.SET_MODE:
+                value = self._runner.set_mode(payload.get("mode"))
             else:
                 value = getattr(self._runner, selected.value.lower())()
             return CommandResult(True, name, value=value)

@@ -25,6 +25,12 @@ def create_app(runner: Any) -> Flask:
         template_folder=str(_NAVIGATION_2_TEMPLATE_DIR),
     )
 
+    @app.after_request
+    def disable_debug_cache(response):
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        response.headers["X-Navigation-Dashboard"] = "hardware-debug-v2"
+        return response
+
     @app.get("/")
     def index():
         """返回新的 Dashboard 页面。"""

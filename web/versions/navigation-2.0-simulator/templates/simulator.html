@@ -5,13 +5,13 @@
   <title>{{ dashboard_title }}</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='css/simulator.css') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='css/hardware-debug.css') }}">
-  <style>.workspace{grid-template-columns:280px minmax(520px,1fr) 390px}.sidebar,.inspector{max-height:calc(100vh - 76px)}</style>
+  <style>.workspace{grid-template-columns:280px minmax(520px,1fr) 390px}.sidebar,.inspector{max-height:calc(100vh - 76px)}.mode-row{display:flex;gap:14px;margin-bottom:10px;color:var(--muted)}.mode-row input{accent-color:var(--blue)}</style>
 </head>
 <body>
-  <header class="topbar"><strong>RoboCup Rescue Brain</strong><span>{{ dashboard_title }}</span><span id="connection">连接中</span><time id="clock">--</time></header>
+  <header class="topbar"><strong>RoboCup Rescue Brain</strong><span>{{ dashboard_title }} · hardware-debug-v2</span><span id="connection">连接中</span><time id="clock">--</time></header>
   <main class="workspace">
     <aside class="panel sidebar">
-      <section id="seed-controls"><h2>会话</h2><div class="seed-row"><input id="seed" type="number" value="0" step="1"><button data-command="RESET"{% if hardware_motion %} disabled title="真机会话请重启进程"{% endif %}>重置种子</button></div><p id="command-error" class="error"></p></section>
+      <section id="seed-controls"><h2>会话</h2><div class="mode-row"><label><input type="radio" name="debug-mode" value="manual" checked> 手动单步</label><label><input type="radio" name="debug-mode" value="auto"> 自动推进</label></div><div class="seed-row"><input id="seed" type="number" value="0" step="1"><button data-command="RESET"{% if hardware_motion %} disabled title="真机会话请重启进程"{% endif %}>重置种子</button></div><p id="command-error" class="error"></p></section>
       <section><h2>逐步调试</h2><div id="simulation-controls" class="button-grid"><button data-command="START">启动</button><button data-command="PAUSE">暂停</button><button data-command="RESUME">继续</button><button data-command="STEP">单步</button><button data-command="STOP" class="danger">停止</button></div><p class="hint">单步只推进一条仿真感知/打卡事件；真实运动等待 STM32 完成回包。</p><dl class="telemetry"><dt>运行状态</dt><dd id="runner-state">--</dd><dt>仿真时间</dt><dd id="sim-time">--</dd><dt>完成事件</dt><dd id="action-count">--</dd><dt>真实位置</dt><dd id="pose">--</dd><dt>规划位置</dt><dd id="robot-pose">--</dd><dt>逻辑位置</dt><dd id="robot-location">--</dd></dl></section>
       <section><h2>任务</h2><table id="task-table"><thead><tr><th>任务</th><th>目标</th><th>状态</th></tr></thead><tbody></tbody></table></section>
     </aside>
@@ -26,6 +26,6 @@
       <ol id="event-log" hidden></ol>
     </aside>
   </main>
-  <script src="{{ url_for('static', filename='js/snapshot-client.js') }}"></script><script src="{{ url_for('static', filename='js/map-renderer.js') }}"></script><script src="{{ url_for('static', filename='js/simulator-page.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/snapshot-client.js') }}"></script><script src="{{ url_for('static', filename='js/map-renderer.js') }}"></script><script src="{{ url_for('static', filename='js/simulator-page.js') }}"></script><script src="{{ url_for('static', filename='js/hardware-mode.js') }}"></script>
 </body>
 </html>

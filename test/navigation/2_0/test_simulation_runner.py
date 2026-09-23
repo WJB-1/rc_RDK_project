@@ -1,4 +1,5 @@
 import unittest
+import time
 
 from navigation.contracts import ExecutionRequest, ExecutionTarget, DriveExecutionCommand
 from navigation.domain import AtNode, build_default_topology
@@ -65,6 +66,24 @@ class SimulationRunnerTest(unittest.TestCase):
         runner.pause()
         self.assertFalse(runner.step())
         self.assertEqual(runner.snapshot().completed_action_count, 0)
+
+    def test_auto_mode_completes_pending_simulated_event(self):
+        world = SimWorld(build_default_topology(), seed=3)
+        port = SimMotionPort(world)
+        executor = SimExecutor((port,))
+        executor.on_interrupt(lambda interrupt: None)
+        executor.submit(ExecutionRequest("r", "e", "a", ExecutionTarget.MOTION_CONTROLLER,
+                                         DriveExecutionCommand(100), 0.0))
+        runner = SimulationRunner(world, executor, FakeRuntime())
+        runner.set_mode("auto")
+        runner.start()
+        deadline = time.monotonic() + 0.5
+        while runner.snapshot().completed_action_count == 0 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        runner.stop()
+
+        self.assertEqual(runner.debug_mode, "auto")
+        self.assertEqual(runner.snapshot().completed_action_count, 1)
 
 
 if __name__ == "__main__":
