@@ -52,6 +52,7 @@ def build_record(image_name, process_ms, mask_coverage, lane_state, capture, tim
         "accepted_bev_count": len(gate.get("accepted_bev_lines") or []),
         "rejected_bev_count": len(gate.get("rejected_bev_lines") or []),
         "raw_hough_segment_count": int(gate.get("raw_hough_segment_count", 0)),
+        "raw_boundary_side_count": int(gate.get("raw_boundary_side_count", 0)),
         "distance_gate_min_mm": gate.get("min_distance_mm"),
         "distance_gate_max_mm": gate.get("max_distance_mm"),
         "pair_count": len(gate.get("pair_measurements") or []),

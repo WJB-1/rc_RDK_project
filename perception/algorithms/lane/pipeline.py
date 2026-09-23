@@ -360,7 +360,7 @@ class LanePipeline:
         status_colour = (0, 220, 0) if accepted else (0, 90, 255)
         lines = [
             (f"semantic pair gate: {status}", status_colour),
-            (f"Hough segments: {raw_count}; fitted boundaries: {fitted_count}", (230, 230, 230)),
+            (f"boundary sides: {raw_count}; fitted lines: {fitted_count}", (230, 230, 230)),
         ]
         if min_distance is not None and max_distance is not None:
             lines.append((f"normal-distance gate: {float(min_distance):.1f}..{float(max_distance):.1f} mm", (230, 230, 230)))

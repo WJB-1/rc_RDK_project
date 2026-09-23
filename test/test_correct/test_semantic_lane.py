@@ -16,6 +16,20 @@ class SemanticLaneTests(unittest.TestCase):
         self.assertEqual(info["area_px"], int(np.count_nonzero(mask[45:100, 70:111])))
         self.assertEqual(int(np.count_nonzero(selected[5:45, 5:45])), 0)
 
+    def test_detector_extracts_mask_edges_without_hough(self):
+        from perception.algorithms.lane.semantic_lane import SemanticLaneDetector
+
+        mask = np.zeros((120, 160), dtype=np.uint8)
+        for y in range(20, 120):
+            left = 35 + (y - 20) // 8
+            right = 115 - (y - 20) // 8
+            mask[y, left:right + 1] = 255
+        edge, lines, raw_count = SemanticLaneDetector(1.0, 160, 80)._extract_side_lines(mask)
+
+        self.assertEqual(raw_count, 2)
+        self.assertEqual(len(lines), 2)
+        self.assertEqual(int(np.count_nonzero(edge)), 200)
+
     def test_angle_template_uses_left_origin_baseline(self):
         from perception.algorithms.lane.angle_template import template_positions_for_angle
         from perception.algorithms.lane.constants import TEMPLATE_LINE_ORDER, TEMPLATE_LINE_X_MM
@@ -293,8 +307,7 @@ class SemanticLaneTests(unittest.TestCase):
         from perception.algorithms.lane.semantic_lane import SemanticLaneDetector
 
         mask = np.zeros((384, 512), dtype=np.uint8)
-        cv2.rectangle(mask, (155, 120), (165, 360), 255, -1)
-        cv2.rectangle(mask, (345, 120), (355, 360), 255, -1)
+        cv2.rectangle(mask, (155, 120), (355, 383), 255, -1)
         mask[220:250] = 0
 
         result = SemanticLaneDetector(
@@ -311,8 +324,7 @@ class SemanticLaneTests(unittest.TestCase):
         from perception.algorithms.lane.semantic_lane import SemanticLaneDetector
 
         mask = np.zeros((384, 512), dtype=np.uint8)
-        cv2.line(mask, (155, 360), (210, 120), 255, 8)
-        cv2.line(mask, (345, 360), (345, 120), 255, 8)
+        cv2.fillPoly(mask, [np.array([(151, 383), (206, 120), (349, 120), (349, 383)])], 255)
 
         result = SemanticLaneDetector(
             pixel_per_mm=1.0,

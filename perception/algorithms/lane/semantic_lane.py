@@ -1,4 +1,4 @@
-"""Binary semantic-mask lane boundary extraction and BEV distance gating."""
+"""Binary semantic-mask boundary extraction and BEV distance gating."""
 
 import math
 
@@ -76,27 +76,26 @@ class SemanticLaneDetector:
         return cv2.perspectiveTransform(points, np.asarray(matrix, dtype=np.float64))[0]
 
     def _extract_side_lines(self, mask):
-        edge = cv2.Canny(mask, 50, 150)
-        raw = cv2.HoughLinesP(
-            edge, 1, np.pi / 180.0, threshold=18,
-            minLineLength=self.min_segment_length_px, maxLineGap=24,
-        )
-        height, width = mask.shape[:2]
+        binary = np.asarray(mask, dtype=np.uint8) > 0
+        edge = np.zeros_like(np.asarray(mask, dtype=np.uint8))
         sides = {"left": [], "right": []}
-        for segment in raw.reshape(-1, 4) if raw is not None else []:
-            x1, y1, x2, y2 = map(float, segment)
-            dx, dy = x2 - x1, y2 - y1
-            if abs(dy) < abs(dx) * 1.5:
+        for y in range(binary.shape[0]):
+            xs = np.flatnonzero(binary[y])
+            if not len(xs):
                 continue
-            side = "left" if (x1 + x2) * 0.5 < width * 0.5 else "right"
-            sides[side].extend(((x1, y1), (x2, y2)))
+            left_x, right_x = int(xs[0]), int(xs[-1])
+            edge[y, left_x] = 255
+            edge[y, right_x] = 255
+            sides["left"].append((left_x, y))
+            if right_x != left_x:
+                sides["right"].append((right_x, y))
         lines = []
         for side, points in sides.items():
             line = self._line_from_points(points)
             if line is not None and line["curve_residual_px"] <= self.max_curve_residual_px:
                 line["side"] = side
                 lines.append(line)
-        return edge, lines, 0 if raw is None else len(raw)
+        return edge, lines, sum(bool(points) for points in sides.values())
 
     def analyze(self, semantic_mask, parallel_matrix):
         mask, component = self._select_ground_component(semantic_mask)
@@ -112,6 +111,7 @@ class SemanticLaneDetector:
                 dy = float(line[1][1] - line[0][1])
                 directions.append(np.degrees(np.arctan2(dx, -dy)))
             angle_deg = float(np.mean(directions))
+            angle_deg = (angle_deg + 90.0) % 180.0 - 90.0
             template = template_positions_for_angle(angle_deg)
             first_id, second_id = self.template_pair_ids
             if first_id not in template or second_id not in template:
@@ -150,6 +150,7 @@ class SemanticLaneDetector:
             "component": component,
             "clean_mask": mask,
             "raw_hough_segment_count": raw_hough_segment_count,
+            "raw_boundary_side_count": raw_hough_segment_count,
             "min_distance_mm": min_mm,
             "max_distance_mm": max_mm,
             "pair_measurements": pair_measurements,
