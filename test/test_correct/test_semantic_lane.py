@@ -5,6 +5,107 @@ import numpy as np
 
 
 class SemanticLaneTests(unittest.TestCase):
+    def test_template_dp_keeps_order_and_skips_an_outlier(self):
+        from perception.algorithms.lane.angle_template import template_positions_for_angle
+        from perception.algorithms.lane.template_selector import TemplateDistanceLaneSelector
+
+        selector = TemplateDistanceLaneSelector.__new__(TemplateDistanceLaneSelector)
+        selector.y_ref_mm = 500.0
+        selector.max_match_rms_mm = 2.0
+        selector.line_count_reward_lambda = 5.0
+        selector.require_both_lane_lines = True
+        selector.match_tie_loss_epsilon = 1e-6
+        selector.vehicle_geometry = {
+            "body_length_mm": 142.0,
+            "camera_forward_of_body_front_mm": 60.0,
+            "camera_lateral_offset_mm": 0.0,
+        }
+
+        angle_deg = 12.0
+        theta = np.deg2rad(angle_deg)
+        delta = 130.0
+        template = template_positions_for_angle(angle_deg)
+        line_ids = ("4", "2", "0", "1", "3", "5")
+
+        def line_at(x_ref):
+            return {
+                "params": {
+                    "theta": theta,
+                    "mid_x": x_ref,
+                    "mid_y": 500.0,
+                    "length_mm": 500.0,
+                    "p1": (x_ref, 250.0),
+                    "p2": (x_ref, 750.0),
+                }
+            }
+
+        group = [line_at(template[line_id] + delta) for line_id in line_ids]
+        group.append(line_at(template["4"] + delta + 80.0))
+
+        match = selector._match_group_to_template_ordered(group)
+
+        self.assertIsNotNone(match)
+        self.assertEqual(match["assigned_ids"], list(line_ids))
+        self.assertAlmostEqual(match["delta"], delta, places=4)
+        self.assertLess(match["rms"], 1e-4)
+        self.assertEqual(match["match_strategy"], "ordered_dp")
+
+    def test_template_uses_direct_ordered_path_for_exactly_six_lines(self):
+        from perception.algorithms.lane.angle_template import template_positions_for_angle
+        from perception.algorithms.lane.template_selector import TemplateDistanceLaneSelector
+
+        selector = TemplateDistanceLaneSelector.__new__(TemplateDistanceLaneSelector)
+        selector.y_ref_mm = 500.0
+        selector.max_match_rms_mm = 2.0
+        selector.line_count_reward_lambda = 5.0
+        selector.require_both_lane_lines = True
+        selector.match_tie_loss_epsilon = 1e-6
+        selector.vehicle_geometry = {
+            "body_length_mm": 142.0,
+            "camera_forward_of_body_front_mm": 60.0,
+            "camera_lateral_offset_mm": 0.0,
+        }
+        theta = np.deg2rad(12.0)
+        template = template_positions_for_angle(12.0)
+
+        group = [
+            {"params": {
+                "theta": theta,
+                "mid_x": template[line_id] + 130.0,
+                "mid_y": 500.0,
+                "length_mm": 500.0,
+                "p1": (template[line_id], 250.0),
+                "p2": (template[line_id], 750.0),
+            }}
+            for line_id in ("4", "2", "0", "1", "3", "5")
+        ]
+
+        match = selector._match_group_to_template_ordered(group)
+
+        self.assertIsNotNone(match)
+        self.assertEqual(match["match_strategy"], "ordered_six")
+        self.assertTrue(selector._current_template_group_diagnostics["direct_six_attempted"])
+        self.assertEqual(selector._current_template_group_diagnostics["evaluated_combinations"], 1)
+
+    def test_template_match_diagnostics_reports_combination_count(self):
+        from perception.algorithms.lane.template_selector import TemplateDistanceLaneSelector
+
+        selector = TemplateDistanceLaneSelector.__new__(TemplateDistanceLaneSelector)
+        selector._last_template_match_diagnostics = {}
+
+        selector._record_template_match_diagnostics(
+            input_line_count=8,
+            group_sizes=[8],
+            valid_group_sizes=[8],
+            evaluated_combinations=120,
+            accepted_combinations=3,
+            direct_six_attempted=False,
+            elapsed_ms=12.0,
+        )
+
+        self.assertEqual(selector._last_template_match_diagnostics["evaluated_combinations"], 120)
+        self.assertAlmostEqual(selector._last_template_match_diagnostics["avg_combination_us"], 100.0)
+
     def test_single_erosion_separates_thick_segments_joined_by_a_thin_bridge(self):
         from perception.algorithms.lane.line_detection import erode_edge_segments
 

@@ -246,6 +246,9 @@ class LanePipeline:
                 ),
                 "offset_mm": lane_state.get("pid_error_mm"),
                 "theta_source": lane_state.get("lane_angle_source"),
+                "template_match_diagnostics": dict(
+                    getattr(lane_selector, "_last_template_match_diagnostics", {}) or {}
+                ),
             },
         }
         if semantic_mask is not None:

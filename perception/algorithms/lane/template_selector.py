@@ -9,7 +9,7 @@
 新地面系的具体投影/拟合由 NewGroundProjector 承担。
 """
 import math
-from itertools import combinations
+import time
 
 import cv2
 import numpy as np
@@ -24,6 +24,7 @@ from .constants import (
     GROUND_BODY_LENGTH_MM, GROUND_CAMERA_FORWARD_MM,
     GROUND_CAMERA_LATERAL_OFFSET_MM,
 )
+from .angle_template import template_positions_for_angle
 from .ground_ipm_selector import GroundIPMLanePairSelector
 from .line_geometry import (
     find_valid_lane_pairs, select_best_pair,
@@ -84,6 +85,7 @@ class TemplateDistanceLaneSelector(GroundIPMLanePairSelector):
         self._last_new_ground_right_pts = []
         self._last_new_ground_center_fit = None
         self._last_new_ground_source = "?"
+        self._last_template_match_diagnostics = {}
 
     # ------------------------------------------------------------------
     # Ground reconstruction（旧 BEV 用，保留）
@@ -172,13 +174,17 @@ class TemplateDistanceLaneSelector(GroundIPMLanePairSelector):
         return TemplateDistanceLaneSelector._normalize_theta(0.5 * math.atan2(sin2, cos2))
 
     def _robot_center_inside_inferred_lane_corridor(self, delta, group_theta):
+        template = template_positions_for_angle(math.degrees(group_theta))
+        return self._robot_center_inside_template_corridor(delta, group_theta, template)
+
+    def _robot_center_inside_template_corridor(self, delta, group_theta, template):
         body_length = float(self.vehicle_geometry.get("body_length_mm", 142.0))
         camera_front = float(self.vehicle_geometry.get("camera_forward_of_body_front_mm", 60.0))
         lateral = float(self.vehicle_geometry.get("camera_lateral_offset_mm", 0.0))
         y_center = -camera_front - body_length * 0.5
         tan_theta = math.tan(self._normalize_theta(group_theta))
         lane_x = {
-            lid: TEMPLATE_LINE_X_MM[lid] + delta + (y_center - self.y_ref_mm) * tan_theta
+            lid: template[lid] + delta + (y_center - self.y_ref_mm) * tan_theta
             for lid in LANE_LINE_IDS
         }
         lo, hi = sorted((lane_x["0"], lane_x["1"]))
@@ -192,85 +198,161 @@ class TemplateDistanceLaneSelector(GroundIPMLanePairSelector):
     # ------------------------------------------------------------------
     # Template matching（旧 BEV 用，保留）
     # ------------------------------------------------------------------
-    def _match_group_to_template(self, group):
-        n = len(group)
-        if n < 3 or n > 10:
+    def _build_template_candidate(self, sorted_items, sorted_x, pairs, group_theta, template):
+        assigned_ids = [TEMPLATE_LINE_ORDER[template_index] for _, template_index in pairs]
+        if len(assigned_ids) < 3:
+            return None
+        if self.require_both_lane_lines and not all(line_id in assigned_ids for line_id in LANE_LINE_IDS):
             return None
 
-        enriched = []
-        for item in group:
-            x_ref = self._line_x_at_ref(item["params"], self.y_ref_mm)
-            enriched.append({"item": item, "x_at_ref": x_ref})
+        weights = [float(TEMPLATE_LINE_WEIGHTS[line_id]) for line_id in assigned_ids]
+        total_weight = sum(weights)
+        if total_weight <= 0.0:
+            return None
+        delta = sum(
+            weights[index] * (sorted_x[line_index] - template[line_id])
+            for index, ((line_index, _), line_id) in enumerate(zip(pairs, assigned_ids))
+        ) / total_weight
+        fit_loss = sum(
+            weights[index] * (sorted_x[line_index] - template[line_id] - delta) ** 2
+            for index, ((line_index, _), line_id) in enumerate(zip(pairs, assigned_ids))
+        ) / total_weight
+        rms = math.sqrt(fit_loss)
+        robot_inside, pose = self._robot_center_inside_template_corridor(delta, group_theta, template)
+        if not robot_inside or rms > self.max_match_rms_mm:
+            return None
+
+        coverage_reward = total_weight
+        return {
+            "assignment": {
+                line_id: sorted_items[line_index]
+                for (line_index, _), line_id in zip(pairs, assigned_ids)
+            },
+            "assigned_ids": assigned_ids,
+            "delta": float(delta),
+            "loss": float(fit_loss - self.line_count_reward_lambda * coverage_reward),
+            "fit_loss": float(fit_loss),
+            "coverage_reward": float(coverage_reward),
+            "rms": float(rms),
+            "group_theta": float(group_theta),
+            "n_matched": len(pairs),
+            "robot_center_inside": True,
+            "pose": pose,
+        }
+
+    @staticmethod
+    def _candidate_deltas(sorted_x, template):
+        return sorted({
+            round(float(x_ref - template[line_id]), 6)
+            for x_ref in sorted_x
+            for line_id in TEMPLATE_LINE_ORDER
+        })
+
+    def _match_group_to_template_ordered(self, group):
+        if len(group) < 3:
+            return None
+
+        enriched = [
+            {"item": item, "x_at_ref": self._line_x_at_ref(item["params"], self.y_ref_mm)}
+            for item in group
+        ]
         enriched.sort(key=lambda entry: entry["x_at_ref"], reverse=True)
         sorted_x = [entry["x_at_ref"] for entry in enriched]
         sorted_items = [entry["item"] for entry in enriched]
-
         group_theta = self._estimate_group_theta(group)
-        weights = TEMPLATE_LINE_WEIGHTS
-        reward_lambda = self.line_count_reward_lambda
+        template = template_positions_for_angle(math.degrees(group_theta))
+        template_count = len(TEMPLATE_LINE_ORDER)
+        line_count = len(sorted_items)
+
+        diagnostics = {
+            "evaluated_combinations": 0,
+            "accepted_combinations": 0,
+            "direct_six_attempted": False,
+            "dp_delta_candidates": 0,
+            "dp_state_updates": 0,
+        }
+
+        if line_count == template_count:
+            diagnostics["direct_six_attempted"] = True
+            direct = self._build_template_candidate(
+                sorted_items, sorted_x,
+                [(index, index) for index in range(template_count)],
+                group_theta, template,
+            )
+            diagnostics["evaluated_combinations"] += 1
+            if direct is not None:
+                diagnostics["accepted_combinations"] += 1
+                direct["match_strategy"] = "ordered_six"
+                direct["second_best_loss"] = None
+                direct["loss_gap"] = math.inf
+                direct["near_tie"] = False
+                self._current_template_group_diagnostics = diagnostics
+                return direct
+
         best = None
         second_loss = None
-        max_fit_lines = min(6, n)
-        for n_fit in range(3, max_fit_lines + 1):
-            for line_idx in combinations(range(n), n_fit):
-                selected_x = [sorted_x[i] for i in line_idx]
-                selected_items = [sorted_items[i] for i in line_idx]
-                for sub_idx in combinations(range(6), n_fit):
-                    assigned_ids = [TEMPLATE_LINE_ORDER[i] for i in sub_idx]
-                    n_lanes = sum(1 for lid in assigned_ids if lid in LANE_LINE_IDS)
-                    if self.require_both_lane_lines and n_lanes != len(LANE_LINE_IDS):
-                        continue
-                    denominator = sum(float(weights[lid]) for lid in assigned_ids)
-                    if denominator <= 0:
-                        continue
-                    delta = sum(
-                        float(weights[lid]) * (selected_x[i] - float(TEMPLATE_LINE_X_MM[lid]))
-                        for i, lid in enumerate(assigned_ids)
-                    ) / denominator
-                    fit_loss = sum(
-                        float(weights[lid])
-                        * (selected_x[i] - float(TEMPLATE_LINE_X_MM[lid]) - delta) ** 2
-                        for i, lid in enumerate(assigned_ids)
-                    ) / denominator
-                    rms = math.sqrt(fit_loss)
-                    coverage_reward = sum(float(weights[lid]) for lid in assigned_ids)
-                    loss = fit_loss - reward_lambda * coverage_reward
+        for delta in self._candidate_deltas(sorted_x, template):
+            diagnostics["dp_delta_candidates"] += 1
+            states = [[{} for _ in range(template_count + 1)] for _ in range(line_count + 1)]
+            states[0][0][(0, 0)] = (0.0, ())
+            for line_index in range(line_count + 1):
+                for template_index in range(template_count + 1):
+                    for key, value in list(states[line_index][template_index].items()):
+                        error, pairs = value
+                        if line_index < line_count:
+                            target = states[line_index + 1][template_index]
+                            if key not in target or error < target[key][0]:
+                                target[key] = value
+                        if template_index < template_count:
+                            target = states[line_index][template_index + 1]
+                            if key not in target or error < target[key][0]:
+                                target[key] = value
+                        if line_index >= line_count or template_index >= template_count:
+                            continue
+                        line_id = TEMPLATE_LINE_ORDER[template_index]
+                        weight = float(TEMPLATE_LINE_WEIGHTS[line_id])
+                        residual = sorted_x[line_index] - template[line_id] - delta
+                        mask, lane_mask = key
+                        new_key = (
+                            mask | (1 << template_index),
+                            lane_mask | ((1 << LANE_LINE_IDS.index(line_id)) if line_id in LANE_LINE_IDS else 0),
+                        )
+                        new_value = (error + weight * residual * residual, pairs + ((line_index, template_index),))
+                        target = states[line_index + 1][template_index + 1]
+                        previous = target.get(new_key)
+                        diagnostics["dp_state_updates"] += 1
+                        if previous is None or new_value[0] < previous[0]:
+                            target[new_key] = new_value
 
-                    robot_inside, pose = self._robot_center_inside_inferred_lane_corridor(
-                        delta, group_theta,
-                    )
-                    if not robot_inside or rms > self.max_match_rms_mm:
-                        continue
+            for _, (_, pairs) in states[line_count][template_count].items():
+                diagnostics["evaluated_combinations"] += 1
+                candidate = self._build_template_candidate(
+                    sorted_items, sorted_x, pairs, group_theta, template,
+                )
+                if candidate is None:
+                    continue
+                diagnostics["accepted_combinations"] += 1
+                candidate["match_strategy"] = "ordered_dp"
+                if best is None or candidate["loss"] < best["loss"]:
+                    if best is not None:
+                        second_loss = best["loss"]
+                    best = candidate
+                elif second_loss is None or candidate["loss"] < second_loss:
+                    second_loss = candidate["loss"]
 
-                    candidate = {
-                        "assignment": {lid: selected_items[i] for i, lid in enumerate(assigned_ids)},
-                        "assigned_ids": list(assigned_ids),
-                        "delta": float(delta),
-                        "loss": float(loss),
-                        "fit_loss": float(fit_loss),
-                        "coverage_reward": float(coverage_reward),
-                        "rms": float(rms),
-                        "group_theta": float(group_theta),
-                        "n_matched": int(n_fit),
-                        "robot_center_inside": True,
-                        "pose": pose,
-                    }
-                    if best is None or candidate["loss"] < best["loss"]:
-                        if best is not None:
-                            second_loss = best["loss"]
-                        best = candidate
-                    elif second_loss is None or candidate["loss"] < second_loss:
-                        second_loss = candidate["loss"]
-
-        if best is None:
-            return None
-        loss_gap = math.inf if second_loss is None else second_loss - best["loss"]
-        best["second_best_loss"] = second_loss
-        best["loss_gap"] = loss_gap
-        best["near_tie"] = loss_gap <= self.match_tie_loss_epsilon
+        if best is not None:
+            loss_gap = math.inf if second_loss is None else second_loss - best["loss"]
+            best["second_best_loss"] = second_loss
+            best["loss_gap"] = loss_gap
+            best["near_tie"] = loss_gap <= self.match_tie_loss_epsilon
+        self._current_template_group_diagnostics = diagnostics
         return best
 
+    def _match_group_to_template(self, group):
+        return self._match_group_to_template_ordered(group)
+
     def _match_all_groups(self, ground_items):
+        started_at = time.perf_counter()
         groups = self._parallel_groups(ground_items)
         max_theta = math.radians(self.max_forward_line_angle_deg)
         valid_groups = [
@@ -280,11 +362,44 @@ class TemplateDistanceLaneSelector(GroundIPMLanePairSelector):
                     for index in group)
         ]
         best = None
+        evaluated_combinations = 0
+        accepted_combinations = 0
+        direct_six_attempted = False
         for group in valid_groups:
             candidate = self._match_group_to_template([ground_items[index] for index in group])
+            group_diagnostics = self._current_template_group_diagnostics
+            evaluated_combinations += group_diagnostics["evaluated_combinations"]
+            accepted_combinations += group_diagnostics["accepted_combinations"]
+            direct_six_attempted |= group_diagnostics["direct_six_attempted"]
             if candidate is not None and (best is None or candidate["loss"] < best["loss"]):
                 best = candidate
+        self._record_template_match_diagnostics(
+            input_line_count=len(ground_items),
+            group_sizes=[len(group) for group in groups],
+            valid_group_sizes=[len(group) for group in valid_groups],
+            evaluated_combinations=evaluated_combinations,
+            accepted_combinations=accepted_combinations,
+            direct_six_attempted=direct_six_attempted,
+            elapsed_ms=(time.perf_counter() - started_at) * 1000.0,
+        )
         return best, len(groups)
+
+    def _record_template_match_diagnostics(self, input_line_count, group_sizes, valid_group_sizes,
+                                           evaluated_combinations, accepted_combinations,
+                                           direct_six_attempted, elapsed_ms):
+        self._last_template_match_diagnostics = {
+            "input_line_count": int(input_line_count),
+            "parallel_group_sizes": list(group_sizes),
+            "valid_group_sizes": list(valid_group_sizes),
+            "evaluated_combinations": int(evaluated_combinations),
+            "accepted_combinations": int(accepted_combinations),
+            "direct_six_attempted": bool(direct_six_attempted),
+            "elapsed_ms": float(elapsed_ms),
+            "avg_combination_us": (
+                float(elapsed_ms) * 1000.0 / evaluated_combinations
+                if evaluated_combinations else 0.0
+            ),
+        }
 
     def _compute_confidence(self, match):
         rms = match["rms"]
@@ -305,9 +420,10 @@ class TemplateDistanceLaneSelector(GroundIPMLanePairSelector):
 
     def _build_identity_result(self, assignment, delta, group_theta, confidence):
         inferred_theta = self._normalize_theta(group_theta)
+        template = template_positions_for_angle(math.degrees(inferred_theta))
         result = {}
         for lid in ALL_LINE_IDS:
-            template_x_ref = TEMPLATE_LINE_X_MM[lid] + delta
+            template_x_ref = template[lid] + delta
             if lid in assignment:
                 item = assignment[lid]
                 params = item["params"]
