@@ -19,6 +19,7 @@ import time
 import math
 import signal
 import threading
+import argparse
 from pathlib import Path
 
 # 添加项目路径（兼容直接运行和作为模块导入）
@@ -35,10 +36,25 @@ from utils.logger import get_logger
 from perception.devices.camera import CameraManager
 from perception.algorithms.lane.tracker import LaneTracker
 from web import WebPushServer
-from navigation.state_machine import AgentStateMachine
-from navigation.domain.topology import get_topology
-from communication.robot_bridge import RobotBridge
-from perception.algorithms.crossroad_seg import detect_crossroad_from_seg, confirm_crossroad_seg, estimate_distance as seg_estimate_distance
+
+try:
+    from navigation.state_machine import AgentStateMachine
+    from navigation.domain.topology import get_topology
+    from communication.robot_bridge import RobotBridge
+    from perception.algorithms.crossroad_seg import (
+        detect_crossroad_from_seg,
+        confirm_crossroad_seg,
+        estimate_distance as seg_estimate_distance,
+    )
+    _LEGACY_ENTRY_DEPENDENCY_ERROR = None
+except ImportError as error:
+    AgentStateMachine = None
+    get_topology = None
+    RobotBridge = None
+    detect_crossroad_from_seg = None
+    confirm_crossroad_seg = None
+    seg_estimate_distance = None
+    _LEGACY_ENTRY_DEPENDENCY_ERROR = error
 
 
 def _attach_child_loggers():
@@ -144,6 +160,14 @@ class RescueBrain:
             bool: 初始化是否成功
         """
         try:
+            if _LEGACY_ENTRY_DEPENDENCY_ERROR is not None:
+                self.logger.error(
+                    "Legacy entry dependencies are unavailable: %s. "
+                    "Use --navigation-hardware-sim for Navigation 2.0.",
+                    _LEGACY_ENTRY_DEPENDENCY_ERROR,
+                )
+                return False
+
             # 1. 加载配置
             if not self.load_config():
                 self.logger.error("配置加载失败，使用默认配置")
@@ -783,7 +807,69 @@ class RescueBrain:
         self.logger.info("程序已停止")
 
 
-def main():
+def run_hardware_motion_simulation(serial_port: str, baudrate: int = 115200,
+                                   seed: int = 0, step_interval_s: float = 0.01):
+    """Run Navigation 2.0 with real motion and simulated perception/tasks."""
+
+    from navigation.simulation import build_hardware_motion_simulation_runner
+
+    runner = build_hardware_motion_simulation_runner(
+        serial_port=serial_port,
+        baudrate=baudrate,
+        seed=seed,
+    )
+    try:
+        runner.start()
+        print(
+            "Navigation 2.0 hybrid session started: STM32 controls motion; "
+            "perception and check-in tasks are simulated. Press Ctrl+C to stop."
+        )
+        while True:
+            runner.step()
+            time.sleep(step_interval_s)
+    except KeyboardInterrupt:
+        print("\nNavigation 2.0 hybrid session stopping.")
+    finally:
+        runner.stop()
+
+
+def _parse_cli_args(argv=None):
+    parser = argparse.ArgumentParser(description="RoboCup Rescue Brain")
+    parser.add_argument(
+        "--navigation-hardware-sim",
+        action="store_true",
+        help="use Navigation 2.0 with STM32 motion and simulated perception/tasks",
+    )
+    parser.add_argument(
+        "--serial-port",
+        default="/dev/ttyS1",
+        help="STM32 serial device (default: /dev/ttyS1)",
+    )
+    parser.add_argument(
+        "--baudrate",
+        type=int,
+        default=115200,
+        help="STM32 serial baudrate (default: 115200)",
+    )
+    parser.add_argument(
+        "--simulation-seed",
+        type=int,
+        default=0,
+        help="simulation random seed (default: 0)",
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv=None):
+    args = _parse_cli_args(argv)
+    if args.navigation_hardware_sim:
+        run_hardware_motion_simulation(
+            serial_port=args.serial_port,
+            baudrate=args.baudrate,
+            seed=args.simulation_seed,
+        )
+        return
+
     """程序入口"""
     print("=" * 60)
     print("RoboCup Rescue Brain - RDK X5 视觉系统")
