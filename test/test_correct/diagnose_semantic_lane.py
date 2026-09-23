@@ -51,7 +51,16 @@ def build_record(image_name, process_ms, mask_coverage, lane_state, capture, tim
         "bev_line_count": len(gate.get("bev_lines") or []),
         "accepted_bev_count": len(gate.get("accepted_bev_lines") or []),
         "rejected_bev_count": len(gate.get("rejected_bev_lines") or []),
+        "raw_hough_segment_count": int(gate.get("raw_hough_segment_count", 0)),
+        "distance_gate_min_mm": gate.get("min_distance_mm"),
+        "distance_gate_max_mm": gate.get("max_distance_mm"),
+        "pair_count": len(gate.get("pair_measurements") or []),
     }
+    measurements = gate.get("pair_measurements") or []
+    if measurements:
+        first_pair = measurements[0]
+        record["first_pair_distance_mm"] = first_pair.get("normal_distance_mm")
+        record["first_pair_angle_deg"] = first_pair.get("parallel_angle_deg")
     if (lane_state or {}).get("lane_angle_rad") is not None:
         record["yaw_deg"] = round(float(np.degrees(lane_state["lane_angle_rad"])), 4)
     for name, milliseconds in stage_timings.items():
@@ -145,6 +154,8 @@ class SemanticRuntime:
         for segment in result["accepted_bev_lines"]:
             cv2.line(view, tuple(np.round(segment[0]).astype(int)), tuple(np.round(segment[1]).astype(int)),
                      (0, 255, 0), 3, cv2.LINE_AA)
+        from perception.algorithms.lane.pipeline import LanePipeline
+        LanePipeline._draw_semantic_gate_text(view, result)
         return view
 
     def _ground(self, result):

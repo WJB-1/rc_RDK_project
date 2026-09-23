@@ -5,7 +5,10 @@ import math
 import cv2
 import numpy as np
 
-from .line_geometry import find_valid_lane_pairs, select_best_pair
+from .line_geometry import (
+    _line_normal_distance, _segment_parallel_angle_deg, _y_overlap_px,
+    find_valid_lane_pairs, select_best_pair,
+)
 
 
 class SemanticLaneDetector:
@@ -72,12 +75,30 @@ class SemanticLaneDetector:
             if line is not None and line["curve_residual_px"] <= self.max_curve_residual_px:
                 line["side"] = side
                 lines.append(line)
-        return edge, lines
+        return edge, lines, 0 if raw is None else len(raw)
 
     def analyze(self, semantic_mask, parallel_matrix):
         mask = np.where(np.asarray(semantic_mask) > 0, 255, 0).astype(np.uint8)
-        edge, image_lines = self._extract_side_lines(mask)
+        edge, image_lines, raw_hough_segment_count = self._extract_side_lines(mask)
         bev_lines = [self._project_line(line, parallel_matrix) for line in image_lines]
+        pair_measurements = []
+        min_mm = self.lane_width_mm - self.distance_tolerance_mm
+        max_mm = self.lane_width_mm + self.distance_tolerance_mm
+        for first_index in range(len(bev_lines)):
+            for second_index in range(first_index + 1, len(bev_lines)):
+                first, second = bev_lines[first_index], bev_lines[second_index]
+                angle_deg = _segment_parallel_angle_deg(first, second)
+                distance_px = _line_normal_distance(first, second)
+                distance_mm = None if distance_px is None else distance_px / self.pixel_per_mm
+                pair_measurements.append({
+                    "i": first_index,
+                    "j": second_index,
+                    "parallel_angle_deg": angle_deg,
+                    "normal_distance_mm": distance_mm,
+                    "y_overlap_ok": _y_overlap_px(first, second),
+                    "parallel_ok": angle_deg is not None and angle_deg <= self.parallel_tolerance_deg,
+                    "distance_ok": distance_mm is not None and min_mm <= distance_mm <= max_mm,
+                })
         candidates = find_valid_lane_pairs(
             bev_lines,
             self.pixel_per_mm,
@@ -91,6 +112,10 @@ class SemanticLaneDetector:
         return {
             "accepted": selected is not None,
             "fallback_reason": None if selected is not None else "no_parallel_distance_valid_pair",
+            "raw_hough_segment_count": raw_hough_segment_count,
+            "min_distance_mm": min_mm,
+            "max_distance_mm": max_mm,
+            "pair_measurements": pair_measurements,
             "edge_mask": edge,
             "image_lines": image_lines,
             "bev_lines": bev_lines,

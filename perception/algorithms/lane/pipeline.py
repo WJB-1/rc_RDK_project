@@ -320,7 +320,59 @@ class LanePipeline:
             cv2.line(view, tuple(np.round(segment[0]).astype(int)), tuple(np.round(segment[1]).astype(int)), (0, 90, 255), 2)
         for segment in result.get("accepted_bev_lines", []):
             cv2.line(view, tuple(np.round(segment[0]).astype(int)), tuple(np.round(segment[1]).astype(int)), (0, 255, 0), 3)
+        self._draw_semantic_gate_text(view, result)
         return view
+
+    @staticmethod
+    def _draw_semantic_gate_text(view, result):
+        """Render semantic-pair gate measurements without hiding BEV evidence."""
+        accepted = bool(result.get("accepted", False))
+        min_distance = result.get("min_distance_mm")
+        max_distance = result.get("max_distance_mm")
+        raw_count = int(result.get("raw_hough_segment_count", 0))
+        fitted_count = len(result.get("bev_lines") or [])
+        status = "PASS" if accepted else "REJECT"
+        status_colour = (0, 220, 0) if accepted else (0, 90, 255)
+        lines = [
+            (f"semantic pair gate: {status}", status_colour),
+            (f"Hough segments: {raw_count}; fitted boundaries: {fitted_count}", (230, 230, 230)),
+        ]
+        if min_distance is not None and max_distance is not None:
+            lines.append((f"normal-distance gate: {float(min_distance):.1f}..{float(max_distance):.1f} mm", (230, 230, 230)))
+        measurements = result.get("pair_measurements") or []
+        if not measurements:
+            lines.append(("normal distance: unavailable (need 2 fitted boundaries)", (0, 210, 255)))
+        else:
+            for measurement in measurements[:4]:
+                distance = measurement.get("normal_distance_mm")
+                angle = measurement.get("parallel_angle_deg")
+                distance_text = "n/a" if distance is None else f"{float(distance):.1f} mm"
+                angle_text = "n/a" if angle is None else f"{float(angle):.1f} deg"
+                failed = []
+                if not measurement.get("y_overlap_ok"):
+                    failed.append("no-overlap")
+                if not measurement.get("parallel_ok"):
+                    failed.append("non-parallel")
+                if not measurement.get("distance_ok"):
+                    failed.append("distance")
+                verdict = "PASS" if not failed else ", ".join(failed)
+                colour = (0, 220, 0) if not failed else (0, 210, 255)
+                lines.append((
+                    f"pair {measurement.get('i')}-{measurement.get('j')}: d={distance_text}, angle={angle_text} [{verdict}]",
+                    colour,
+                ))
+        if not accepted and result.get("fallback_reason"):
+            lines.append((f"reason: {result['fallback_reason']}", (0, 140, 255)))
+
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        scale, thickness, line_height = 0.43, 1, 17
+        panel_height = min(view.shape[0], 10 + line_height * len(lines))
+        panel_width = min(view.shape[1], 500)
+        shade = view.copy()
+        cv2.rectangle(shade, (0, 0), (panel_width, panel_height), (0, 0, 0), -1)
+        cv2.addWeighted(shade, 0.72, view, 0.28, 0, dst=view)
+        for index, (text, colour) in enumerate(lines):
+            cv2.putText(view, text, (7, 16 + index * line_height), font, scale, colour, thickness, cv2.LINE_AA)
 
     # ------------------------------------------------------------------
     # 阶段耗时日志
