@@ -8,7 +8,6 @@ import numpy as np
 from .angle_template import template_positions_for_angle
 from .line_geometry import (
     _line_normal_distance, _segment_parallel_angle_deg, _y_overlap_px,
-    find_valid_lane_pairs, select_best_pair,
 )
 
 
@@ -19,7 +18,8 @@ class SemanticLaneDetector:
                  distance_tolerance_mm=20.0, parallel_tolerance_deg=3.0,
                  min_segment_length_px=30, max_curve_residual_px=8.0,
                  template_pair_ids=("0", "1"), template_x_at_ref_mm=None,
-                 component_gap_px=10):
+                 component_gap_px=10, min_line_pixels=20,
+                 line_growth_angle_deg=8.0):
         self.pixel_per_mm = float(pixel_per_mm)
         self.bev_width = int(bev_width)
         self.lane_width_mm = float(lane_width_mm)
@@ -30,6 +30,8 @@ class SemanticLaneDetector:
         self.template_pair_ids = tuple(template_pair_ids)
         self.template_x_at_ref_mm = dict(template_x_at_ref_mm or {})
         self.component_gap_px = max(0, int(component_gap_px))
+        self.min_line_pixels = max(2, int(min_line_pixels))
+        self.line_growth_angle_deg = float(line_growth_angle_deg)
 
     def _select_ground_component(self, mask, bottom_margin_px=10):
         binary = np.where(np.asarray(mask) > 0, 255, 0).astype(np.uint8)
@@ -88,6 +90,49 @@ class SemanticLaneDetector:
             return np.empty((0, 2), dtype=np.float32)
         return cv2.perspectiveTransform(values, np.asarray(matrix, dtype=np.float64))[0]
 
+    @staticmethod
+    def _line_angle_deg(line):
+        return math.degrees(math.atan2(line["x2"] - line["x1"],
+                                       line["y2"] - line["y1"]))
+
+    @staticmethod
+    def _angle_delta_deg(first, second):
+        return abs((float(first) - float(second) + 90.0) % 180.0 - 90.0)
+
+    def _grow_line_segments(self, points):
+        ordered = np.asarray(points, dtype=np.float32).reshape(-1, 2)
+        if len(ordered) < self.min_line_pixels:
+            return []
+        segments = []
+        start = 0
+        while start + self.min_line_pixels <= len(ordered):
+            end = start + self.min_line_pixels
+            base_line = self._line_from_points(ordered[start:end])
+            if base_line is None:
+                start += 1
+                continue
+            base_angle = self._line_angle_deg(base_line)
+            accepted_end = end
+            while end < len(ordered):
+                candidate = self._line_from_points(ordered[start:end + 1])
+                if candidate is None:
+                    break
+                angle_changed = self._angle_delta_deg(
+                    self._line_angle_deg(candidate), base_angle
+                ) > self.line_growth_angle_deg
+                residual_changed = candidate["curve_residual_px"] > self.max_curve_residual_px
+                if angle_changed or residual_changed:
+                    break
+                end += 1
+                accepted_end = end
+            segment = ordered[start:accepted_end]
+            if len(segment) >= self.min_line_pixels:
+                segments.append(segment)
+            if accepted_end >= len(ordered):
+                break
+            start = max(start + 1, accepted_end - 1)
+        return segments
+
     def _extract_side_lines(self, mask):
         binary = np.asarray(mask, dtype=np.uint8) > 0
         edge = np.zeros_like(np.asarray(mask, dtype=np.uint8))
@@ -104,14 +149,18 @@ class SemanticLaneDetector:
             if right_x != left_x:
                 sides["right"].append((right_x, y))
         lines = []
+        boundary_points = {}
         for side, points in sides.items():
-            line = self._line_from_points(points)
-            if line is not None and line["curve_residual_px"] <= self.max_curve_residual_px:
+            for segment_index, segment in enumerate(self._grow_line_segments(points)):
+                line = self._line_from_points(segment)
+                if line is None or line["curve_residual_px"] > self.max_curve_residual_px:
+                    continue
+                boundary_key = f"{side}_{segment_index}"
                 line["side"] = side
+                line["boundary_key"] = boundary_key
+                line["pixel_count"] = len(segment)
                 lines.append(line)
-        boundary_points = {
-            side: np.asarray(points, dtype=np.float32) for side, points in sides.items() if points
-        }
+                boundary_points[boundary_key] = segment
         return edge, lines, sum(bool(points) for points in sides.values()), boundary_points
 
     def analyze(self, semantic_mask, parallel_matrix):
@@ -123,53 +172,68 @@ class SemanticLaneDetector:
         }
         bev_lines = []
         for line in image_lines:
-            fitted = self._line_from_points(bev_boundary_points.get(line["side"], []))
+            fitted = self._line_from_points(bev_boundary_points.get(line["boundary_key"], []))
             if fitted is not None:
                 bev_lines.append(np.asarray([
                     [fitted["x1"], fitted["y1"]], [fitted["x2"], fitted["y2"]]
                 ], dtype=np.float32))
         pair_measurements = []
+        candidates = []
         min_mm = self.lane_width_mm - self.distance_tolerance_mm
         max_mm = self.lane_width_mm + self.distance_tolerance_mm
-        if len(bev_lines) >= 1:
-            directions = []
-            for line in bev_lines:
-                dx = float(line[1][0] - line[0][0])
-                dy = float(line[1][1] - line[0][1])
-                directions.append(np.degrees(np.arctan2(dx, -dy)))
-            angle_deg = float(np.mean(directions))
-            angle_deg = (angle_deg + 90.0) % 180.0 - 90.0
-            template = template_positions_for_angle(angle_deg)
-            first_id, second_id = self.template_pair_ids
-            if first_id not in template or second_id not in template:
-                template = self.template_x_at_ref_mm
-            expected_distance_mm = abs(float(template[first_id]) - float(template[second_id]))
-            min_mm = expected_distance_mm - self.distance_tolerance_mm
-            max_mm = expected_distance_mm + self.distance_tolerance_mm
         for first_index in range(len(bev_lines)):
             for second_index in range(first_index + 1, len(bev_lines)):
                 first, second = bev_lines[first_index], bev_lines[second_index]
                 angle_deg = _segment_parallel_angle_deg(first, second)
                 distance_px = _line_normal_distance(first, second)
                 distance_mm = None if distance_px is None else distance_px / self.pixel_per_mm
+                opposite_sides = image_lines[first_index]["side"] != image_lines[second_index]["side"]
+                directions = []
+                for segment in (first, second):
+                    dx = float(segment[1][0] - segment[0][0])
+                    dy = float(segment[1][1] - segment[0][1])
+                    directions.append(np.degrees(np.arctan2(dx, -dy)))
+                template_angle_deg = (float(np.mean(directions)) + 90.0) % 180.0 - 90.0
+                template = template_positions_for_angle(template_angle_deg)
+                first_id, second_id = self.template_pair_ids
+                if first_id not in template or second_id not in template:
+                    template = self.template_x_at_ref_mm
+                expected_distance_mm = abs(float(template[first_id]) - float(template[second_id]))
+                pair_min_mm = expected_distance_mm - self.distance_tolerance_mm
+                pair_max_mm = expected_distance_mm + self.distance_tolerance_mm
+                overlap_ok = _y_overlap_px(first, second)
+                parallel_ok = angle_deg is not None and angle_deg <= self.parallel_tolerance_deg
+                distance_ok = distance_mm is not None and pair_min_mm <= distance_mm <= pair_max_mm
                 pair_measurements.append({
                     "i": first_index,
                     "j": second_index,
                     "parallel_angle_deg": angle_deg,
                     "normal_distance_mm": distance_mm,
-                    "y_overlap_ok": _y_overlap_px(first, second),
-                    "parallel_ok": angle_deg is not None and angle_deg <= self.parallel_tolerance_deg,
-                    "distance_ok": distance_mm is not None and min_mm <= distance_mm <= max_mm,
+                    "expected_distance_mm": expected_distance_mm,
+                    "min_distance_mm": pair_min_mm,
+                    "max_distance_mm": pair_max_mm,
+                    "opposite_sides": opposite_sides,
+                    "y_overlap_ok": overlap_ok,
+                    "parallel_ok": parallel_ok,
+                    "distance_ok": distance_ok,
                 })
-        candidates = find_valid_lane_pairs(
-            bev_lines,
-            self.pixel_per_mm,
-            self.bev_width,
-            min_mm=min_mm,
-            max_mm=max_mm,
-            parallel_tol_deg=self.parallel_tolerance_deg,
-        )
-        selected = select_best_pair(candidates, self.lane_width_mm)
+                if opposite_sides and overlap_ok and parallel_ok and distance_ok:
+                    pair_midpoint = (np.asarray(first).mean(axis=0) + np.asarray(second).mean(axis=0)) * 0.5
+                    candidates.append({
+                        "i": first_index, "j": second_index,
+                        "distance_mm": float(distance_mm),
+                        "target_distance_mm": expected_distance_mm,
+                        "parallel_angle_deg": float(angle_deg),
+                        "mid_x_mm": float((pair_midpoint[0] - self.bev_width / 2.0) / self.pixel_per_mm),
+                    })
+        if pair_measurements:
+            min_mm = min(item["min_distance_mm"] for item in pair_measurements)
+            max_mm = max(item["max_distance_mm"] for item in pair_measurements)
+        selected = min(
+            candidates,
+            key=lambda item: (abs(item["distance_mm"] - item["target_distance_mm"]),
+                              abs(item["mid_x_mm"])),
+        ) if candidates else None
         accepted_indices = set() if selected is None else {selected["i"], selected["j"]}
         return {
             "accepted": selected is not None,

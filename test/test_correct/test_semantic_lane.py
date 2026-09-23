@@ -29,7 +29,7 @@ class SemanticLaneTests(unittest.TestCase):
         self.assertEqual(raw_count, 2)
         self.assertEqual(len(lines), 2)
         self.assertEqual(int(np.count_nonzero(edge)), 200)
-        self.assertEqual(len(points["left"]), 100)
+        self.assertEqual(len(points["left_0"]), 100)
 
     def test_vertical_gaps_are_joined_before_component_selection(self):
         from perception.algorithms.lane.semantic_lane import SemanticLaneDetector
@@ -45,6 +45,20 @@ class SemanticLaneTests(unittest.TestCase):
         self.assertIsNotNone(info)
         self.assertEqual(len(lines), 2)
         self.assertGreaterEqual(int(np.count_nonzero(edge)), 200)
+
+    def test_boundary_growth_splits_multiple_lines_at_slope_change(self):
+        from perception.algorithms.lane.semantic_lane import SemanticLaneDetector
+
+        points = [(40, y) for y in range(10, 60)]
+        points.extend((40 + (y - 59), y) for y in range(60, 110))
+        detector = SemanticLaneDetector(
+            1.0, 160, 80, min_line_pixels=15, line_growth_angle_deg=8.0,
+        )
+
+        segments = detector._grow_line_segments(points)
+
+        self.assertGreaterEqual(len(segments), 2)
+        self.assertTrue(all(len(segment) >= 15 for segment in segments))
 
     def test_angle_template_uses_left_origin_baseline(self):
         from perception.algorithms.lane.angle_template import template_positions_for_angle

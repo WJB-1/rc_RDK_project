@@ -154,6 +154,8 @@ def build_lane_pipeline(settings: dict) -> LanePipeline:
             template_pair_ids=tuple(cfg.semantic_lane.get("template_pair_ids", ("0", "1"))),
             template_x_at_ref_mm=cfg.template_x_at_ref_mm,
             component_gap_px=int(cfg.semantic_lane.get("component_gap_px", 10)),
+            min_line_pixels=int(cfg.semantic_lane.get("min_line_pixels", 20)),
+            line_growth_angle_deg=float(cfg.semantic_lane.get("line_growth_angle_deg", 8.0)),
         )
     return LanePipeline(
         cfg=cfg,
