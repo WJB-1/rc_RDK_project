@@ -388,6 +388,37 @@ class SemanticLaneTests(unittest.TestCase):
 
         self.assertEqual(selected["mid_x_mm"], 5.0)
 
+    def test_semantic_pair_bypasses_six_line_template_matching(self):
+        from perception.algorithms.lane.pipeline import LanePipeline
+
+        pipeline = LanePipeline.__new__(LanePipeline)
+        selector = type("Selector", (), {})()
+        selector.vehicle_center = np.array([50.0, 90.0])
+        selector.pixel_per_mm = 1.0
+        selector._forward_direction = staticmethod(lambda segment: np.array([0.0, -1.0]))
+        selector._empty_state = lambda reason: {"drop_reason": reason, "frame_dropped": True}
+        pipeline.selector = selector
+        image_lines = [
+            {"x1": 20.0, "y1": 100.0, "x2": 20.0, "y2": 0.0},
+            {"x1": 80.0, "y1": 100.0, "x2": 80.0, "y2": 0.0},
+        ]
+        result = {
+            "pair": {"i": 0, "j": 1, "distance_mm": 60.0,
+                     "target_distance_mm": 60.0, "selection_score": 0.1},
+            "image_lines": image_lines,
+            "bev_lines": [
+                np.array([[20.0, 100.0], [20.0, 0.0]]),
+                np.array([[80.0, 100.0], [80.0, 0.0]]),
+            ],
+        }
+
+        state = pipeline._semantic_lane_state(result)
+
+        self.assertFalse(state["frame_dropped"])
+        self.assertEqual(state["lane_angle_source"], "semantic_parallel_pair")
+        self.assertAlmostEqual(state["quality_score"], 0.9)
+        self.assertEqual(len(selector.detected_source_lines), 2)
+
 
 if __name__ == "__main__":
     unittest.main()

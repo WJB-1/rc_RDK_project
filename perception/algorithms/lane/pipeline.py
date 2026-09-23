@@ -14,6 +14,7 @@ import numpy as np
 from perception.algorithms.core.timing import reset_frame, block, get_frame_timings
 from perception.algorithms.core.mask_utils import clean_mask_by_cc
 from .line_detection import lines_to_mask
+from .line_geometry import lane_offset_at_vehicle_cross_section
 
 from .types import LanePipelineResult
 
@@ -148,10 +149,13 @@ class LanePipeline:
                 else:
                     source_lines = []
                     lane_method = "semantic_invalid_drop"
-                lane_state = self.selector.analyze(
-                    source_lines,
-                    semantic_mask=semantic_mask,
-                )
+                if semantic_accepted:
+                    lane_state = self._semantic_lane_state(semantic_result)
+                else:
+                    lane_state = self.selector.analyze(
+                        source_lines,
+                        semantic_mask=semantic_mask,
+                    )
                 lane_state["lane_method"] = lane_method
                 lane_state["frame_dropped"] = lane_method == "semantic_invalid_drop"
                 if self.semantic_lane_mode == "auto":
@@ -280,8 +284,14 @@ class LanePipeline:
                 "parallel_groups": self._draw_parallel_groups(),
             },
             "metrics": {
-                "raw_hough_count": len(getattr(edge_engine, "last_raw_lines", []) or []),
-                "merged_line_count": len(getattr(edge_engine, "last_lines", []) or []),
+                "raw_hough_count": (
+                    semantic_result.get("raw_hough_segment_count", 0) if semantic_result
+                    else len(getattr(edge_engine, "last_raw_lines", []) or [])
+                ),
+                "merged_line_count": (
+                    len(semantic_result.get("image_lines") or []) if semantic_result
+                    else len(getattr(edge_engine, "last_lines", []) or [])
+                ),
                 "template_confidence": lane_state.get("template_confidence"),
                 "template_residual_mm": lane_state.get("template_residual_mm"),
                 "template_delta_mm": lane_state.get("template_delta_mm"),
@@ -319,6 +329,73 @@ class LanePipeline:
 
         self.last_debug_capture = capture
         return capture
+
+    def _semantic_lane_state(self, result):
+        pair = result["pair"]
+        first_index, second_index = pair["i"], pair["j"]
+        first_segment = np.asarray(result["bev_lines"][first_index], dtype=np.float64)
+        second_segment = np.asarray(result["bev_lines"][second_index], dtype=np.float64)
+        first_image = result["image_lines"][first_index]
+        second_image = result["image_lines"][second_index]
+        if first_segment[:, 0].mean() <= second_segment[:, 0].mean():
+            left, right = first_segment, second_segment
+            left_image, right_image = first_image, second_image
+        else:
+            left, right = second_segment, first_segment
+            left_image, right_image = second_image, first_image
+        centerline = ((left + right) * 0.5).astype(np.float32)
+        left_direction = self.selector._forward_direction(left)
+        right_direction = self.selector._forward_direction(right)
+        center_direction = left_direction + right_direction
+        lane_angle_rad = np.arctan2(float(center_direction[0]), float(-center_direction[1]))
+        try:
+            offset_mm, lane_center_x = lane_offset_at_vehicle_cross_section(
+                left, right, self.selector.vehicle_center, self.selector.pixel_per_mm
+            )
+        except ValueError:
+            return self.selector._empty_state("boundary_parallel_to_vehicle_cross_section")
+        quality_score = max(0.0, min(1.0, 1.0 - float(pair["selection_score"])))
+        self.selector.detected_source_lines = [left_image, right_image]
+        self.selector.selected_source_lines = [left_image, right_image]
+        self.selector.selected_bev_segments = [left, right]
+        self.selector.final_pair = {
+            **pair,
+            "left": left,
+            "right": right,
+            "left_img": left_image,
+            "right_img": right_image,
+            "centerline": centerline,
+            "lane_centre_x": lane_center_x,
+            "lane_angle_deg": float(np.degrees(lane_angle_rad)),
+            "theta_source": "semantic_parallel_pair",
+            "offset_mm": float(offset_mm),
+            "target_mm": float(pair["target_distance_mm"]),
+            "pair_profile": "semantic_angle_template",
+            "inferred": False,
+        }
+        return {
+            "pid_error_mm": float(offset_mm),
+            "crossroad_detected": False,
+            "distance_to_crossroad_mm": -1.0,
+            "lane_angle_rad": float(lane_angle_rad),
+            "lane_angle_source": "semantic_parallel_pair",
+            "quality_score": quality_score,
+            "frame_dropped": False,
+            "drop_reason": "",
+            "duty_cycle": 0.0,
+            "lane_pair_mode": "semantic_detected_pair",
+            "pair_profile": "semantic_angle_template",
+            "pair_target_mm": float(pair["target_distance_mm"]),
+            "pair_distance_mm": float(pair["distance_mm"]),
+            "semantic_boundary_coverage": 1.0,
+            "vis_points": {
+                "blind_spot_pts": [],
+                "normal_lane_pts": [tuple(point) for point in centerline],
+                "crossroad_y": None,
+                "left_boundary_pts": [tuple(point) for point in left],
+                "right_boundary_pts": [tuple(point) for point in right],
+            },
+        }
 
     def _draw_parallel_groups(self):
         selector = self.selector
