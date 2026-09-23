@@ -207,6 +207,7 @@ class SemanticRuntime:
         )
         stage_started = time.perf_counter()
         result = self.detector.analyze(mask, self.selector._matrix_for_profile("lane"))
+        cleaned_mask = result.get("clean_mask", mask)
         stages["boundary_gate_ms"] = (time.perf_counter() - stage_started) * 1000
         source_lines = result["accepted_image_lines"] if result["accepted"] else []
         lane_state = self.selector.analyze(source_lines, semantic_mask=mask)
@@ -214,10 +215,13 @@ class SemanticRuntime:
         lane_state["frame_dropped"] = not result["accepted"]
         stages["selector_ms"] = (time.perf_counter() - stage_started) * 1000
         stages["total_ms"] = (time.perf_counter() - started) * 1000
+        cleaned_native_mask = cv2.resize(
+            cleaned_mask, (semantic_width, semantic_height), interpolation=cv2.INTER_NEAREST
+        )
         return {
-            "mask": mask, "lane_state": lane_state, "semantic_gate": result,
+            "mask": cleaned_mask, "raw_mask": mask, "lane_state": lane_state, "semantic_gate": result,
             "timing": {"total_ms": stages["total_ms"], "stages_ms": stages},
-            "views": {"semantic_overlay": self._overlay(semantic_image, native_mask),
+            "views": {"semantic_overlay": self._overlay(semantic_image, cleaned_native_mask),
                       "semantic_detections": self._detections_view(
                           semantic_image, self.semantic_engine.last_detections
                       ),
@@ -247,6 +251,7 @@ def diagnose_image(runtime, image_path, output_dir):
     stem_dir.mkdir(parents=True, exist_ok=True)
     _write_image(stem_dir / "01_original.jpg", frame)
     _write_image(stem_dir / "02_mask.png", semantic_mask)
+    _write_image(stem_dir / "02b_raw_mask.png", result.get("raw_mask"))
     _write_image(stem_dir / "03_overlay.jpg", views.get("semantic_overlay"))
     _write_image(stem_dir / "03b_detections.jpg", views.get("semantic_detections"))
     _write_image(stem_dir / "04_parallel_bev.jpg", views.get("semantic_bev"))

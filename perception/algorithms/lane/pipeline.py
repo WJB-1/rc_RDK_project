@@ -133,6 +133,7 @@ class LanePipeline:
                     semantic_result = self.semantic_lane_detector.analyze(
                         semantic_mask, self.selector._matrix_for_profile("lane")
                     )
+                    semantic_mask = semantic_result.get("clean_mask", semantic_mask)
                 semantic_accepted = bool(semantic_result and semantic_result["accepted"])
                 if run_template:
                     source_lines = self.edge_engine.last_lines

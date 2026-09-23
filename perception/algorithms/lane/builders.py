@@ -151,6 +151,8 @@ def build_lane_pipeline(settings: dict) -> LanePipeline:
             parallel_tolerance_deg=float(cfg.semantic_lane.get("parallel_tolerance_deg", 3.0)),
             min_segment_length_px=int(cfg.semantic_lane.get("min_segment_length_px", 30)),
             max_curve_residual_px=float(cfg.semantic_lane.get("max_curve_residual_px", 8.0)),
+            template_pair_ids=tuple(cfg.semantic_lane.get("template_pair_ids", ("0", "1"))),
+            template_x_at_ref_mm=cfg.template_x_at_ref_mm,
         )
     return LanePipeline(
         cfg=cfg,

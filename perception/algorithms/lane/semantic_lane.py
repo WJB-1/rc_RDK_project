@@ -5,6 +5,7 @@ import math
 import cv2
 import numpy as np
 
+from .angle_template import template_positions_for_angle
 from .line_geometry import (
     _line_normal_distance, _segment_parallel_angle_deg, _y_overlap_px,
     find_valid_lane_pairs, select_best_pair,
@@ -16,7 +17,8 @@ class SemanticLaneDetector:
 
     def __init__(self, pixel_per_mm, bev_width, lane_width_mm,
                  distance_tolerance_mm=20.0, parallel_tolerance_deg=3.0,
-                 min_segment_length_px=30, max_curve_residual_px=8.0):
+                 min_segment_length_px=30, max_curve_residual_px=8.0,
+                 template_pair_ids=("0", "1"), template_x_at_ref_mm=None):
         self.pixel_per_mm = float(pixel_per_mm)
         self.bev_width = int(bev_width)
         self.lane_width_mm = float(lane_width_mm)
@@ -24,6 +26,25 @@ class SemanticLaneDetector:
         self.parallel_tolerance_deg = float(parallel_tolerance_deg)
         self.min_segment_length_px = int(min_segment_length_px)
         self.max_curve_residual_px = float(max_curve_residual_px)
+        self.template_pair_ids = tuple(template_pair_ids)
+        self.template_x_at_ref_mm = dict(template_x_at_ref_mm or {})
+
+    @staticmethod
+    def _select_ground_component(mask, bottom_margin_px=10):
+        binary = np.where(np.asarray(mask) > 0, 255, 0).astype(np.uint8)
+        count, labels, stats, _ = cv2.connectedComponentsWithStats(binary, 8)
+        height = binary.shape[0]
+        candidates = []
+        for label in range(1, count):
+            x, y, width, component_height, area = stats[label]
+            touches_ground = y + component_height >= height - int(bottom_margin_px)
+            if touches_ground:
+                candidates.append((int(area), label))
+        if not candidates:
+            return np.zeros_like(binary), None
+        area, label = max(candidates)
+        selected = np.where(labels == label, 255, 0).astype(np.uint8)
+        return selected, {"label": label, "area_px": area, "bbox": [int(v) for v in stats[label, :4]]}
 
     @staticmethod
     def _line_from_points(points):
@@ -78,12 +99,26 @@ class SemanticLaneDetector:
         return edge, lines, 0 if raw is None else len(raw)
 
     def analyze(self, semantic_mask, parallel_matrix):
-        mask = np.where(np.asarray(semantic_mask) > 0, 255, 0).astype(np.uint8)
+        mask, component = self._select_ground_component(semantic_mask)
         edge, image_lines, raw_hough_segment_count = self._extract_side_lines(mask)
         bev_lines = [self._project_line(line, parallel_matrix) for line in image_lines]
         pair_measurements = []
         min_mm = self.lane_width_mm - self.distance_tolerance_mm
         max_mm = self.lane_width_mm + self.distance_tolerance_mm
+        if len(bev_lines) >= 1:
+            directions = []
+            for line in bev_lines:
+                dx = float(line[1][0] - line[0][0])
+                dy = float(line[1][1] - line[0][1])
+                directions.append(np.degrees(np.arctan2(dx, -dy)))
+            angle_deg = float(np.mean(directions))
+            template = template_positions_for_angle(angle_deg)
+            first_id, second_id = self.template_pair_ids
+            if first_id not in template or second_id not in template:
+                template = self.template_x_at_ref_mm
+            expected_distance_mm = abs(float(template[first_id]) - float(template[second_id]))
+            min_mm = expected_distance_mm - self.distance_tolerance_mm
+            max_mm = expected_distance_mm + self.distance_tolerance_mm
         for first_index in range(len(bev_lines)):
             for second_index in range(first_index + 1, len(bev_lines)):
                 first, second = bev_lines[first_index], bev_lines[second_index]
@@ -103,8 +138,8 @@ class SemanticLaneDetector:
             bev_lines,
             self.pixel_per_mm,
             self.bev_width,
-            min_mm=self.lane_width_mm - self.distance_tolerance_mm,
-            max_mm=self.lane_width_mm + self.distance_tolerance_mm,
+            min_mm=min_mm,
+            max_mm=max_mm,
             parallel_tol_deg=self.parallel_tolerance_deg,
         )
         selected = select_best_pair(candidates, self.lane_width_mm)
@@ -112,6 +147,8 @@ class SemanticLaneDetector:
         return {
             "accepted": selected is not None,
             "fallback_reason": None if selected is not None else "no_parallel_distance_valid_pair",
+            "component": component,
+            "clean_mask": mask,
             "raw_hough_segment_count": raw_hough_segment_count,
             "min_distance_mm": min_mm,
             "max_distance_mm": max_mm,

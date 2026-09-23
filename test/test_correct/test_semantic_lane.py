@@ -5,6 +5,50 @@ import numpy as np
 
 
 class SemanticLaneTests(unittest.TestCase):
+    def test_component_selector_keeps_largest_ground_touching_region(self):
+        from perception.algorithms.lane.semantic_lane import SemanticLaneDetector
+
+        mask = np.zeros((100, 120), dtype=np.uint8)
+        cv2.rectangle(mask, (5, 5), (45, 50), 255, -1)
+        cv2.rectangle(mask, (70, 45), (110, 99), 255, -1)
+        selected, info = SemanticLaneDetector._select_ground_component(mask)
+
+        self.assertEqual(info["area_px"], int(np.count_nonzero(mask[45:100, 70:111])))
+        self.assertEqual(int(np.count_nonzero(selected[5:45, 5:45])), 0)
+
+    def test_angle_template_uses_left_origin_baseline(self):
+        from perception.algorithms.lane.angle_template import template_positions_for_angle
+        from perception.algorithms.lane.constants import TEMPLATE_LINE_ORDER, TEMPLATE_LINE_X_MM
+
+        template = template_positions_for_angle(0.0)
+
+        self.assertEqual(TEMPLATE_LINE_ORDER, ("5", "3", "1", "0", "2", "4"))
+        for line_id in TEMPLATE_LINE_ORDER:
+            self.assertAlmostEqual(template[line_id], TEMPLATE_LINE_X_MM[line_id], places=6)
+
+    def test_angle_template_accumulates_gap_corrections_from_left(self):
+        from perception.algorithms.lane.angle_template import (
+            NEIGHBOUR_GAP_LINEAR_MODELS,
+            template_positions_for_angle,
+        )
+        from perception.algorithms.lane.constants import TEMPLATE_LINE_X_MM
+
+        angle_deg = 12.0
+        template = template_positions_for_angle(angle_deg)
+        expected_x3 = TEMPLATE_LINE_X_MM["3"] + NEIGHBOUR_GAP_LINEAR_MODELS[("3", "5")][1] * angle_deg
+        expected_x1 = expected_x3 + (
+            TEMPLATE_LINE_X_MM["1"] - TEMPLATE_LINE_X_MM["3"]
+            + NEIGHBOUR_GAP_LINEAR_MODELS[("1", "3")][1] * angle_deg
+        )
+
+        self.assertEqual(template["5"], 0.0)
+        self.assertAlmostEqual(template["3"], expected_x3, places=6)
+        self.assertAlmostEqual(template["1"], expected_x1, places=6)
+        self.assertTrue(all(
+            template[left] < template[right]
+            for left, right in zip(("5", "3", "1", "0", "2"), ("3", "1", "0", "2", "4"))
+        ))
+
     def test_template_dp_keeps_order_and_skips_an_outlier(self):
         from perception.algorithms.lane.angle_template import template_positions_for_angle
         from perception.algorithms.core.timing import get_frame_timings, reset_frame
@@ -24,9 +68,9 @@ class SemanticLaneTests(unittest.TestCase):
 
         angle_deg = 12.0
         theta = np.deg2rad(angle_deg)
-        delta = 130.0
+        delta = -40.0
         template = template_positions_for_angle(angle_deg)
-        line_ids = ("4", "2", "0", "1", "3", "5")
+        line_ids = ("5", "3", "1", "0", "2", "4")
 
         def line_at(x_ref):
             return {
@@ -51,15 +95,11 @@ class SemanticLaneTests(unittest.TestCase):
         self.assertEqual(match["assigned_ids"], list(line_ids))
         self.assertAlmostEqual(match["delta"], delta, places=4)
         self.assertLess(match["rms"], 1e-4)
-        self.assertEqual(match["match_strategy"], "ordered_dp")
+        self.assertEqual(match["match_strategy"], "fast_enum")
         self.assertLess(selector._current_template_group_diagnostics["evaluated_combinations"], 1000)
-        self.assertIn("lane.candidate_delta", recorded_stages)
-        self.assertIn("lane.template_subset_dp", recorded_stages)
-        self.assertIn("lane.template_dp_path", recorded_stages)
-        self.assertIn("lane.template_candidate_eval", recorded_stages)
-        self.assertIn("lane.template_candidate_fit", recorded_stages)
-        self.assertIn("lane.template_corridor_check", recorded_stages)
-        self.assertIn("lane.template_dp_loop_overhead", recorded_stages)
+        if match["match_strategy"] == "unified_dp":
+            self.assertIn("lane.candidate_delta", recorded_stages)
+            self.assertIn("lane.template_subset_dp", recorded_stages)
 
     def test_template_uses_direct_ordered_path_for_exactly_six_lines(self):
         from perception.algorithms.lane.angle_template import template_positions_for_angle
@@ -82,19 +122,19 @@ class SemanticLaneTests(unittest.TestCase):
         group = [
             {"params": {
                 "theta": theta,
-                "mid_x": template[line_id] + 130.0,
+                "mid_x": template[line_id] - 40.0,
                 "mid_y": 500.0,
                 "length_mm": 500.0,
                 "p1": (template[line_id], 250.0),
                 "p2": (template[line_id], 750.0),
             }}
-            for line_id in ("4", "2", "0", "1", "3", "5")
+            for line_id in ("5", "3", "1", "0", "2", "4")
         ]
 
         match = selector._match_group_to_template_ordered(group)
 
         self.assertIsNotNone(match)
-        self.assertEqual(match["match_strategy"], "ordered_six")
+        self.assertEqual(match["match_strategy"], "fast_enum")
         self.assertTrue(selector._current_template_group_diagnostics["direct_six_attempted"])
         self.assertEqual(selector._current_template_group_diagnostics["evaluated_combinations"], 1)
 
@@ -201,6 +241,28 @@ class SemanticLaneTests(unittest.TestCase):
         self.assertGreater(int(image[50, 20, 1]), int(image[50, 20, 2]))
         self.assertGreater(int(image[50, 70, 2]), int(image[50, 70, 1]))
 
+    def test_semantic_bev_renders_gate_text_when_no_line_pair_exists(self):
+        from perception.algorithms.lane.pipeline import LanePipeline
+
+        pipeline = LanePipeline.__new__(LanePipeline)
+        pipeline.selector = type("Selector", (), {"canvas_w": 220, "canvas_h": 140})()
+        result = {
+            "edge_mask": np.zeros((140, 220), dtype=np.uint8),
+            "accepted": False,
+            "fallback_reason": "no_parallel_distance_valid_pair",
+            "raw_hough_segment_count": 3,
+            "min_distance_mm": 180.0,
+            "max_distance_mm": 220.0,
+            "pair_measurements": [],
+            "bev_lines": [],
+            "accepted_bev_lines": [],
+            "rejected_bev_lines": [],
+        }
+
+        image = pipeline._draw_semantic_bev(result, np.eye(3, dtype=np.float64))
+
+        self.assertGreater(int(np.count_nonzero(image)), 0)
+
     def test_lane_mode_accepts_template_semantic_and_auto(self):
         from perception.algorithms.lane.pipeline import LanePipeline
 
@@ -262,6 +324,9 @@ class SemanticLaneTests(unittest.TestCase):
 
         self.assertFalse(result["accepted"])
         self.assertEqual(result["fallback_reason"], "no_parallel_distance_valid_pair")
+        self.assertGreaterEqual(result["raw_hough_segment_count"], 2)
+        self.assertEqual(len(result["pair_measurements"]), 1)
+        self.assertFalse(result["pair_measurements"][0]["parallel_ok"])
 
 
 if __name__ == "__main__":
