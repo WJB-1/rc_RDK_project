@@ -16,6 +16,8 @@ class FakeTransport:
 
     def start(self):
         self.started = True
+        from motion.protocol import FrameType, build_frame
+        self.listener(build_frame(FrameType.HELLO_ACK))
 
     def stop(self):
         self.started = False
@@ -35,6 +37,11 @@ class HardwareMotionSimulationTest(unittest.TestCase):
         self.assertIs(runner.executor.environment(), ExecutionEnvironment.REAL_TEST)
         self.assertIs(runner.motion_port._transport, transport)
         self.assertEqual(runner.snapshot().navigation.task_progress["culvert_target"], 0)
+
+        runner.start()
+
+        self.assertTrue(transport.started)
+        runner.stop()
 
 
 if __name__ == "__main__":

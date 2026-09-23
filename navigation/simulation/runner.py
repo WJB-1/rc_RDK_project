@@ -1,6 +1,7 @@
 """装配仿真世界、执行器和导航门面，并提供单步事件推进。"""
 
 from typing import Callable, Optional
+import time
 
 from navigation.domain import build_default_topology
 from .executor import SimExecutor
@@ -158,12 +159,19 @@ class SimulationRunner:
 class HardwareMotionSimulationRunner(SimulationRunner):
     """保持仿真感知与任务，但把运动请求交给真实 STM32 的会话。"""
 
-    def __init__(self, motion_port, **kwargs) -> None:
+    def __init__(self, motion_port, ready_timeout_s=2.0, **kwargs) -> None:
         super().__init__(**kwargs)
         self.motion_port = motion_port
+        self._ready_timeout_s = float(ready_timeout_s)
 
     def start(self) -> None:
         self.motion_port.start()
+        deadline = time.monotonic() + self._ready_timeout_s
+        while not self.motion_port.is_ready and time.monotonic() < deadline:
+            time.sleep(0.01)
+        if not self.motion_port.is_ready:
+            self.motion_port.stop()
+            raise TimeoutError("STM32 motion link did not acknowledge HELLO")
         super().start()
 
     def stop(self) -> None:

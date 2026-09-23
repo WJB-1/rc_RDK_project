@@ -38,6 +38,12 @@ class MotionPort:
         self._transport.start()
         self._chassis.send_hello()
 
+    @property
+    def is_ready(self):
+        """返回 STM32 是否已确认运动链路可受理动作。"""
+
+        return self._ready
+
     def stop(self):
         if self._active is not None:
             self._stop_vision(self._active.request_id)
