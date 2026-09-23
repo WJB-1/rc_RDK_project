@@ -10,6 +10,7 @@
 """
 import math
 import time
+from bisect import bisect_left
 
 import cv2
 import numpy as np
@@ -305,6 +306,85 @@ class TemplateDistanceLaneSelector(GroundIPMLanePairSelector):
             final_index = parent_rows[row_index][final_index]
         return tuple(reversed(pairs))
 
+    @staticmethod
+    def _nearest_sorted_line_index(negated_x, target_x, sorted_x):
+        insertion_index = bisect_left(negated_x, -target_x)
+        candidate_indices = []
+        if insertion_index < len(sorted_x):
+            candidate_indices.append(insertion_index)
+        if insertion_index:
+            candidate_indices.append(insertion_index - 1)
+        return min(candidate_indices, key=lambda index: abs(sorted_x[index] - target_x))
+
+    def _match_group_to_template_fast(self, group):
+        if len(group) < 3:
+            return None
+
+        enriched = [
+            {"item": item, "x_at_ref": self._line_x_at_ref(item["params"], self.y_ref_mm)}
+            for item in group
+        ]
+        enriched.sort(key=lambda entry: entry["x_at_ref"], reverse=True)
+        sorted_x = [entry["x_at_ref"] for entry in enriched]
+        sorted_items = [entry["item"] for entry in enriched]
+        negated_x = [-x_at_ref for x_at_ref in sorted_x]
+        group_theta = self._estimate_group_theta(group)
+        template = template_positions_for_angle(math.degrees(group_theta))
+        max_point_residual = self.max_match_rms_mm * 2.0
+        best = None
+        second_loss = None
+        attempts = 0
+        accepted = 0
+
+        for anchor_x in sorted_x:
+            for anchor_line_id in TEMPLATE_LINE_ORDER:
+                attempts += 1
+                delta = anchor_x - template[anchor_line_id]
+                pairs_by_line = {}
+                for template_index, line_id in enumerate(TEMPLATE_LINE_ORDER):
+                    target_x = template[line_id] + delta
+                    line_index = self._nearest_sorted_line_index(negated_x, target_x, sorted_x)
+                    residual = abs(sorted_x[line_index] - target_x)
+                    if residual > max_point_residual:
+                        continue
+                    previous = pairs_by_line.get(line_index)
+                    if previous is None or residual < previous[0]:
+                        pairs_by_line[line_index] = (residual, template_index)
+
+                pairs = tuple(
+                    (line_index, template_index)
+                    for line_index, (_, template_index) in sorted(pairs_by_line.items())
+                )
+                candidate = self._build_template_candidate(
+                    sorted_items, sorted_x, pairs, group_theta, template,
+                )
+                if candidate is None:
+                    continue
+                accepted += 1
+                candidate["match_strategy"] = "ordered_anchor"
+                if best is None or candidate["loss"] < best["loss"]:
+                    if best is not None:
+                        second_loss = best["loss"]
+                    best = candidate
+                elif second_loss is None or candidate["loss"] < second_loss:
+                    second_loss = candidate["loss"]
+
+        self._current_template_group_diagnostics = {
+            "evaluated_combinations": attempts,
+            "accepted_combinations": accepted,
+            "direct_six_attempted": False,
+            "fast_anchor_attempts": attempts,
+            "dp_delta_candidates": 0,
+            "dp_state_updates": 0,
+        }
+        if best is None:
+            return None
+        loss_gap = math.inf if second_loss is None else second_loss - best["loss"]
+        best["second_best_loss"] = second_loss
+        best["loss_gap"] = loss_gap
+        best["near_tie"] = loss_gap <= getattr(self, "match_tie_loss_epsilon", 1e-6)
+        return best
+
     def _match_group_to_template_ordered(self, group):
         if len(group) < 3:
             return None
@@ -345,6 +425,10 @@ class TemplateDistanceLaneSelector(GroundIPMLanePairSelector):
                 direct["near_tie"] = False
                 self._current_template_group_diagnostics = diagnostics
                 return direct
+
+        fast = self._match_group_to_template_fast(group)
+        if fast is not None:
+            return fast
 
         best = None
         second_loss = None
