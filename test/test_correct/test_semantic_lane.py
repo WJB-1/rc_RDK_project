@@ -7,6 +7,7 @@ import numpy as np
 class SemanticLaneTests(unittest.TestCase):
     def test_template_dp_keeps_order_and_skips_an_outlier(self):
         from perception.algorithms.lane.angle_template import template_positions_for_angle
+        from perception.algorithms.core.timing import get_frame_timings, reset_frame
         from perception.algorithms.lane.template_selector import TemplateDistanceLaneSelector
 
         selector = TemplateDistanceLaneSelector.__new__(TemplateDistanceLaneSelector)
@@ -42,7 +43,9 @@ class SemanticLaneTests(unittest.TestCase):
         group = [line_at(template[line_id] + delta) for line_id in line_ids]
         group.append(line_at(template["4"] + delta + 80.0))
 
+        reset_frame()
         match = selector._match_group_to_template_ordered(group)
+        recorded_stages = {name for name, _ in get_frame_timings()}
 
         self.assertIsNotNone(match)
         self.assertEqual(match["assigned_ids"], list(line_ids))
@@ -50,6 +53,8 @@ class SemanticLaneTests(unittest.TestCase):
         self.assertLess(match["rms"], 1e-4)
         self.assertEqual(match["match_strategy"], "ordered_dp")
         self.assertLess(selector._current_template_group_diagnostics["evaluated_combinations"], 1000)
+        self.assertIn("lane.candidate_delta", recorded_stages)
+        self.assertIn("lane.template_subset_dp", recorded_stages)
 
     def test_template_uses_direct_ordered_path_for_exactly_six_lines(self):
         from perception.algorithms.lane.angle_template import template_positions_for_angle

@@ -14,7 +14,7 @@ import time
 import cv2
 import numpy as np
 
-from perception.algorithms.core.timing import block
+from perception.algorithms.core.timing import block, record
 
 from .config import CameraConfig
 from .new_ground import NewGroundProjector
@@ -346,10 +346,13 @@ class TemplateDistanceLaneSelector(GroundIPMLanePairSelector):
                 self._current_template_group_diagnostics = diagnostics
                 return direct
 
+        with block("lane.candidate_delta"):
+            candidate_deltas = self._candidate_deltas(sorted_x, template)
+            template_subsets = self._template_index_subsets()
         best = None
         second_loss = None
-        template_subsets = self._template_index_subsets()
-        for delta in self._candidate_deltas(sorted_x, template):
+        dp_started_at = time.perf_counter()
+        for delta in candidate_deltas:
             diagnostics["dp_delta_candidates"] += 1
             for template_indices in template_subsets:
                 pairs = self._best_ordered_pairs_for_delta(
@@ -372,6 +375,7 @@ class TemplateDistanceLaneSelector(GroundIPMLanePairSelector):
                     best = candidate
                 elif second_loss is None or candidate["loss"] < second_loss:
                     second_loss = candidate["loss"]
+        record("lane.template_subset_dp", (time.perf_counter() - dp_started_at) * 1000.0)
 
         if best is not None:
             loss_gap = math.inf if second_loss is None else second_loss - best["loss"]
@@ -386,7 +390,8 @@ class TemplateDistanceLaneSelector(GroundIPMLanePairSelector):
 
     def _match_all_groups(self, ground_items):
         started_at = time.perf_counter()
-        groups = self._parallel_groups(ground_items)
+        with block("lane.parallel_groups"):
+            groups = self._parallel_groups(ground_items)
         max_theta = math.radians(self.max_forward_line_angle_deg)
         valid_groups = [
             group for group in groups
@@ -596,12 +601,14 @@ class TemplateDistanceLaneSelector(GroundIPMLanePairSelector):
     # Frame analysis
     # ------------------------------------------------------------------
     def analyze(self, source_lines, semantic_mask=None):
+        started_at = time.perf_counter()
         self.selected_source_lines, self.detected_source_lines = [], []
         self.selected_bev_segments, self.final_pair = [], None
         self._source_candidates = list(source_lines)
         if self.semantic_gate and semantic_mask is None:
             state = self._empty_state("semantic_mask_required")
             state.update({"pair_profile": "template_distance", "template_match_count": 0})
+            record("lane.analyze_total", (time.perf_counter() - started_at) * 1000.0)
             return state
 
         # ---------------- 车道检测：BEV 全流程（ipm_camera） ----------------
@@ -612,9 +619,10 @@ class TemplateDistanceLaneSelector(GroundIPMLanePairSelector):
             ]
 
         with block("lane.pixel_to_ground"):
+            ground_segments = [self._pixel_to_ground(segment) for segment in self.candidate_bev_segments]
+        with block("lane.line_params"):
             ground_items = []
-            for index, segment in enumerate(self.candidate_bev_segments):
-                ground = self._pixel_to_ground(segment)
+            for index, (segment, ground) in enumerate(zip(self.candidate_bev_segments, ground_segments)):
                 params = self._line_params_ground(ground)
                 ground_items.append({
                     "index": index, "segment": segment, "ground": ground, "params": params,
@@ -626,6 +634,7 @@ class TemplateDistanceLaneSelector(GroundIPMLanePairSelector):
         if match is None:
             state = self._empty_state("no_valid_template_match")
             state.update({"pair_profile": "template_distance", "template_match_count": group_count})
+            record("lane.analyze_total", (time.perf_counter() - started_at) * 1000.0)
             return state
 
         with block("lane.compute_confidence"):
@@ -639,6 +648,7 @@ class TemplateDistanceLaneSelector(GroundIPMLanePairSelector):
                 "template_confidence": confidence,
                 "template_residual_mm": match["rms"],
             })
+            record("lane.analyze_total", (time.perf_counter() - started_at) * 1000.0)
             return state
 
         with block("lane.build_identity"):
@@ -685,12 +695,13 @@ class TemplateDistanceLaneSelector(GroundIPMLanePairSelector):
         # ============================================================
         # 偏航角和偏移量：新地面系（ground_camera），失败则 BEV fallback
         # ============================================================
-        ground_result = self._compute_ground_yaw_offset(
-            left_segment,
-            right_segment,
-            left_info["source_line"],
-            right_info["source_line"],
-        )
+        with block("lane.yaw_offset"):
+            ground_result = self._compute_ground_yaw_offset(
+                left_segment,
+                right_segment,
+                left_info["source_line"],
+                right_info["source_line"],
+            )
         if ground_result is not None:
             offset_mm, lane_angle_rad, theta_source, center_img_p1, center_img_p2 = ground_result
             if center_img_p1 is None or center_img_p2 is None:
@@ -715,7 +726,7 @@ class TemplateDistanceLaneSelector(GroundIPMLanePairSelector):
         self.final_pair["lane_angle_deg"] = math.degrees(lane_angle_rad)
         self.final_pair["offset_mm"] = float(offset_mm)
 
-        return {
+        state = {
             "pid_error_mm": float(offset_mm),
             "crossroad_detected": False,
             "distance_to_crossroad_mm": -1.0,
@@ -743,6 +754,8 @@ class TemplateDistanceLaneSelector(GroundIPMLanePairSelector):
                 "right_boundary_pts": [tuple(point) for point in right_segment],
             },
         }
+        record("lane.analyze_total", (time.perf_counter() - started_at) * 1000.0)
+        return state
     
         # ---------------- 可视化委托 ----------------
     def draw_bev_view(self):

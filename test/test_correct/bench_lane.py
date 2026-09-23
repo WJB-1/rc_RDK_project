@@ -159,6 +159,27 @@ def main() -> int:
             print(f"  {key:<30s} mean {statistics.mean(values):10.2f}  max {max(values):10.2f}")
         print("  parallel_group_sizes:", [item["parallel_group_sizes"] for item in template_diagnostics])
 
+    def stage_mean(name):
+        values = all_stages.get(name, ())
+        return statistics.mean(values) if values else 0.0
+
+    print()
+    print("[PROFILE]")
+    for label, stage_name in (
+        ("BEV projection", "lane.project_lines_bev"),
+        ("ground projection", "lane.source_to_new_ground"),
+        ("line params", "lane.line_params"),
+        ("parallel grouping", "lane.parallel_groups"),
+        ("candidate delta", "lane.candidate_delta"),
+        ("template subset DP", "lane.template_subset_dp"),
+        ("template matching", "lane.template_match"),
+        ("confidence", "lane.compute_confidence"),
+        ("yaw/offset", "lane.yaw_offset"),
+    ):
+        print(f"{label:<21}: {stage_mean(stage_name):7.2f} ms")
+    print("--------------------------------")
+    print(f"analyze total        : {stage_mean('lane.analyze_total'):7.2f} ms")
+
     print()
     print(f"=== per-image total (n={len(all_totals)}) ===")
     print(f"  mean   {statistics.mean(all_totals):8.1f} ms")
