@@ -24,11 +24,12 @@ class SemanticLaneTests(unittest.TestCase):
             left = 35 + (y - 20) // 8
             right = 115 - (y - 20) // 8
             mask[y, left:right + 1] = 255
-        edge, lines, raw_count = SemanticLaneDetector(1.0, 160, 80)._extract_side_lines(mask)
+        edge, lines, raw_count, points = SemanticLaneDetector(1.0, 160, 80)._extract_side_lines(mask)
 
         self.assertEqual(raw_count, 2)
         self.assertEqual(len(lines), 2)
         self.assertEqual(int(np.count_nonzero(edge)), 200)
+        self.assertEqual(len(points["left"]), 100)
 
     def test_vertical_gaps_are_joined_before_component_selection(self):
         from perception.algorithms.lane.semantic_lane import SemanticLaneDetector
@@ -39,7 +40,7 @@ class SemanticLaneTests(unittest.TestCase):
         detector = SemanticLaneDetector(1.0, 160, 80, component_gap_px=10)
 
         selected, info = detector._select_ground_component(mask)
-        edge, lines, _ = detector._extract_side_lines(selected)
+        edge, lines, _, _ = detector._extract_side_lines(selected)
 
         self.assertIsNotNone(info)
         self.assertEqual(len(lines), 2)
@@ -251,7 +252,7 @@ class SemanticLaneTests(unittest.TestCase):
         pipeline._auto_template_next = True
         self.assertTrue(pipeline._should_run_template())
 
-    def test_semantic_bev_renders_warped_edges_and_gate_colours(self):
+    def test_semantic_bev_connects_transformed_boundaries_and_gate_colours(self):
         from perception.algorithms.lane.pipeline import LanePipeline
 
         pipeline = LanePipeline.__new__(LanePipeline)
@@ -260,13 +261,16 @@ class SemanticLaneTests(unittest.TestCase):
         edge[10, 10] = 255
         result = {
             "edge_mask": edge,
+            "bev_boundary_points": {
+                "left": np.array([[10.0, 10.0], [10.0, 60.0]], dtype=np.float32),
+            },
             "accepted_bev_lines": [np.array([[20.0, 20.0], [20.0, 80.0]])],
             "rejected_bev_lines": [np.array([[70.0, 20.0], [70.0, 80.0]])],
         }
 
         image = pipeline._draw_semantic_bev(result, np.eye(3, dtype=np.float64))
 
-        self.assertTrue(np.all(image[10, 10] > 0))
+        self.assertTrue(np.all(image[30, 10] > 0))
         self.assertGreater(int(image[50, 20, 1]), int(image[50, 20, 2]))
         self.assertGreater(int(image[50, 70, 2]), int(image[50, 70, 1]))
 

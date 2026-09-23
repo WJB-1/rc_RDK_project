@@ -155,11 +155,11 @@ class SemanticRuntime:
         return view
 
     def _bev(self, result):
-        edge = np.asarray(result["edge_mask"], dtype=np.uint8)
-        matrix = self.selector._matrix_for_profile("lane")
-        warped = cv2.warpPerspective(edge, matrix, (self.cfg.canvas_w, self.cfg.canvas_h),
-                                     flags=cv2.INTER_NEAREST)
-        view = cv2.cvtColor(warped, cv2.COLOR_GRAY2BGR)
+        view = np.zeros((self.cfg.canvas_h, self.cfg.canvas_w, 3), dtype=np.uint8)
+        for points in result.get("bev_boundary_points", {}).values():
+            pixels = np.round(points).astype(np.int32).reshape(-1, 1, 2)
+            if len(pixels) >= 2:
+                cv2.polylines(view, [pixels], False, (255, 255, 255), 1, cv2.LINE_AA)
         for segment in result["rejected_bev_lines"]:
             cv2.line(view, tuple(np.round(segment[0]).astype(int)), tuple(np.round(segment[1]).astype(int)),
                      (0, 90, 255), 2, cv2.LINE_AA)

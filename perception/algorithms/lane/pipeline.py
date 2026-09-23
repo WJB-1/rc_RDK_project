@@ -4,6 +4,7 @@
 可视化全部委托给 LaneSelectorRenderer，selector 只负责算法。
 """
 import time
+import math
 from pathlib import Path
 from typing import Optional
 
@@ -259,6 +260,7 @@ class LanePipeline:
                 "lane_bev": bev_mask,
                 "ground_bev": ground_bev if ground_bev is not None else renderer.render_new_ground_bev(),
                 "overlay": original_view,
+                "parallel_groups": self._draw_parallel_groups(),
             },
             "metrics": {
                 "raw_hough_count": len(getattr(edge_engine, "last_raw_lines", []) or []),
@@ -301,6 +303,34 @@ class LanePipeline:
         self.last_debug_capture = capture
         return capture
 
+    def _draw_parallel_groups(self):
+        selector = self.selector
+        canvas = np.zeros((int(selector.canvas_h), int(selector.canvas_w), 3), dtype=np.uint8)
+        groups = getattr(selector, "_last_parallel_groups", []) or []
+        colors = ((0, 220, 255), (0, 255, 0), (255, 180, 0), (255, 0, 255))
+        for group_index, group in enumerate(groups):
+            if len(group) < 2:
+                continue
+            color = colors[group_index % len(colors)]
+            for item in group:
+                params = item.get("params", {})
+                theta = float(params.get("theta", 0.0))
+                mid_x = float(params.get("mid_x", 0.0))
+                mid_y = float(params.get("mid_y", 0.0))
+                length = max(float(params.get("length_mm", 300.0)), 100.0)
+                dx, dy = math.sin(theta) * length * 0.5, math.cos(theta) * length * 0.5
+                p1 = self._ground_debug_pixel(mid_x - dx, mid_y - dy, canvas.shape)
+                p2 = self._ground_debug_pixel(mid_x + dx, mid_y + dy, canvas.shape)
+                cv2.line(canvas, p1, p2, color, 3, cv2.LINE_AA)
+            cv2.putText(canvas, f"parallel[{group_index}] n={len(group)}", (12, 24 + 22 * group_index),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 1, cv2.LINE_AA)
+        return canvas
+
+    @staticmethod
+    def _ground_debug_pixel(x, y, shape):
+        height, width = shape[:2]
+        return (int(round(width * 0.5 + x * 0.5)), int(round(height - 20 - y * 0.5)))
+
     @staticmethod
     def _draw_semantic_overlay(image, mask):
         view = image.copy()
@@ -334,13 +364,11 @@ class LanePipeline:
         edge_mask = np.asarray(result.get("edge_mask"), dtype=np.uint8)
         if edge_mask.ndim != 2:
             edge_mask = np.zeros((self.selector.canvas_h, self.selector.canvas_w), dtype=np.uint8)
-        warped_edges = cv2.warpPerspective(
-            edge_mask,
-            np.asarray(parallel_matrix, dtype=np.float64),
-            (self.selector.canvas_w, self.selector.canvas_h),
-            flags=cv2.INTER_NEAREST,
-        )
-        view = cv2.cvtColor(warped_edges, cv2.COLOR_GRAY2BGR)
+        view = np.zeros((self.selector.canvas_h, self.selector.canvas_w, 3), dtype=np.uint8)
+        for points in (result.get("bev_boundary_points") or {}).values():
+            pixels = np.round(points).astype(np.int32).reshape(-1, 1, 2)
+            if len(pixels) >= 2:
+                cv2.polylines(view, [pixels], False, (255, 255, 255), 1, cv2.LINE_AA)
         for segment in result.get("rejected_bev_lines", []):
             cv2.line(view, tuple(np.round(segment[0]).astype(int)), tuple(np.round(segment[1]).astype(int)), (0, 90, 255), 2)
         for segment in result.get("accepted_bev_lines", []):

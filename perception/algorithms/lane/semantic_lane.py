@@ -81,6 +81,13 @@ class SemanticLaneDetector:
         points = np.array([[[line["x1"], line["y1"]], [line["x2"], line["y2"]]]], dtype=np.float32)
         return cv2.perspectiveTransform(points, np.asarray(matrix, dtype=np.float64))[0]
 
+    @staticmethod
+    def _project_points(points, matrix):
+        values = np.asarray(points, dtype=np.float32).reshape(1, -1, 2)
+        if values.shape[1] == 0:
+            return np.empty((0, 2), dtype=np.float32)
+        return cv2.perspectiveTransform(values, np.asarray(matrix, dtype=np.float64))[0]
+
     def _extract_side_lines(self, mask):
         binary = np.asarray(mask, dtype=np.uint8) > 0
         edge = np.zeros_like(np.asarray(mask, dtype=np.uint8))
@@ -102,12 +109,25 @@ class SemanticLaneDetector:
             if line is not None and line["curve_residual_px"] <= self.max_curve_residual_px:
                 line["side"] = side
                 lines.append(line)
-        return edge, lines, sum(bool(points) for points in sides.values())
+        boundary_points = {
+            side: np.asarray(points, dtype=np.float32) for side, points in sides.items() if points
+        }
+        return edge, lines, sum(bool(points) for points in sides.values()), boundary_points
 
     def analyze(self, semantic_mask, parallel_matrix):
         mask, component = self._select_ground_component(semantic_mask)
-        edge, image_lines, raw_hough_segment_count = self._extract_side_lines(mask)
-        bev_lines = [self._project_line(line, parallel_matrix) for line in image_lines]
+        edge, image_lines, raw_hough_segment_count, boundary_points = self._extract_side_lines(mask)
+        bev_boundary_points = {
+            side: self._project_points(points, parallel_matrix)
+            for side, points in boundary_points.items()
+        }
+        bev_lines = []
+        for line in image_lines:
+            fitted = self._line_from_points(bev_boundary_points.get(line["side"], []))
+            if fitted is not None:
+                bev_lines.append(np.asarray([
+                    [fitted["x1"], fitted["y1"]], [fitted["x2"], fitted["y2"]]
+                ], dtype=np.float32))
         pair_measurements = []
         min_mm = self.lane_width_mm - self.distance_tolerance_mm
         max_mm = self.lane_width_mm + self.distance_tolerance_mm
@@ -162,6 +182,8 @@ class SemanticLaneDetector:
             "max_distance_mm": max_mm,
             "pair_measurements": pair_measurements,
             "edge_mask": edge,
+            "boundary_points": boundary_points,
+            "bev_boundary_points": bev_boundary_points,
             "image_lines": image_lines,
             "bev_lines": bev_lines,
             "accepted_image_lines": [image_lines[index] for index in sorted(accepted_indices)],
