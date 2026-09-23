@@ -10,6 +10,7 @@
 """
 import math
 import time
+from itertools import combinations
 
 import cv2
 import numpy as np
@@ -312,6 +313,37 @@ class TemplateDistanceLaneSelector(GroundIPMLanePairSelector):
             final_index = parent_rows[row_index][final_index]
         return tuple(reversed(pairs))
 
+    def _match_group_fast_enum(self, group):
+        if len(group) not in (5, 6, 7):
+            return None
+        enriched = [
+            {"item": item, "x_at_ref": self._line_x_at_ref(item["params"], self.y_ref_mm)}
+            for item in group
+        ]
+        enriched.sort(key=lambda entry: entry["x_at_ref"])
+        sorted_x = [entry["x_at_ref"] for entry in enriched]
+        sorted_items = [entry["item"] for entry in enriched]
+        group_theta = self._estimate_group_theta(group)
+        template = template_positions_for_angle(math.degrees(group_theta))
+        if len(group) == 6:
+            skip_sets = [()]
+        elif len(group) == 5:
+            skip_sets = [(index,) for index in range(6)]
+        else:
+            skip_sets = [(index,) for index in range(7)]
+        best = None
+        for skipped in skip_sets:
+            detected_indices = [index for index in range(len(group)) if index not in skipped]
+            pairs = tuple(zip(detected_indices, range(6)))
+            candidate = self._build_template_candidate(
+                sorted_items, sorted_x, pairs, group_theta, template,
+            )
+            if candidate is not None and (best is None or candidate["loss"] < best["loss"]):
+                best = candidate
+        if best is not None:
+            best["match_strategy"] = "fast_enum"
+        return best
+
     def _match_group_to_template_ordered(self, group):
         if len(group) < 3:
             return None
@@ -320,13 +352,23 @@ class TemplateDistanceLaneSelector(GroundIPMLanePairSelector):
             {"item": item, "x_at_ref": self._line_x_at_ref(item["params"], self.y_ref_mm)}
             for item in group
         ]
-        enriched.sort(key=lambda entry: entry["x_at_ref"], reverse=True)
+        enriched.sort(key=lambda entry: entry["x_at_ref"])
         sorted_x = [entry["x_at_ref"] for entry in enriched]
         sorted_items = [entry["item"] for entry in enriched]
         group_theta = self._estimate_group_theta(group)
         template = template_positions_for_angle(math.degrees(group_theta))
         template_count = len(TEMPLATE_LINE_ORDER)
         line_count = len(sorted_items)
+
+        fast = self._match_group_fast_enum(group)
+        if fast is not None:
+            self._current_template_group_diagnostics = {
+                "evaluated_combinations": 1 if line_count == 6 else len(group) + 1,
+                "accepted_combinations": 1,
+                "direct_six_attempted": line_count == 6,
+                "fast_path": True,
+            }
+            return fast
 
         diagnostics = {
             "evaluated_combinations": 0,
@@ -358,6 +400,7 @@ class TemplateDistanceLaneSelector(GroundIPMLanePairSelector):
             template_subsets = self._template_index_subsets()
         best = None
         second_loss = None
+        candidate_signatures = set()
         dp_started_at = time.perf_counter()
         profile_totals = {
             "dp_path_ms": 0.0,
@@ -386,6 +429,14 @@ class TemplateDistanceLaneSelector(GroundIPMLanePairSelector):
                 ) * 1000.0
                 if candidate is None:
                     continue
+                candidate_signature = (
+                    tuple(sorted((line_id, item.get("index", id(item)))
+                                 for line_id, item in candidate["assignment"].items())),
+                    round(candidate["delta"], 3),
+                )
+                if candidate_signature in candidate_signatures:
+                    continue
+                candidate_signatures.add(candidate_signature)
                 diagnostics["accepted_combinations"] += 1
                 candidate["match_strategy"] = "ordered_dp"
                 if best is None or candidate["loss"] < best["loss"]:
@@ -411,6 +462,8 @@ class TemplateDistanceLaneSelector(GroundIPMLanePairSelector):
             best["loss_gap"] = loss_gap
             best["near_tie"] = loss_gap <= self.match_tie_loss_epsilon
         self._current_template_group_diagnostics = diagnostics
+        if best is not None:
+            best["match_strategy"] = "unified_dp"
         return best
 
     def _match_group_to_template(self, group):
@@ -472,15 +525,19 @@ class TemplateDistanceLaneSelector(GroundIPMLanePairSelector):
         fit_score = max(0.0, 1.0 - rms / self.conf_fit_scale)
         total_weight = sum(float(TEMPLATE_LINE_WEIGHTS[lid]) for lid in ALL_LINE_IDS)
         count_score = match["coverage_reward"] / total_weight if total_weight else 0.0
-        precision_score = max(0.0, 1.0 - rms / self.conf_lane_precision_scale)
+        loss_gap = match.get("loss_gap")
+        if loss_gap is None or not math.isfinite(float(loss_gap)):
+            margin_score = 1.0
+        else:
+            margin_score = max(0.0, min(1.0, float(loss_gap) / self.conf_fit_scale))
         n_lanes = sum(1 for lid in match["assignment"] if lid in LANE_LINE_IDS)
         w_fit, w_count, w_prec = self.conf_weights
-        confidence = w_fit * fit_score + w_count * count_score + w_prec * precision_score
+        confidence = w_fit * fit_score + w_count * count_score + w_prec * margin_score
         return {
             "confidence": float(confidence),
             "fit_score": float(fit_score),
             "count_score": float(count_score),
-            "precision_score": float(precision_score),
+            "margin_score": float(margin_score),
             "n_lanes": int(n_lanes),
         }
 
@@ -668,7 +725,7 @@ class TemplateDistanceLaneSelector(GroundIPMLanePairSelector):
         with block("lane.compute_confidence"):
             conf = self._compute_confidence(match)
             confidence = conf["confidence"]
-        if confidence < self.min_confidence:
+        if confidence <= self.min_confidence:
             state = self._empty_state("low_template_confidence")
             state.update({
                 "pair_profile": "template_distance",

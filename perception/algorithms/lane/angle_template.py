@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Mapping
 
+from .constants import TEMPLATE_LINE_ORDER, TEMPLATE_LINE_X_MM
+
 
 MAX_SUPPORTED_ANGLE_DEG = 30.0
 NEIGHBOUR_GAP_LINEAR_MODELS = {
@@ -26,23 +28,13 @@ def neighbour_gaps_for_angle(angle_deg: float) -> Mapping[tuple[str, str], float
 
 
 def template_positions_for_angle(angle_deg: float) -> Mapping[str, float]:
-    """Return the six reference-line positions for a ground offset angle.
-
-    The measured angle is folded to its absolute value and clamped to the
-    0--30 degree calibration coverage. Each neighbouring gap uses its own
-    fitted line, while all observed non-neighbour pairs constrain their sums.
-    """
-    gaps = neighbour_gaps_for_angle(angle_deg)
-
-    x0 = gaps[("0", "1")] * 0.5
-    x1 = -x0
-    x2 = x0 + gaps[("2", "0")]
-    x3 = x1 - gaps[("1", "3")]
-    return {
-        "0": x0,
-        "1": x1,
-        "2": x2,
-        "3": x3,
-        "4": x2 + gaps[("4", "2")],
-        "5": x3 - gaps[("3", "5")],
-    }
+    """Return a left-origin template with angle-corrected adjacent gaps."""
+    angle_gaps = neighbour_gaps_for_angle(angle_deg)
+    zero_gaps = neighbour_gaps_for_angle(0.0)
+    positions = {TEMPLATE_LINE_ORDER[0]: 0.0}
+    for left_id, right_id in zip(TEMPLATE_LINE_ORDER, TEMPLATE_LINE_ORDER[1:]):
+        model_pair = (right_id, left_id)
+        baseline_gap = TEMPLATE_LINE_X_MM[right_id] - TEMPLATE_LINE_X_MM[left_id]
+        corrected_gap = baseline_gap + angle_gaps[model_pair] - zero_gaps[model_pair]
+        positions[right_id] = positions[left_id] + corrected_gap
+    return positions
