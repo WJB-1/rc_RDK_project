@@ -19,7 +19,7 @@ class SemanticLaneDetector:
                  distance_tolerance_mm=20.0, parallel_tolerance_deg=3.0,
                  min_segment_length_px=30, max_curve_residual_px=8.0,
                  template_pair_ids=("0", "1"), template_x_at_ref_mm=None,
-                 edge_row_step_px=4, edge_row_search_px=12):
+                 component_gap_px=10):
         self.pixel_per_mm = float(pixel_per_mm)
         self.bev_width = int(bev_width)
         self.lane_width_mm = float(lane_width_mm)
@@ -29,13 +29,15 @@ class SemanticLaneDetector:
         self.max_curve_residual_px = float(max_curve_residual_px)
         self.template_pair_ids = tuple(template_pair_ids)
         self.template_x_at_ref_mm = dict(template_x_at_ref_mm or {})
-        self.edge_row_step_px = max(1, int(edge_row_step_px))
-        self.edge_row_search_px = max(0, int(edge_row_search_px))
+        self.component_gap_px = max(0, int(component_gap_px))
 
-    @staticmethod
-    def _select_ground_component(mask, bottom_margin_px=10):
+    def _select_ground_component(self, mask, bottom_margin_px=10):
         binary = np.where(np.asarray(mask) > 0, 255, 0).astype(np.uint8)
-        count, labels, stats, _ = cv2.connectedComponentsWithStats(binary, 8)
+        connected = binary
+        if self.component_gap_px:
+            kernel = np.ones((self.component_gap_px + 1, 1), dtype=np.uint8)
+            connected = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
+        count, labels, stats, _ = cv2.connectedComponentsWithStats(connected, 8)
         height = binary.shape[0]
         candidates = []
         for label in range(1, count):
@@ -84,17 +86,8 @@ class SemanticLaneDetector:
         edge = np.zeros_like(np.asarray(mask, dtype=np.uint8))
         sides = {"left": [], "right": []}
         height = binary.shape[0]
-        for y in range(0, height, self.edge_row_step_px):
+        for y in range(height):
             xs = np.flatnonzero(binary[y])
-            if not len(xs) and self.edge_row_search_px:
-                lower = max(0, y - self.edge_row_search_px)
-                upper = min(height, y + self.edge_row_search_px + 1)
-                for candidate_y in range(lower, upper):
-                    candidate_xs = np.flatnonzero(binary[candidate_y])
-                    if len(candidate_xs):
-                        xs = candidate_xs
-                        y = candidate_y
-                        break
             if not len(xs):
                 continue
             left_x, right_x = int(xs[0]), int(xs[-1])

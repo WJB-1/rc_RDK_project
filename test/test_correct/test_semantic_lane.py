@@ -11,7 +11,7 @@ class SemanticLaneTests(unittest.TestCase):
         mask = np.zeros((100, 120), dtype=np.uint8)
         cv2.rectangle(mask, (5, 5), (45, 50), 255, -1)
         cv2.rectangle(mask, (70, 45), (110, 99), 255, -1)
-        selected, info = SemanticLaneDetector._select_ground_component(mask)
+        selected, info = SemanticLaneDetector(1.0, 120, 80)._select_ground_component(mask)
 
         self.assertEqual(info["area_px"], int(np.count_nonzero(mask[45:100, 70:111])))
         self.assertEqual(int(np.count_nonzero(selected[5:45, 5:45])), 0)
@@ -30,19 +30,20 @@ class SemanticLaneTests(unittest.TestCase):
         self.assertEqual(len(lines), 2)
         self.assertEqual(int(np.count_nonzero(edge)), 200)
 
-    def test_sparse_edges_are_sampled_with_row_step_and_search_window(self):
+    def test_vertical_gaps_are_joined_before_component_selection(self):
         from perception.algorithms.lane.semantic_lane import SemanticLaneDetector
 
         mask = np.zeros((120, 160), dtype=np.uint8)
-        for y in range(20, 120, 7):
-            mask[y, 35] = 255
-            mask[y, 115] = 255
-        detector = SemanticLaneDetector(1.0, 160, 80, edge_row_step_px=5, edge_row_search_px=8)
+        mask[20:50, 35:116] = 255
+        mask[60:120, 35:116] = 255
+        detector = SemanticLaneDetector(1.0, 160, 80, component_gap_px=10)
 
-        edge, lines, _ = detector._extract_side_lines(mask)
+        selected, info = detector._select_ground_component(mask)
+        edge, lines, _ = detector._extract_side_lines(selected)
 
+        self.assertIsNotNone(info)
         self.assertEqual(len(lines), 2)
-        self.assertGreater(int(np.count_nonzero(edge)), 20)
+        self.assertGreaterEqual(int(np.count_nonzero(edge)), 200)
 
     def test_angle_template_uses_left_origin_baseline(self):
         from perception.algorithms.lane.angle_template import template_positions_for_angle
