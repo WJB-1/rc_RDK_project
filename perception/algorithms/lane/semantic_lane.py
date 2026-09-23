@@ -1,6 +1,7 @@
 """Binary semantic-mask boundary extraction and BEV distance gating."""
 
 import math
+import time
 
 import cv2
 import numpy as np
@@ -31,6 +32,7 @@ class SemanticLaneDetector:
         self.template_x_at_ref_mm = dict(template_x_at_ref_mm or {})
         self.component_gap_px = max(0, int(component_gap_px))
         self.distance_tolerance_ratio = max(0.0, float(distance_tolerance_ratio))
+        self.last_timing_ms = {}
 
     def _select_ground_component(self, mask, bottom_margin_px=10):
         binary = np.where(np.asarray(mask) > 0, 255, 0).astype(np.uint8)
@@ -136,8 +138,14 @@ class SemanticLaneDetector:
         return edge, lines, len(raw_lines), boundary_points
 
     def analyze(self, semantic_mask, parallel_matrix):
+        total_started = time.perf_counter()
+        stage_started = time.perf_counter()
         mask, component = self._select_ground_component(semantic_mask)
+        clean_ms = (time.perf_counter() - stage_started) * 1000.0
+        stage_started = time.perf_counter()
         edge, image_lines, raw_hough_segment_count, boundary_points = self._extract_side_lines(mask)
+        hough_ms = (time.perf_counter() - stage_started) * 1000.0
+        stage_started = time.perf_counter()
         bev_boundary_points = {
             side: self._project_points(points, parallel_matrix)
             for side, points in boundary_points.items()
@@ -149,6 +157,8 @@ class SemanticLaneDetector:
                 bev_lines.append(np.asarray([
                     [fitted["x1"], fitted["y1"]], [fitted["x2"], fitted["y2"]]
                 ], dtype=np.float32))
+        ipm_ms = (time.perf_counter() - stage_started) * 1000.0
+        stage_started = time.perf_counter()
         pair_measurements = []
         candidates = []
         min_mm = self.lane_width_mm * (1.0 - self.distance_tolerance_ratio)
@@ -206,6 +216,14 @@ class SemanticLaneDetector:
             key=lambda item: (abs(item["distance_mm"] - item["target_distance_mm"]),
                               abs(item["mid_x_mm"])),
         ) if candidates else None
+        pairing_ms = (time.perf_counter() - stage_started) * 1000.0
+        self.last_timing_ms = {
+            "component_clean_ms": clean_ms,
+            "boundary_hough_merge_ms": hough_ms,
+            "parallel_ipm_fit_ms": ipm_ms,
+            "pair_gate_ms": pairing_ms,
+            "detector_total_ms": (time.perf_counter() - total_started) * 1000.0,
+        }
         accepted_indices = set() if selected is None else {selected["i"], selected["j"]}
         return {
             "accepted": selected is not None,

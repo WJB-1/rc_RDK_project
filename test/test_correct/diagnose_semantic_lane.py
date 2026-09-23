@@ -65,7 +65,8 @@ def build_record(image_name, process_ms, mask_coverage, lane_state, capture, tim
     if (lane_state or {}).get("lane_angle_rad") is not None:
         record["yaw_deg"] = round(float(np.degrees(lane_state["lane_angle_rad"])), 4)
     for name, milliseconds in stage_timings.items():
-        record[f"{name}_ms"] = round(float(milliseconds), 3)
+        field_name = name if name.endswith("_ms") else f"{name}_ms"
+        record[field_name] = round(float(milliseconds), 3)
     return record
 
 
@@ -200,6 +201,8 @@ class SemanticRuntime:
         stage_started = time.perf_counter()
         native_mask = self.semantic_engine.inference(semantic_image)
         stages["semantic_inference_ms"] = (time.perf_counter() - stage_started) * 1000
+        for name, milliseconds in self.semantic_engine.last_timing_ms.items():
+            stages[f"semantic_engine.{name}"] = milliseconds
         image = cv2.resize(
             semantic_image, (self.cfg.input_width, self.cfg.input_height), interpolation=cv2.INTER_AREA
         )
@@ -208,6 +211,8 @@ class SemanticRuntime:
         )
         stage_started = time.perf_counter()
         result = self.detector.analyze(mask, self.selector._matrix_for_profile("lane"))
+        for name, milliseconds in self.detector.last_timing_ms.items():
+            stages[f"semantic_detector.{name}"] = milliseconds
         cleaned_mask = result.get("clean_mask", mask)
         stages["boundary_gate_ms"] = (time.perf_counter() - stage_started) * 1000
         source_lines = result["accepted_image_lines"] if result["accepted"] else []

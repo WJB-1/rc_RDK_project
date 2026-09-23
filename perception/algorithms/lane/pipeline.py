@@ -212,11 +212,22 @@ class LanePipeline:
                         self.last_debug_capture = {}
                         print(f"[LanePipeline] debug capture failed: {error}")
 
+            stage_timings = dict(get_frame_timings())
+            if self.semantic_engine is not None:
+                stage_timings.update({
+                    f"semantic_engine.{name}": milliseconds
+                    for name, milliseconds in getattr(self.semantic_engine, "last_timing_ms", {}).items()
+                })
+            if self.semantic_lane_detector is not None:
+                stage_timings.update({
+                    f"semantic_detector.{name}": milliseconds
+                    for name, milliseconds in getattr(self.semantic_lane_detector, "last_timing_ms", {}).items()
+                })
             timing = {
                 "total_ms": (time.time() - start_time) * 1000,
                 "inference_ms": self.edge_engine.last_inference_ms,
                 "postprocess_ms": self.edge_engine.last_postprocess_ms,
-                "stages_ms": dict(get_frame_timings()),
+                "stages_ms": stage_timings,
             }
 
             return LanePipelineResult(
@@ -441,6 +452,12 @@ class LanePipeline:
         lines = [f"[{now}] frame={self._timing_frame_counter}"]
         for name, ms in timings:
             lines.append(f"  {name:<36s} {ms:9.3f} ms")
+        for prefix, source in (
+            ("semantic_engine", self.semantic_engine),
+            ("semantic_detector", self.semantic_lane_detector),
+        ):
+            for name, ms in getattr(source, "last_timing_ms", {}).items():
+                lines.append(f"  {prefix + '.' + name:<36s} {ms:9.3f} ms")
         lines.append(f"  {'TOTAL (sum of blocks)':<36s} {total_sum:9.3f} ms")
         lines.append("")
         try:

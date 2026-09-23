@@ -1,5 +1,7 @@
 """Horizon BPU decoder for the single-class YOLOv8 road segmentation model."""
 
+import time
+
 import cv2
 import numpy as np
 
@@ -130,6 +132,7 @@ class YoloRoadSegmentationEngine:
         self.mask_threshold = float(mask_threshold)
         self.crop_masks_to_boxes = bool(crop_masks_to_boxes)
         self.last_detections = []
+        self.last_timing_ms = {}
 
     @staticmethod
     def _model_input_size(model, fallback):
@@ -147,6 +150,7 @@ class YoloRoadSegmentationEngine:
         return tuple(map(int, fallback))
 
     def _forward(self, frame, model_width, model_height):
+        preprocess_started = time.perf_counter()
         height, width = frame.shape[:2]
         scale = min(model_width / width, model_height / height)
         resized_size = (round(width * scale), round(height * scale))
@@ -155,13 +159,19 @@ class YoloRoadSegmentationEngine:
         left = (model_width - resized_size[0]) // 2
         letterboxed = np.zeros((model_height, model_width, 3), dtype=np.uint8)
         letterboxed[top:top + resized_size[1], left:left + resized_size[0]] = resized
+        preprocess_ms = (time.perf_counter() - preprocess_started) * 1000.0
+        forward_started = time.perf_counter()
         outputs = self.model.forward([_bgr2nv12(letterboxed)])
-        return outputs, resized_size, top, left
+        forward_ms = (time.perf_counter() - forward_started) * 1000.0
+        return outputs, resized_size, top, left, preprocess_ms, forward_ms
 
     def inference(self, frame):
         height, width = frame.shape[:2]
         model_width, model_height = self.model_input_width, self.model_input_height
-        outputs, resized_size, top, left = self._forward(frame, model_width, model_height)
+        total_started = time.perf_counter()
+        outputs, resized_size, top, left, preprocess_ms, forward_ms = self._forward(
+            frame, model_width, model_height
+        )
         proto_height, proto_width = _prototype_spatial_shape(
             outputs[1].buffer, (model_width, model_height)
         )
@@ -169,12 +179,19 @@ class YoloRoadSegmentationEngine:
         if observed_size != (model_width, model_height):
             model_width, model_height = observed_size
             self.model_input_width, self.model_input_height = observed_size
-            outputs, resized_size, top, left = self._forward(frame, model_width, model_height)
+            outputs, resized_size, top, left, retry_preprocess_ms, retry_forward_ms = self._forward(
+                frame, model_width, model_height
+            )
+            preprocess_ms += retry_preprocess_ms
+            forward_ms += retry_forward_ms
+        decode_started = time.perf_counter()
         mask, self.last_detections = decode_yolov8_seg_outputs(
             outputs[0].buffer, outputs[1].buffer, (model_width, model_height),
             self.confidence_threshold, self.iou_threshold, self.mask_threshold,
             self.crop_masks_to_boxes,
         )
+        decode_ms = (time.perf_counter() - decode_started) * 1000.0
+        restore_started = time.perf_counter()
         scale_x = width / float(resized_size[0])
         scale_y = height / float(resized_size[1])
         for detection in self.last_detections:
@@ -186,4 +203,13 @@ class YoloRoadSegmentationEngine:
                 max(0.0, min(float(height), (y2 - top) * scale_y)),
             ]
         content = mask[top:top + resized_size[1], left:left + resized_size[0]]
-        return cv2.resize(content, (width, height), interpolation=cv2.INTER_NEAREST)
+        restored = cv2.resize(content, (width, height), interpolation=cv2.INTER_NEAREST)
+        restore_ms = (time.perf_counter() - restore_started) * 1000.0
+        self.last_timing_ms = {
+            "letterbox_nv12_ms": preprocess_ms,
+            "bpu_forward_ms": forward_ms,
+            "decode_nms_mask_ms": decode_ms,
+            "restore_mask_ms": restore_ms,
+            "engine_total_ms": (time.perf_counter() - total_started) * 1000.0,
+        }
+        return restored
