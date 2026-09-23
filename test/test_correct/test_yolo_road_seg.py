@@ -4,6 +4,24 @@ import numpy as np
 
 
 class YoloRoadSegTests(unittest.TestCase):
+    def test_decoder_supports_640_by_480_model_outputs(self):
+        from perception.models.yolo_road_seg import decode_yolov8_seg_outputs
+
+        predictions = np.zeros((1, 37, 6300, 1), dtype=np.float32)
+        predictions[0, 4, 0, 0] = 0.9
+        predictions[0, 0:4, 0, 0] = [320.0, 240.0, 200.0, 120.0]
+        predictions[0, 5, 0, 0] = 10.0
+        prototypes = np.zeros((1, 32, 120, 160), dtype=np.float32)
+        prototypes[0, 0, 45:75, 55:105] = 1.0
+
+        mask, detections = decode_yolov8_seg_outputs(
+            predictions, prototypes, (640, 480), confidence_threshold=0.25,
+        )
+
+        self.assertEqual(mask.shape, (480, 640))
+        self.assertEqual(len(detections), 1)
+        self.assertGreater(int(np.count_nonzero(mask)), 0)
+
     def test_decodes_single_road_instance_mask(self):
         from perception.models.yolo_road_seg import decode_yolov8_seg_outputs
 

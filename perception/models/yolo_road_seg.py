@@ -36,10 +36,20 @@ def _nms(boxes, scores, iou_threshold):
 def decode_yolov8_seg_outputs(predictions, prototypes, image_size,
                                confidence_threshold=0.25, iou_threshold=0.7,
                                mask_threshold=0.5):
-    """Decode `(1, 37, 8400, 1)` and `(1, 32, 160, 160)` BPU outputs."""
+    """Decode YOLOv8-seg BPU outputs for square or rectangular inputs."""
     image_width, image_height = image_size
     predictions = np.asarray(predictions, dtype=np.float32).reshape(37, -1).T
-    prototypes = np.asarray(prototypes, dtype=np.float32).reshape(32, 160, 160)
+    prototype_values = np.asarray(prototypes, dtype=np.float32)
+    expected_proto_height = image_height // 4
+    expected_proto_width = image_width // 4
+    expected_proto_size = 32 * expected_proto_height * expected_proto_width
+    if prototype_values.size != expected_proto_size:
+        raise ValueError(
+            "unexpected YOLOv8-seg prototype size: "
+            f"got {prototype_values.size}, expected {expected_proto_size} "
+            f"for input {image_width}x{image_height}"
+        )
+    prototypes = prototype_values.reshape(32, expected_proto_height, expected_proto_width)
     scores = predictions[:, 4]
     if scores.min() < 0.0 or scores.max() > 1.0:
         scores = _sigmoid(scores)
@@ -78,7 +88,7 @@ def decode_yolov8_seg_outputs(predictions, prototypes, image_size,
 class YoloRoadSegmentationEngine:
     """BPU inference wrapper returning one binary drivable-area mask per frame."""
 
-    def __init__(self, model_path, input_size=640, confidence_threshold=0.25,
+    def __init__(self, model_path, input_size=(640, 640), confidence_threshold=0.25,
                  iou_threshold=0.7, mask_threshold=0.5):
         try:
             from hobot_dnn import pyeasy_dnn as dnn
@@ -88,7 +98,10 @@ class YoloRoadSegmentationEngine:
         if not models:
             raise RuntimeError(f"unable to load YOLOv8-seg model: {model_path}")
         self.model = models[0]
-        self.input_size = int(input_size)
+        if isinstance(input_size, (list, tuple)):
+            self.input_width, self.input_height = map(int, input_size)
+        else:
+            self.input_width = self.input_height = int(input_size)
         self.confidence_threshold = float(confidence_threshold)
         self.iou_threshold = float(iou_threshold)
         self.mask_threshold = float(mask_threshold)
@@ -96,16 +109,16 @@ class YoloRoadSegmentationEngine:
 
     def inference(self, frame):
         height, width = frame.shape[:2]
-        scale = min(self.input_size / width, self.input_size / height)
+        scale = min(self.input_width / width, self.input_height / height)
         resized_size = (round(width * scale), round(height * scale))
         resized = cv2.resize(frame, resized_size, interpolation=cv2.INTER_AREA)
-        top = (self.input_size - resized_size[1]) // 2
-        left = (self.input_size - resized_size[0]) // 2
-        letterboxed = np.zeros((self.input_size, self.input_size, 3), dtype=np.uint8)
+        top = (self.input_height - resized_size[1]) // 2
+        left = (self.input_width - resized_size[0]) // 2
+        letterboxed = np.zeros((self.input_height, self.input_width, 3), dtype=np.uint8)
         letterboxed[top:top + resized_size[1], left:left + resized_size[0]] = resized
         outputs = self.model.forward([_bgr2nv12(letterboxed)])
         mask, self.last_detections = decode_yolov8_seg_outputs(
-            outputs[0].buffer, outputs[1].buffer, (self.input_size, self.input_size),
+            outputs[0].buffer, outputs[1].buffer, (self.input_width, self.input_height),
             self.confidence_threshold, self.iou_threshold, self.mask_threshold,
         )
         content = mask[top:top + resized_size[1], left:left + resized_size[0]]

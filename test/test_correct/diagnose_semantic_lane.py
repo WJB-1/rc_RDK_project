@@ -176,14 +176,24 @@ class SemanticRuntime:
         stages = {}
         started = time.perf_counter()
         stage_started = time.perf_counter()
-        image = cv2.resize(frame, (self.cfg.input_width, self.cfg.input_height), interpolation=cv2.INTER_AREA)
+        semantic_width = self.semantic_engine.input_width
+        semantic_height = self.semantic_engine.input_height
+        semantic_image = cv2.resize(
+            frame, (semantic_width, semantic_height), interpolation=cv2.INTER_AREA
+        )
         stages["resize_ms"] = (time.perf_counter() - stage_started) * 1000
         stage_started = time.perf_counter()
-        image = self.undistorter.apply(image)
+        semantic_image = self.undistorter.apply(semantic_image)
         stages["undistort_ms"] = (time.perf_counter() - stage_started) * 1000
         stage_started = time.perf_counter()
-        mask = self.semantic_engine.inference(image)
+        native_mask = self.semantic_engine.inference(semantic_image)
         stages["semantic_inference_ms"] = (time.perf_counter() - stage_started) * 1000
+        image = cv2.resize(
+            semantic_image, (self.cfg.input_width, self.cfg.input_height), interpolation=cv2.INTER_AREA
+        )
+        mask = cv2.resize(
+            native_mask, (self.cfg.input_width, self.cfg.input_height), interpolation=cv2.INTER_NEAREST
+        )
         stage_started = time.perf_counter()
         result = self.detector.analyze(mask, self.selector._matrix_for_profile("lane"))
         stages["boundary_gate_ms"] = (time.perf_counter() - stage_started) * 1000
@@ -196,7 +206,7 @@ class SemanticRuntime:
         return {
             "mask": mask, "lane_state": lane_state, "semantic_gate": result,
             "timing": {"total_ms": stages["total_ms"], "stages_ms": stages},
-            "views": {"semantic_overlay": self._overlay(image, mask), "semantic_bev": self._bev(result),
+            "views": {"semantic_overlay": self._overlay(semantic_image, native_mask), "semantic_bev": self._bev(result),
                       "semantic_ground": self._ground(result)},
         }
 

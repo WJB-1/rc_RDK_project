@@ -119,7 +119,7 @@ lane_detection:
     available: true
     mode: auto
     model_path: "models/yolov8n_seg_road_x5.bin"
-    input_size: 640
+    input_size: [640, 480]
     confidence_threshold: 0.25
     iou_threshold: 0.70
     mask_threshold: 0.50

@@ -43,7 +43,7 @@ def build_semantic_engine(cfg: LaneConfig):
             return None
         return YoloRoadSegmentationEngine(
             model_path=_abs_model_path(sem_cfg["model_path"]),
-            input_size=int(sem_cfg.get("input_size", 640)),
+            input_size=sem_cfg.get("input_size", (640, 480)),
             confidence_threshold=float(sem_cfg.get("confidence_threshold", 0.25)),
             iou_threshold=float(sem_cfg.get("iou_threshold", 0.7)),
             mask_threshold=float(sem_cfg.get("mask_threshold", 0.5)),

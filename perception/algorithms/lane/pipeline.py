@@ -78,17 +78,36 @@ class LanePipeline:
         self._timing_frame_counter += 1
 
         try:
+            run_template = self._should_run_template()
+            semantic_requested = not run_template and self.semantic_lane_mode in {"semantic", "auto"}
+            use_semantic_resolution = semantic_requested and self.semantic_engine is not None
+            target_width = (
+                self.semantic_engine.input_width if use_semantic_resolution
+                else self.edge_engine.input_width
+            )
+            target_height = (
+                self.semantic_engine.input_height if use_semantic_resolution
+                else self.edge_engine.input_height
+            )
             with block("tracker.resize_input"):
-                processing_input = cv2.resize(
+                inference_input = cv2.resize(
                     frame,
-                    (self.edge_engine.input_width, self.edge_engine.input_height),
+                    (target_width, target_height),
                     interpolation=cv2.INTER_AREA,
                 )
 
             with block("tracker.undistort"):
-                processing_input = self.undistorter.apply(processing_input)
+                inference_input = self.undistorter.apply(inference_input)
 
-            run_template = self._should_run_template()
+            if use_semantic_resolution:
+                processing_input = cv2.resize(
+                    inference_input,
+                    (self.edge_engine.input_width, self.edge_engine.input_height),
+                    interpolation=cv2.INTER_AREA,
+                )
+            else:
+                processing_input = inference_input
+
             edge_mask = np.zeros(processing_input.shape[:2], dtype=np.uint8)
             if run_template:
                 with block("tracker.edge_inference"):
@@ -96,10 +115,15 @@ class LanePipeline:
 
             semantic_mask = None
             semantic_result = None
-            semantic_requested = not run_template and self.semantic_lane_mode in {"semantic", "auto"}
             if semantic_requested and self.semantic_engine is not None:
                 with block("tracker.semantic_inference"):
-                    semantic_raw = self.semantic_engine.inference(processing_input)
+                    semantic_raw = self.semantic_engine.inference(inference_input)
+                    if semantic_raw.shape[:2] != processing_input.shape[:2]:
+                        semantic_raw = cv2.resize(
+                            semantic_raw,
+                            (processing_input.shape[1], processing_input.shape[0]),
+                            interpolation=cv2.INTER_NEAREST,
+                        )
                     semantic_mask, _ = clean_mask_by_cc(
                         semantic_raw, min_bottom_y=semantic_raw.shape[0] - 10,
                     )
