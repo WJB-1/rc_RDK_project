@@ -11,6 +11,23 @@ class YoloRoadSegTests(unittest.TestCase):
 
         self.assertEqual(_prototype_spatial_shape(flattened, (640, 480)), (160, 160))
 
+    def test_decoder_can_preserve_mask_outside_detection_box(self):
+        from perception.models.yolo_road_seg import decode_yolov8_seg_outputs
+
+        predictions = np.zeros((1, 37, 8400, 1), dtype=np.float32)
+        predictions[0, 4, 0, 0] = 0.9
+        predictions[0, 0:4, 0, 0] = [320.0, 320.0, 80.0, 80.0]
+        predictions[0, 5, 0, 0] = 10.0
+        prototypes = np.zeros((1, 32, 160, 160), dtype=np.float32)
+        prototypes[0, 0, 20:140, 20:140] = 1.0
+
+        cropped, _ = decode_yolov8_seg_outputs(predictions, prototypes, (640, 640))
+        preserved, _ = decode_yolov8_seg_outputs(
+            predictions, prototypes, (640, 640), crop_masks_to_boxes=False
+        )
+
+        self.assertGreater(np.count_nonzero(preserved), np.count_nonzero(cropped))
+
     def test_decoder_supports_640_by_480_model_outputs(self):
         from perception.models.yolo_road_seg import decode_yolov8_seg_outputs
 

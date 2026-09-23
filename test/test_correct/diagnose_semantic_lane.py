@@ -142,6 +142,17 @@ class SemanticRuntime:
         view[pixels] = mixed[pixels]
         return view
 
+    @staticmethod
+    def _detections_view(image, detections):
+        view = image.copy()
+        for detection in detections or []:
+            x1, y1, x2, y2 = map(round, detection.get("box_xyxy", (0, 0, 0, 0)))
+            cv2.rectangle(view, (x1, y1), (x2, y2), (0, 0, 255), 2)
+            cv2.putText(view, f"{detection.get('score', 0.0):.2f}",
+                        (x1, max(16, y1 - 4)), cv2.FONT_HERSHEY_SIMPLEX,
+                        0.5, (0, 0, 255), 1, cv2.LINE_AA)
+        return view
+
     def _bev(self, result):
         edge = np.asarray(result["edge_mask"], dtype=np.uint8)
         matrix = self.selector._matrix_for_profile("lane")
@@ -206,7 +217,11 @@ class SemanticRuntime:
         return {
             "mask": mask, "lane_state": lane_state, "semantic_gate": result,
             "timing": {"total_ms": stages["total_ms"], "stages_ms": stages},
-            "views": {"semantic_overlay": self._overlay(semantic_image, native_mask), "semantic_bev": self._bev(result),
+            "views": {"semantic_overlay": self._overlay(semantic_image, native_mask),
+                      "semantic_detections": self._detections_view(
+                          semantic_image, self.semantic_engine.last_detections
+                      ),
+                      "semantic_bev": self._bev(result),
                       "semantic_ground": self._ground(result)},
         }
 
@@ -233,6 +248,7 @@ def diagnose_image(runtime, image_path, output_dir):
     _write_image(stem_dir / "01_original.jpg", frame)
     _write_image(stem_dir / "02_mask.png", semantic_mask)
     _write_image(stem_dir / "03_overlay.jpg", views.get("semantic_overlay"))
+    _write_image(stem_dir / "03b_detections.jpg", views.get("semantic_detections"))
     _write_image(stem_dir / "04_parallel_bev.jpg", views.get("semantic_bev"))
     _write_image(stem_dir / "05_ground.jpg", views.get("semantic_ground"))
     montage = _make_montage([

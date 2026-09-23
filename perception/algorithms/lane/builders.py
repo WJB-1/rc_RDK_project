@@ -47,6 +47,7 @@ def build_semantic_engine(cfg: LaneConfig):
             confidence_threshold=float(sem_cfg.get("confidence_threshold", 0.25)),
             iou_threshold=float(sem_cfg.get("iou_threshold", 0.7)),
             mask_threshold=float(sem_cfg.get("mask_threshold", 0.5)),
+            crop_masks_to_boxes=bool(sem_cfg.get("crop_masks_to_boxes", False)),
         )
     sem_cfg = cfg.semantic_gate
     if not sem_cfg.get("enabled", False) or not sem_cfg.get("available", True):
@@ -103,9 +104,22 @@ def build_selector(cfg: LaneConfig, edge_engine, ipm, semantic_gate_enabled: boo
 
     # 显式 if/else，避免 Pylance 对 **kwargs 的类型推断失败
     if is_template:
+        matching_cfg = cfg.matching_cfg
+        confidence_cfg = cfg.confidence_cfg
         selector: GroundIPMLanePairSelector = TemplateDistanceLaneSelector(
             **common_kwargs,
             ground_camera=cfg.ground_camera,
+            max_match_rms_mm=float(matching_cfg.get("max_match_rms_mm", 15.0)),
+            min_confidence=float(confidence_cfg.get("low", 0.30)),
+            conf_fit_scale=float(confidence_cfg.get("fit_scale", 10.0)),
+            conf_lane_precision_scale=float(
+                confidence_cfg.get("lane_precision_scale", 5.0)
+            ),
+            conf_weights=tuple(confidence_cfg.get("weights", (0.4, 0.3, 0.3))),
+            inferred_conf_factor=float(
+                confidence_cfg.get("inferred_factor", 0.5)
+            ),
+            y_ref_mm=float(matching_cfg.get("y_ref_mm", 500.0)),
         )
     else:
         selector = GroundIPMLanePairSelector(**common_kwargs)

@@ -55,7 +55,7 @@ def _prototype_spatial_shape(prototypes, expected_image_size):
 
 def decode_yolov8_seg_outputs(predictions, prototypes, image_size,
                                confidence_threshold=0.25, iou_threshold=0.7,
-                               mask_threshold=0.5):
+                               mask_threshold=0.5, crop_masks_to_boxes=True):
     """Decode YOLOv8-seg BPU outputs for square or rectangular inputs."""
     image_width, image_height = image_size
     predictions = np.asarray(predictions, dtype=np.float32).reshape(37, -1).T
@@ -94,8 +94,11 @@ def decode_yolov8_seg_outputs(predictions, prototypes, image_size,
         mask_y1 = max(0, int(np.floor(y1 * proto_height / image_height)))
         mask_x2 = min(proto_width, int(np.ceil(x2 * proto_width / image_width)))
         mask_y2 = min(proto_height, int(np.ceil(y2 * proto_height / image_height)))
-        cropped = np.zeros_like(probability)
-        cropped[mask_y1:mask_y2, mask_x1:mask_x2] = probability[mask_y1:mask_y2, mask_x1:mask_x2]
+        if crop_masks_to_boxes:
+            cropped = np.zeros_like(probability)
+            cropped[mask_y1:mask_y2, mask_x1:mask_x2] = probability[mask_y1:mask_y2, mask_x1:mask_x2]
+        else:
+            cropped = probability
         full_mask = cv2.resize(cropped, (image_width, image_height), interpolation=cv2.INTER_LINEAR)
         combined[full_mask >= mask_threshold] = 255
         detections.append({"box_xyxy": boxes[local_index].tolist(), "score": float(scores[selected][local_index])})
@@ -106,7 +109,7 @@ class YoloRoadSegmentationEngine:
     """BPU inference wrapper returning one binary drivable-area mask per frame."""
 
     def __init__(self, model_path, input_size=(640, 640), confidence_threshold=0.25,
-                 iou_threshold=0.7, mask_threshold=0.5):
+                 iou_threshold=0.7, mask_threshold=0.5, crop_masks_to_boxes=False):
         try:
             from hobot_dnn import pyeasy_dnn as dnn
         except ImportError as error:
@@ -125,6 +128,7 @@ class YoloRoadSegmentationEngine:
         self.confidence_threshold = float(confidence_threshold)
         self.iou_threshold = float(iou_threshold)
         self.mask_threshold = float(mask_threshold)
+        self.crop_masks_to_boxes = bool(crop_masks_to_boxes)
         self.last_detections = []
 
     @staticmethod
@@ -169,6 +173,17 @@ class YoloRoadSegmentationEngine:
         mask, self.last_detections = decode_yolov8_seg_outputs(
             outputs[0].buffer, outputs[1].buffer, (model_width, model_height),
             self.confidence_threshold, self.iou_threshold, self.mask_threshold,
+            self.crop_masks_to_boxes,
         )
+        scale_x = width / float(resized_size[0])
+        scale_y = height / float(resized_size[1])
+        for detection in self.last_detections:
+            x1, y1, x2, y2 = detection["box_xyxy"]
+            detection["box_xyxy"] = [
+                max(0.0, min(float(width), (x1 - left) * scale_x)),
+                max(0.0, min(float(height), (y1 - top) * scale_y)),
+                max(0.0, min(float(width), (x2 - left) * scale_x)),
+                max(0.0, min(float(height), (y2 - top) * scale_y)),
+            ]
         content = mask[top:top + resized_size[1], left:left + resized_size[0]]
         return cv2.resize(content, (width, height), interpolation=cv2.INTER_NEAREST)
