@@ -55,6 +55,11 @@ class SemanticLaneTests(unittest.TestCase):
         self.assertLess(selector._current_template_group_diagnostics["evaluated_combinations"], 1000)
         self.assertIn("lane.candidate_delta", recorded_stages)
         self.assertIn("lane.template_subset_dp", recorded_stages)
+        self.assertIn("lane.template_dp_path", recorded_stages)
+        self.assertIn("lane.template_candidate_eval", recorded_stages)
+        self.assertIn("lane.template_candidate_fit", recorded_stages)
+        self.assertIn("lane.template_corridor_check", recorded_stages)
+        self.assertIn("lane.template_dp_loop_overhead", recorded_stages)
 
     def test_template_uses_direct_ordered_path_for_exactly_six_lines(self):
         from perception.algorithms.lane.angle_template import template_positions_for_angle

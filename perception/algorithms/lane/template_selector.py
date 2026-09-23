@@ -198,7 +198,9 @@ class TemplateDistanceLaneSelector(GroundIPMLanePairSelector):
     # ------------------------------------------------------------------
     # Template matching（旧 BEV 用，保留）
     # ------------------------------------------------------------------
-    def _build_template_candidate(self, sorted_items, sorted_x, pairs, group_theta, template):
+    def _build_template_candidate(self, sorted_items, sorted_x, pairs, group_theta, template,
+                                  profile_totals=None):
+        fit_started_at = time.perf_counter() if profile_totals is not None else None
         assigned_ids = [TEMPLATE_LINE_ORDER[template_index] for _, template_index in pairs]
         if len(assigned_ids) < 3:
             return None
@@ -218,7 +220,12 @@ class TemplateDistanceLaneSelector(GroundIPMLanePairSelector):
             for index, ((line_index, _), line_id) in enumerate(zip(pairs, assigned_ids))
         ) / total_weight
         rms = math.sqrt(fit_loss)
+        if profile_totals is not None:
+            profile_totals["candidate_fit_ms"] += (time.perf_counter() - fit_started_at) * 1000.0
+        corridor_started_at = time.perf_counter() if profile_totals is not None else None
         robot_inside, pose = self._robot_center_inside_template_corridor(delta, group_theta, template)
+        if profile_totals is not None:
+            profile_totals["corridor_check_ms"] += (time.perf_counter() - corridor_started_at) * 1000.0
         if not robot_inside or rms > self.max_match_rms_mm:
             return None
 
@@ -352,19 +359,31 @@ class TemplateDistanceLaneSelector(GroundIPMLanePairSelector):
         best = None
         second_loss = None
         dp_started_at = time.perf_counter()
+        profile_totals = {
+            "dp_path_ms": 0.0,
+            "candidate_eval_ms": 0.0,
+            "candidate_fit_ms": 0.0,
+            "corridor_check_ms": 0.0,
+        }
         for delta in candidate_deltas:
             diagnostics["dp_delta_candidates"] += 1
             for template_indices in template_subsets:
+                path_started_at = time.perf_counter()
                 pairs = self._best_ordered_pairs_for_delta(
                     sorted_x, template, template_indices, delta,
                 )
+                profile_totals["dp_path_ms"] += (time.perf_counter() - path_started_at) * 1000.0
                 diagnostics["dp_state_updates"] += line_count * len(template_indices)
                 if pairs is None:
                     continue
                 diagnostics["evaluated_combinations"] += 1
+                candidate_started_at = time.perf_counter()
                 candidate = self._build_template_candidate(
-                    sorted_items, sorted_x, pairs, group_theta, template,
+                    sorted_items, sorted_x, pairs, group_theta, template, profile_totals,
                 )
+                profile_totals["candidate_eval_ms"] += (
+                    time.perf_counter() - candidate_started_at
+                ) * 1000.0
                 if candidate is None:
                     continue
                 diagnostics["accepted_combinations"] += 1
@@ -375,7 +394,16 @@ class TemplateDistanceLaneSelector(GroundIPMLanePairSelector):
                     best = candidate
                 elif second_loss is None or candidate["loss"] < second_loss:
                     second_loss = candidate["loss"]
-        record("lane.template_subset_dp", (time.perf_counter() - dp_started_at) * 1000.0)
+        dp_total_ms = (time.perf_counter() - dp_started_at) * 1000.0
+        record("lane.template_subset_dp", dp_total_ms)
+        record("lane.template_dp_path", profile_totals["dp_path_ms"])
+        record("lane.template_candidate_eval", profile_totals["candidate_eval_ms"])
+        record("lane.template_candidate_fit", profile_totals["candidate_fit_ms"])
+        record("lane.template_corridor_check", profile_totals["corridor_check_ms"])
+        record(
+            "lane.template_dp_loop_overhead",
+            max(0.0, dp_total_ms - profile_totals["dp_path_ms"] - profile_totals["candidate_eval_ms"]),
+        )
 
         if best is not None:
             loss_gap = math.inf if second_loss is None else second_loss - best["loss"]
