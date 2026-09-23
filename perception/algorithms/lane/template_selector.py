@@ -248,6 +248,63 @@ class TemplateDistanceLaneSelector(GroundIPMLanePairSelector):
             for line_id in TEMPLATE_LINE_ORDER
         })
 
+    def _template_index_subsets(self):
+        lane_indices = {
+            index for index, line_id in enumerate(TEMPLATE_LINE_ORDER)
+            if line_id in LANE_LINE_IDS
+        }
+        subsets = []
+        for mask in range(1 << len(TEMPLATE_LINE_ORDER)):
+            indices = tuple(
+                index for index in range(len(TEMPLATE_LINE_ORDER))
+                if mask & (1 << index)
+            )
+            if len(indices) < 3:
+                continue
+            if self.require_both_lane_lines and not lane_indices.issubset(indices):
+                continue
+            subsets.append(indices)
+        return subsets
+
+    @staticmethod
+    def _best_ordered_pairs_for_delta(sorted_x, template, template_indices, delta):
+        if len(template_indices) > len(sorted_x):
+            return None
+        previous_costs = None
+        parent_rows = []
+        for template_index in template_indices:
+            line_id = TEMPLATE_LINE_ORDER[template_index]
+            weight = float(TEMPLATE_LINE_WEIGHTS[line_id])
+            costs = [math.inf] * len(sorted_x)
+            parents = [-1] * len(sorted_x)
+            best_previous_cost = math.inf
+            best_previous_index = -1
+            for line_index, x_at_ref in enumerate(sorted_x):
+                residual = x_at_ref - template[line_id] - delta
+                point_cost = weight * residual * residual
+                if previous_costs is None:
+                    costs[line_index] = point_cost
+                    continue
+                if line_index:
+                    candidate_cost = previous_costs[line_index - 1]
+                    if candidate_cost < best_previous_cost:
+                        best_previous_cost = candidate_cost
+                        best_previous_index = line_index - 1
+                if best_previous_index >= 0:
+                    costs[line_index] = best_previous_cost + point_cost
+                    parents[line_index] = best_previous_index
+            previous_costs = costs
+            parent_rows.append(parents)
+
+        final_index = min(range(len(sorted_x)), key=previous_costs.__getitem__)
+        if not math.isfinite(previous_costs[final_index]):
+            return None
+        pairs = []
+        for row_index in range(len(template_indices) - 1, -1, -1):
+            pairs.append((final_index, template_indices[row_index]))
+            final_index = parent_rows[row_index][final_index]
+        return tuple(reversed(pairs))
+
     def _match_group_to_template_ordered(self, group):
         if len(group) < 3:
             return None
@@ -291,40 +348,16 @@ class TemplateDistanceLaneSelector(GroundIPMLanePairSelector):
 
         best = None
         second_loss = None
+        template_subsets = self._template_index_subsets()
         for delta in self._candidate_deltas(sorted_x, template):
             diagnostics["dp_delta_candidates"] += 1
-            states = [[{} for _ in range(template_count + 1)] for _ in range(line_count + 1)]
-            states[0][0][(0, 0)] = (0.0, ())
-            for line_index in range(line_count + 1):
-                for template_index in range(template_count + 1):
-                    for key, value in list(states[line_index][template_index].items()):
-                        error, pairs = value
-                        if line_index < line_count:
-                            target = states[line_index + 1][template_index]
-                            if key not in target or error < target[key][0]:
-                                target[key] = value
-                        if template_index < template_count:
-                            target = states[line_index][template_index + 1]
-                            if key not in target or error < target[key][0]:
-                                target[key] = value
-                        if line_index >= line_count or template_index >= template_count:
-                            continue
-                        line_id = TEMPLATE_LINE_ORDER[template_index]
-                        weight = float(TEMPLATE_LINE_WEIGHTS[line_id])
-                        residual = sorted_x[line_index] - template[line_id] - delta
-                        mask, lane_mask = key
-                        new_key = (
-                            mask | (1 << template_index),
-                            lane_mask | ((1 << LANE_LINE_IDS.index(line_id)) if line_id in LANE_LINE_IDS else 0),
-                        )
-                        new_value = (error + weight * residual * residual, pairs + ((line_index, template_index),))
-                        target = states[line_index + 1][template_index + 1]
-                        previous = target.get(new_key)
-                        diagnostics["dp_state_updates"] += 1
-                        if previous is None or new_value[0] < previous[0]:
-                            target[new_key] = new_value
-
-            for _, (_, pairs) in states[line_count][template_count].items():
+            for template_indices in template_subsets:
+                pairs = self._best_ordered_pairs_for_delta(
+                    sorted_x, template, template_indices, delta,
+                )
+                diagnostics["dp_state_updates"] += line_count * len(template_indices)
+                if pairs is None:
+                    continue
                 diagnostics["evaluated_combinations"] += 1
                 candidate = self._build_template_candidate(
                     sorted_items, sorted_x, pairs, group_theta, template,

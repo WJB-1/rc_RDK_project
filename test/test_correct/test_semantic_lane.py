@@ -49,6 +49,7 @@ class SemanticLaneTests(unittest.TestCase):
         self.assertAlmostEqual(match["delta"], delta, places=4)
         self.assertLess(match["rms"], 1e-4)
         self.assertEqual(match["match_strategy"], "ordered_dp")
+        self.assertLess(selector._current_template_group_diagnostics["evaluated_combinations"], 1000)
 
     def test_template_uses_direct_ordered_path_for_exactly_six_lines(self):
         from perception.algorithms.lane.angle_template import template_positions_for_angle
