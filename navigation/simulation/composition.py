@@ -29,7 +29,8 @@ def build_simulation_runner(seed: int = 0) -> SimulationRunner:
 
 
 def build_hardware_motion_simulation_runner(serial_port: str, baudrate: int = 115200,
-                                            transport_factory=None, seed: int = 0):
+                                            transport_factory=None, seed: int = 0,
+                                            vision_runtime=None):
     """创建真机运动、仿真观察和仿真打卡共存的导航联调会话。"""
 
     from motion.port import MotionPort
@@ -39,15 +40,39 @@ def build_hardware_motion_simulation_runner(serial_port: str, baudrate: int = 11
         transport = SerialTransport(serial_port, baudrate)
     else:
         transport = transport_factory(serial_port, baudrate)
-    motion_port = MotionPort(transport)
+    if vision_runtime is None:
+        motion_port = MotionPort(transport)
+    else:
+        from motion.facade import MotionFacade
+        from motion.vision_correction import VisionCorrectionAdapter
+        motion_port = MotionFacade(
+            transport,
+            VisionCorrectionAdapter(vision_runtime.lane_assist),
+        ).port
     world, executor, runtime = _compose(seed, motion_port=motion_port)
+    if hasattr(transport, "set_context_provider"):
+        transport.set_context_provider(lambda: _motion_log_context(runtime))
     return HardwareMotionSimulationRunner(
         motion_port=motion_port,
+        transport=transport,
+        vision_runtime=vision_runtime,
         world=world,
         executor=executor,
         navigation_runtime=runtime,
         seed=seed,
     )
+
+
+def _motion_log_context(runtime):
+    snapshot = runtime.snapshot()
+    request = snapshot.current_request
+    action = snapshot.current_action
+    return {
+        "navigation_state": getattr(snapshot.state, "value", str(snapshot.state)),
+        "request_id": getattr(request, "request_id", None),
+        "action_id": getattr(action, "action_id", None),
+        "action_type": type(action).__name__ if action is not None else None,
+    }
 
 
 def _compose(seed: int, motion_port=None):

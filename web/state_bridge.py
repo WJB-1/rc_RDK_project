@@ -81,4 +81,20 @@ class WebStateBridge:
                 for edge in getattr(topology, "_edges_by_id", {}).values():
                     edges.append({"edge_id": edge.edge_id, "from_node_id": edge.from_node_id, "to_node_id": edge.to_node_id, "length_mm": edge.length_mm, "road_kind": edge.road_kind})
                 navigation_data["map"] = {"nodes": nodes, "edges": edges}
-        return {"simulation": simulation_data, "world": world, "navigation": navigation_data}
+        transport = getattr(self._runner, "transport", None)
+        communication = {
+            "events": list(transport.events())
+            if transport is not None and callable(getattr(transport, "events", None)) else []
+        }
+        vision_runtime = getattr(self._runner, "vision_runtime", None)
+        vision = (
+            vision_runtime.snapshot()
+            if vision_runtime is not None and callable(getattr(vision_runtime, "snapshot", None)) else {}
+        )
+        return {
+            "simulation": simulation_data,
+            "world": world,
+            "navigation": navigation_data,
+            "communication": communication,
+            "vision": vision,
+        }

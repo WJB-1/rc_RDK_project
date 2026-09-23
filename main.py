@@ -815,26 +815,33 @@ def _load_motion_connection_config():
 
 
 def run_hardware_motion_simulation(serial_port: str = None, baudrate: int = None,
-                                   seed: int = 0, step_interval_s: float = 0.01):
+                                   seed: int = 0, web_host: str = "0.0.0.0",
+                                   web_port: int = 5000):
     """Run Navigation 2.0 with real motion and simulated perception/tasks."""
 
     from navigation.simulation import build_hardware_motion_simulation_runner
+    from perception.debug_runtime import VisionDebugRuntime
+    from perception.profiles import apply_vision_profile
+    from web.app import create_app
 
     configured_port, configured_baudrate = _load_motion_connection_config()
+    with (PROJECT_ROOT / "config/settings.yaml").open("r", encoding="utf-8") as stream:
+        vision_settings = apply_vision_profile(yaml.safe_load(stream) or {})
+    vision_runtime = VisionDebugRuntime(vision_settings)
     runner = build_hardware_motion_simulation_runner(
         serial_port=serial_port or configured_port,
         baudrate=baudrate or configured_baudrate,
         seed=seed,
+        vision_runtime=vision_runtime,
     )
+    app = create_app(runner)
     try:
-        runner.start()
         print(
-            "Navigation 2.0 hybrid session started: STM32 controls motion; "
-            "perception and check-in tasks are simulated. Press Ctrl+C to stop."
+            "Navigation 2.0 hardware debugger: http://{}:{}/\n"
+            "Open the dashboard, then use Start/Pause/Resume/Step."
+            .format(web_host, web_port)
         )
-        while True:
-            runner.step()
-            time.sleep(step_interval_s)
+        app.run(host=web_host, port=web_port, threaded=True, use_reloader=False)
     except KeyboardInterrupt:
         print("\nNavigation 2.0 hybrid session stopping.")
     finally:
@@ -865,6 +872,17 @@ def _parse_cli_args(argv=None):
         default=0,
         help="simulation random seed (default: 0)",
     )
+    parser.add_argument(
+        "--web-host",
+        default="0.0.0.0",
+        help="debug dashboard listen address (default: 0.0.0.0)",
+    )
+    parser.add_argument(
+        "--web-port",
+        type=int,
+        default=5000,
+        help="debug dashboard HTTP port (default: 5000)",
+    )
     return parser.parse_args(argv)
 
 
@@ -875,6 +893,8 @@ def main(argv=None):
             serial_port=args.serial_port,
             baudrate=args.baudrate,
             seed=args.simulation_seed,
+            web_host=args.web_host,
+            web_port=args.web_port,
         )
         return
 

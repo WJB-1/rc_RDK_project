@@ -57,7 +57,7 @@ class SimulationRunner:
     def start(self) -> None:
         """启动会话并只调用一次 NavigationRuntime.start。"""
 
-        if self._stopped:
+        if self._stopped or self._running:
             return
         self._running = True
         self._paused = False
@@ -93,6 +93,16 @@ class SimulationRunner:
         self._completed_action_count += 1
         self._timeline.append((self._world.snapshot().now, self._completed_action_count))
         return True
+
+    def step_once(self) -> bool:
+        """Advance one simulated port event while preserving pause state."""
+
+        was_paused = self._paused
+        self._paused = False
+        try:
+            return self.step()
+        finally:
+            self._paused = was_paused
 
     def run_until_observation(self, limit: int = 100) -> bool:
         """最多单步 limit 次，直到世界产生一帧观察结果。"""
@@ -159,21 +169,35 @@ class SimulationRunner:
 class HardwareMotionSimulationRunner(SimulationRunner):
     """保持仿真感知与任务，但把运动请求交给真实 STM32 的会话。"""
 
-    def __init__(self, motion_port, ready_timeout_s=2.0, **kwargs) -> None:
+    def __init__(self, motion_port, transport=None, vision_runtime=None,
+                 ready_timeout_s=2.0, **kwargs) -> None:
         super().__init__(**kwargs)
         self.motion_port = motion_port
+        self.transport = transport
+        self.vision_runtime = vision_runtime
         self._ready_timeout_s = float(ready_timeout_s)
 
     def start(self) -> None:
+        if self._stopped or self._running:
+            return
+        if self.vision_runtime is not None:
+            self.vision_runtime.start()
         self.motion_port.start()
         deadline = time.monotonic() + self._ready_timeout_s
         while not self.motion_port.is_ready and time.monotonic() < deadline:
             time.sleep(0.01)
         if not self.motion_port.is_ready:
             self.motion_port.stop()
+            if self.vision_runtime is not None:
+                self.vision_runtime.stop()
             raise TimeoutError("STM32 motion link did not acknowledge HELLO")
         super().start()
+
+    def reset(self, seed: int = 0) -> None:
+        raise RuntimeError("hardware motion session cannot be reset; restart the process")
 
     def stop(self) -> None:
         super().stop()
         self.motion_port.stop()
+        if self.vision_runtime is not None:
+            self.vision_runtime.stop()

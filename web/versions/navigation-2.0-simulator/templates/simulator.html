@@ -1,98 +1,31 @@
 <!doctype html>
 <html lang="zh-CN">
-
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Navigation 2.0 Simulator</title>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>{{ dashboard_title }}</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='css/simulator.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/hardware-debug.css') }}">
+  <style>.workspace{grid-template-columns:280px minmax(520px,1fr) 390px}.sidebar,.inspector{max-height:calc(100vh - 76px)}</style>
 </head>
-
 <body>
-  <header class="topbar"><strong>RoboCup Rescue Brain</strong><span>Navigation 2.0 Simulator</span><span
-      id="connection">连接中</span><time id="clock">--</time></header>
+  <header class="topbar"><strong>RoboCup Rescue Brain</strong><span>{{ dashboard_title }}</span><span id="connection">连接中</span><time id="clock">--</time></header>
   <main class="workspace">
     <aside class="panel sidebar">
-      <section id="seed-controls">
-        <h2>场景种子</h2>
-        <div class="seed-row"><input id="seed" type="number" value="0" step="1"><button
-            data-command="RESET">RESET(seed)</button></div>
-        <p id="command-error" class="error"></p>
-      </section>
-      <section>
-        <h2>仿真控制</h2>
-        <div id="simulation-controls" class="button-grid"><button data-command="START">Start</button><button
-            data-command="PAUSE">Pause</button><button data-command="RESUME">Resume</button><button
-            data-command="STEP">Step</button><button data-command="STOP" class="danger">Stop</button></div>
-        <dl class="telemetry">
-          <dt>状态</dt>
-          <dd id="runner-state">--</dd>
-          <dt>时间</dt>
-          <dd id="sim-time">--</dd>
-          <dt>动作</dt>
-          <dd id="action-count">--</dd>
-          <dt>World 位姿<br><small>(SimWorld 真值)</small></dt>
-          <dd id="pose">--</dd>
-          <dt>Robot 位姿<br><small>(RobotState 计划)</small></dt>
-          <dd id="robot-pose">--</dd>
-          <dt>位姿差<br><small>(Robot - World)</small></dt>
-          <dd id="pose-diff">--</dd>
-          <dt>逻辑位置</dt>
-          <dd id="robot-location">--</dd>
-        </dl>
-        <dd id="pose">--</dd>
-        </dl>
-      </section>
-      <section>
-        <h2>任务</h2>
-        <table id="task-table">
-          <thead>
-            <tr>
-              <th>任务</th>
-              <th>目标</th>
-              <th>生命周期</th>
-            </tr>
-          </thead>
-          <tbody></tbody>
-        </table>
-      </section>
-      <section>
-        <h2>事件日志</h2>
-        <ol id="event-log" class="event-log"></ol>
-      </section>
+      <section id="seed-controls"><h2>会话</h2><div class="seed-row"><input id="seed" type="number" value="0" step="1"><button data-command="RESET"{% if hardware_motion %} disabled title="真机会话请重启进程"{% endif %}>重置种子</button></div><p id="command-error" class="error"></p></section>
+      <section><h2>逐步调试</h2><div id="simulation-controls" class="button-grid"><button data-command="START">启动</button><button data-command="PAUSE">暂停</button><button data-command="RESUME">继续</button><button data-command="STEP">单步</button><button data-command="STOP" class="danger">停止</button></div><p class="hint">单步只推进一条仿真感知/打卡事件；真实运动等待 STM32 完成回包。</p><dl class="telemetry"><dt>运行状态</dt><dd id="runner-state">--</dd><dt>仿真时间</dt><dd id="sim-time">--</dd><dt>完成事件</dt><dd id="action-count">--</dd><dt>真实位置</dt><dd id="pose">--</dd><dt>规划位置</dt><dd id="robot-pose">--</dd><dt>逻辑位置</dt><dd id="robot-location">--</dd></dl></section>
+      <section><h2>任务</h2><table id="task-table"><thead><tr><th>任务</th><th>目标</th><th>状态</th></tr></thead><tbody></tbody></table></section>
     </aside>
-    <section class="panel map-panel">
-      <div class="panel-heading">
-        <h2>实体赛道</h2><label>叠层 <select id="view-mode">
-            <option value="runtime">RuntimeMap（已探明）</option>
-            <option value="truth">世界真值</option>
-          </select></label>
-      </div><canvas id="map-canvas" width="900" height="650"></canvas>
-      <div class="legend"><span><i class="edge unknown"></i>未知道路</span><span><i
-            class="edge clear"></i>确认通行</span><span><i class="edge blocked"></i>障碍物</span><span><i
-            class="edge culvert"></i>涵洞</span><span><i class="truth-line"></i>真值视图</span></div>
+    <section class="center-stack">
+      <section class="panel map-panel"><div class="panel-heading"><h2>导航地图</h2><label>图层 <select id="view-mode"><option value="runtime">导航已知</option><option value="truth">仿真真值</option></select></label></div><canvas id="map-canvas" width="900" height="560"></canvas><div class="legend"><span><i class="edge unknown"></i>未知</span><span><i class="edge clear"></i>畅通</span><span><i class="edge blocked"></i>障碍</span><span><i class="edge culvert"></i>涵洞</span><span><i class="truth-line"></i>真值</span></div></section>
+      <section class="panel vision-panel"><div class="panel-heading"><h2>视觉循迹</h2><label>视图 <select id="vision-view"></select></label></div><div class="vision-content"><div class="preview"><img id="vision-image" alt="视觉调试画面"><span id="vision-hint">等待循迹动作与视觉帧</span></div><dl class="telemetry vision-stats"><dt>帧号</dt><dd id="vision-frame">--</dd><dt>横向偏移</dt><dd id="vision-offset">--</dd><dt>目标偏航</dt><dd id="vision-yaw">--</dd><dt>质量</dt><dd id="vision-quality">--</dd><dt>状态</dt><dd id="vision-status">--</dd></dl></div></section>
     </section>
     <aside class="panel inspector">
-      <h2>导航诊断</h2>
-      <dl class="telemetry">
-        <dt>State</dt>
-        <dd id="nav-state">--</dd>
-        <dt>Substate</dt>
-        <dd id="nav-substate">--</dd>
-        <dt>Action</dt>
-        <dd id="current-action">--</dd>
-        <dt>Request</dt>
-        <dd id="current-request">--</dd>
-        <dt>RuntimeMap</dt>
-        <dd id="runtime-map-counts">--</dd>
-      </dl>
-      <h3>Diagnostics</h3>
-      <pre id="diagnostics">--</pre>
+      <h2>当前导航步骤</h2><dl class="telemetry"><dt>状态</dt><dd id="nav-state">--</dd><dt>子状态</dt><dd id="nav-substate">--</dd><dt>动作</dt><dd id="current-action">--</dd><dt>请求</dt><dd id="current-request">--</dd><dt>地图认知</dt><dd id="runtime-map-counts">--</dd></dl>
+      <h3>通信日志</h3><div class="log-filters"><select id="log-step"><option value="all">全部步骤</option></select><select id="log-category"><option value="all">全部类别</option><option value="handshake">握手</option><option value="motion">运动</option><option value="vision">视觉</option><option value="error">错误</option><option value="protocol">协议</option></select><select id="log-direction"><option value="all">收发全部</option><option value="TX">TX 下发</option><option value="RX">RX 回传</option></select></div><ol id="communication-log" class="communication-log"></ol>
+      <h3>步骤说明</h3><div id="step-explanation" class="step-explanation">等待导航启动</div><details><summary>原始诊断</summary><pre id="diagnostics">--</pre></details>
+      <ol id="event-log" hidden></ol>
     </aside>
   </main>
-  <script src="{{ url_for('static', filename='js/snapshot-client.js') }}"></script>
-  <script src="{{ url_for('static', filename='js/map-renderer.js') }}"></script>
-  <script src="{{ url_for('static', filename='js/simulator-page.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/snapshot-client.js') }}"></script><script src="{{ url_for('static', filename='js/map-renderer.js') }}"></script><script src="{{ url_for('static', filename='js/simulator-page.js') }}"></script>
 </body>
-
 </html>

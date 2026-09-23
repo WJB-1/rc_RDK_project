@@ -1,60 +1,13 @@
-(function () {
-  "use strict";
-  var mode = "runtime";
-  var lastSnapshot = null;
-  var renderMap = MapRenderer(document.getElementById("map-canvas"));
-  function setText(id, value) { var element = document.getElementById(id); if (element) element.textContent = value == null ? "--" : value; }
-  function renderSnapshot(snapshot) {
-    lastSnapshot = snapshot;
-    var simulation = snapshot.simulation || {}, navigation = snapshot.navigation || {}, world = snapshot.world || {}, pose = world.pose || {}, runtime = navigation.runtime_map || {};
-    setText("connection", "online"); setText("clock", new Date().toLocaleTimeString());
-    setText("runner-state", simulation.running ? (simulation.paused ? "paused" : "running") : (simulation.stopped ? "stopped" : "idle"));
-    setText("sim-time", Number(simulation.now || 0).toFixed(3) + " s"); setText("action-count", simulation.completed_action_count || 0);
-
-    // ---- World pose（SimWorld 真值）----
-    setText("pose", pose.x_mm == null ? "--" : Math.round(pose.x_mm) + ", " + Math.round(pose.y_mm) + " / " + Math.round(pose.yaw_deg || pose.heading_deg || 0) + " deg");
-
-    // ---- RobotState pose（计划位姿）----
-    var robotPose = simulation.robot_state_pose;
-    if (robotPose && robotPose.x_mm != null) {
-      setText("robot-pose", Math.round(robotPose.x_mm) + ", " + Math.round(robotPose.y_mm) + " / " + Math.round(robotPose.yaw_deg || 0) + " deg");
-    } else {
-      setText("robot-pose", "--");
-    }
-
-    // ---- 位姿差（Robot - World）----
-    if (pose.x_mm != null && robotPose && robotPose.x_mm != null) {
-      var dx = robotPose.x_mm - pose.x_mm;
-      var dy = robotPose.y_mm - pose.y_mm;
-      var dyaw = (robotPose.yaw_deg || 0) - (pose.yaw_deg || pose.heading_deg || 0);
-      setText("pose-diff",
-        (dx >= 0 ? "+" : "") + dx.toFixed(1) + ", " +
-        (dy >= 0 ? "+" : "") + dy.toFixed(1) + " / " +
-        (dyaw >= 0 ? "+" : "") + dyaw.toFixed(1) + " deg");
-    } else {
-      setText("pose-diff", "--");
-    }
-
-    // ---- RobotState 逻辑位置 ----
-    setText("robot-location", simulation.robot_location_label || "--");
-
-    setText("nav-state", navigation.state); setText("nav-substate", navigation.substate);
-    setText("current-action", JSON.stringify(navigation.current_action || null));
-    setText("current-request", JSON.stringify(navigation.current_request || null));
-    setText("runtime-map-counts", "blocked " + (runtime.blocked_edge_ids || []).length + " | clear " + (runtime.confirmed_clear_edge_ids || []).length + " | culvert " + (runtime.discovered_culvert_edge_ids || []).length);
-    setText("diagnostics", (navigation.diagnostics || []).join("\n") || "none");
-    var body = document.querySelector("#task-table tbody"); body.innerHTML = "";
-    (navigation.tasks || []).forEach(function (task) { var row = document.createElement("tr"); row.innerHTML = "<td>" + task.task_id + "</td><td>" + task.target_id + "</td><td>" + task.lifecycle + "</td>"; body.appendChild(row); });
-    var log = document.getElementById("event-log"); log.innerHTML = "";
-    (navigation.events || []).slice().reverse().forEach(function (event) { var item = document.createElement("li"); item.innerHTML = "<time>" + Number(event.timestamp || 0).toFixed(3) + "s</time>" + event.message; log.appendChild(item); });
-    renderMap(snapshot, mode);
-  }
-  function command(name) {
-    var payload = name === "RESET" ? { seed: Number(document.getElementById("seed").value || 0) } : {}, button = document.querySelector('[data-command="' + name + '"]');
-    if (button) button.disabled = true;
-    fetch("/api/sim/" + name.toLowerCase(), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) }).then(function (response) { return response.json().then(function (data) { if (!response.ok) throw Error(data.error || "command failed"); return data; }); }).catch(function (error) { setText("command-error", error.message); }).finally(function () { if (button) button.disabled = false; });
-  }
-  document.querySelectorAll("[data-command]").forEach(function (button) { button.addEventListener("click", function () { command(button.dataset.command); }); });
-  document.getElementById("view-mode").addEventListener("change", function () { mode = this.value; if (lastSnapshot) renderMap(lastSnapshot, mode); });
-  SnapshotClient(renderSnapshot, function () { setText("connection", "offline"); }).start();
+(function(){"use strict";
+var mapMode="runtime",lastSnapshot=null,lastVisionFrame=null,visionUrl=null,renderMap=MapRenderer(document.getElementById("map-canvas"));
+var visionLabels={raw:"相机原图",overlay:"循迹叠加",original:"去畸变原图",segmentation:"分割掩码",bev:"鸟瞰图"};
+function setText(id,value){var element=document.getElementById(id);if(element)element.textContent=value==null?"--":value}
+function compact(value){if(value==null)return"--";if(typeof value==="string")return value;if(value.command)return value.command.type||value.command.kind||JSON.stringify(value.command);return value.action_id||value.request_id||value.type||JSON.stringify(value)}
+function syncViews(values){var select=document.getElementById("vision-view"),selected=select.value,signature=values.join(",");if(select.dataset.signature===signature)return;select.dataset.signature=signature;select.innerHTML=values.map(function(value){return'<option value="'+value+'">'+(visionLabels[value]||value)+"</option>"}).join("");if(values.indexOf(selected)>=0)select.value=selected}
+function refreshVision(){var view=document.getElementById("vision-view").value;if(!view)return;fetch("/api/vision?view="+encodeURIComponent(view)+"&t="+Date.now()).then(function(response){if(!response.ok)throw Error("not ready");return response.blob()}).then(function(blob){if(visionUrl)URL.revokeObjectURL(visionUrl);visionUrl=URL.createObjectURL(blob);document.getElementById("vision-image").src=visionUrl;document.getElementById("vision-image").style.display="block";document.getElementById("vision-hint").style.display="none"}).catch(function(){document.getElementById("vision-image").style.display="none";document.getElementById("vision-hint").style.display="block"})}
+function renderCommunication(events){var stepSelect=document.getElementById("log-step"),steps={all:"全部步骤"};events.forEach(function(event){var step=event.step||{},key=step.request_id||step.action_id||"startup";steps[key]=key==="startup"?"启动/握手":((step.action_type||"步骤")+" · "+key)});var old=stepSelect.value;stepSelect.innerHTML=Object.keys(steps).map(function(key){return'<option value="'+key+'">'+steps[key]+"</option>"}).join("");stepSelect.value=Object.prototype.hasOwnProperty.call(steps,old)?old:"all";var category=document.getElementById("log-category").value,direction=document.getElementById("log-direction").value,selectedStep=stepSelect.value;var filtered=events.filter(function(event){var step=event.step||{},key=step.request_id||step.action_id||"startup";return(selectedStep==="all"||selectedStep===key)&&(category==="all"||category===event.category)&&(direction==="all"||direction===event.direction)}).slice(-80).reverse();document.getElementById("communication-log").innerHTML=filtered.map(function(event){var timestamp=new Date(Number(event.timestamp)*1000).toLocaleTimeString(),details=JSON.stringify(event.fields||{},null,2);return'<li class="'+event.category+'"><div><time>'+timestamp+'</time><b>'+event.direction+"</b><span>"+event.summary+"</span></div><details><summary>"+event.name+" · 查看字段与原始帧</summary><pre>"+details+"\nhex: "+event.hex+"</pre></details></li>"}).join("")||'<li class="empty">当前筛选条件下没有通信事件</li>'}
+function explainStep(navigation){if(!navigation.started)return"点击“启动”：打开串口、完成 HELLO 握手，然后导航生成第一个动作。";if(navigation.current_request)return"正在等待执行终局。运动请求由 STM32 回传 ACTION_DONE；感知或打卡请求可点击“单步”完成。";if(navigation.current_action)return"导航正在编排下一条执行请求："+compact(navigation.current_action);return"当前没有在途请求，导航可能正在重规划或已经完成。"}
+function renderSnapshot(snapshot){lastSnapshot=snapshot;var simulation=snapshot.simulation||{},navigation=snapshot.navigation||{},world=snapshot.world||{},pose=world.pose||{},runtime=navigation.runtime_map||{},vision=snapshot.vision||{},lane=vision.lane||{},events=(snapshot.communication||{}).events||[];setText("connection","在线");setText("clock",new Date().toLocaleTimeString());setText("runner-state",simulation.running?(simulation.paused?"已暂停":"运行中"):(simulation.stopped?"已停止":"未启动"));setText("sim-time",Number(simulation.now||0).toFixed(3)+" s");setText("action-count",simulation.completed_action_count||0);setText("pose",pose.x_mm==null?"--":Math.round(pose.x_mm)+", "+Math.round(pose.y_mm)+" / "+Math.round(pose.yaw_deg||0)+"°");var robotPose=simulation.robot_state_pose;setText("robot-pose",robotPose&&robotPose.x_mm!=null?Math.round(robotPose.x_mm)+", "+Math.round(robotPose.y_mm)+" / "+Math.round(robotPose.yaw_deg||0)+"°":"--");setText("robot-location",simulation.robot_location_label||"--");setText("nav-state",navigation.state);setText("nav-substate",navigation.substate);setText("current-action",compact(navigation.current_action));setText("current-request",compact(navigation.current_request));setText("runtime-map-counts","障碍 "+(runtime.blocked_edge_ids||[]).length+" / 畅通 "+(runtime.confirmed_clear_edge_ids||[]).length+" / 涵洞 "+(runtime.discovered_culvert_edge_ids||[]).length);setText("diagnostics",(navigation.diagnostics||[]).join("\n")||"无诊断信息");setText("step-explanation",explainStep(navigation));var body=document.querySelector("#task-table tbody");body.innerHTML="";(navigation.tasks||[]).forEach(function(task){var row=document.createElement("tr");row.innerHTML="<td>"+task.task_id+"</td><td>"+task.target_id+"</td><td>"+task.lifecycle+"</td>";body.appendChild(row)});syncViews(vision.views||[]);setText("vision-frame",vision.frame_id||"--");setText("vision-offset",lane.offset_mm==null?"--":Number(lane.offset_mm).toFixed(1)+" mm");setText("vision-yaw",lane.target_yaw_deg==null?"--":Number(lane.target_yaw_deg).toFixed(1)+"°");setText("vision-quality",lane.quality_score==null?"--":Number(lane.quality_score).toFixed(3));setText("vision-status",lane.status||"--");if(vision.frame_id&&vision.frame_id!==lastVisionFrame){lastVisionFrame=vision.frame_id;refreshVision()}renderCommunication(events);renderMap(snapshot,mapMode)}
+function command(name){var payload=name==="RESET"?{seed:Number(document.getElementById("seed").value||0)}:{},button=document.querySelector('[data-command="'+name+'"]');if(button)button.disabled=true;fetch("/api/sim/"+name.toLowerCase(),{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)}).then(function(response){return response.json().then(function(data){if(!response.ok)throw Error(data.error||"命令失败");return data})}).then(function(){setText("command-error","")}).catch(function(error){setText("command-error",error.message)}).finally(function(){if(button)button.disabled=false})}
+document.querySelectorAll("[data-command]").forEach(function(button){button.addEventListener("click",function(){command(button.dataset.command)})});document.getElementById("view-mode").addEventListener("change",function(){mapMode=this.value;if(lastSnapshot)renderMap(lastSnapshot,mapMode)});document.getElementById("vision-view").addEventListener("change",refreshVision);["log-step","log-category","log-direction"].forEach(function(id){document.getElementById(id).addEventListener("change",function(){if(lastSnapshot)renderCommunication((lastSnapshot.communication||{}).events||[])})});SnapshotClient(renderSnapshot,function(){setText("connection","离线")}).start();
 }());

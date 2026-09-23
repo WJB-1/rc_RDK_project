@@ -5,7 +5,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, Response, jsonify, render_template, request
 
 from .commands import CommandDispatcher
 from .state_bridge import WebStateBridge
@@ -28,12 +28,24 @@ def create_app(runner: Any) -> Flask:
     @app.get("/")
     def index():
         """返回新的 Dashboard 页面。"""
-        return render_template("simulator.html")
+        hardware_motion = getattr(runner, "motion_port", None) is not None
+        title = "Navigation 2.0 Hardware Debugger" if hardware_motion else "Navigation 2.0 Simulator"
+        return render_template("simulator.html", dashboard_title=title, hardware_motion=hardware_motion)
 
     @app.get("/api/snapshot")
     def snapshot():
         """返回当前组合快照，供轮询和断线恢复使用。"""
         return jsonify(bridge.snapshot_payload())
+
+    @app.get("/api/vision")
+    def vision_preview():
+        vision_runtime = getattr(runner, "vision_runtime", None)
+        if vision_runtime is None:
+            return jsonify({"ok": False, "error": "vision debug runtime is disabled"}), 404
+        image = vision_runtime.jpeg(request.args.get("view", "overlay"))
+        if image is None:
+            return jsonify({"ok": False, "error": "vision frame is not available"}), 404
+        return Response(image, mimetype="image/jpeg", headers={"Cache-Control": "no-store"})
 
     @app.post("/api/sim/<command>")
     def simulation_command(command: str):

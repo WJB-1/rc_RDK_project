@@ -54,9 +54,10 @@ class CommandDispatcher:
                 if isinstance(seed, bool) or not isinstance(seed, int):
                     return CommandResult(False, name, "seed 必须是整数")
                 value = self._runner.reset(seed)
+            elif selected is SimulationCommand.STEP:
+                value = getattr(self._runner, "step_once", self._runner.step)()
             else:
                 value = getattr(self._runner, selected.value.lower())()
             return CommandResult(True, name, value=value)
         except Exception as exc:
             return CommandResult(False, name, str(exc))
-
