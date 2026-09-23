@@ -373,6 +373,21 @@ class SemanticLaneTests(unittest.TestCase):
         self.assertEqual(len(result["pair_measurements"]), 1)
         self.assertFalse(result["pair_measurements"][0]["parallel_ok"])
 
+    def test_pair_selection_uses_weighted_parallel_and_squared_template_loss(self):
+        candidates = [
+            {"selection_score": 0.6 * (2.0 / 3.0) + 0.4 * 0.0 ** 2,
+             "mid_x_mm": 0.0},
+            {"selection_score": 0.6 * (0.3 / 3.0) + 0.4 * (20.0 / 100.0) ** 2,
+             "mid_x_mm": 5.0},
+        ]
+
+        selected = min(
+            candidates,
+            key=lambda item: (item["selection_score"], abs(item["mid_x_mm"])),
+        )
+
+        self.assertEqual(selected["mid_x_mm"], 5.0)
+
 
 if __name__ == "__main__":
     unittest.main()

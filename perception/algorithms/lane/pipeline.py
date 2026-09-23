@@ -418,6 +418,8 @@ class LanePipeline:
                 angle = measurement.get("parallel_angle_deg")
                 distance_text = "n/a" if distance is None else f"{float(distance):.1f} mm"
                 angle_text = "n/a" if angle is None else f"{float(angle):.1f} deg"
+                score = measurement.get("selection_score")
+                score_text = "n/a" if score is None else f"{float(score):.3f}"
                 failed = []
                 if not measurement.get("y_overlap_ok"):
                     failed.append("no-overlap")
@@ -428,7 +430,7 @@ class LanePipeline:
                 verdict = "PASS" if not failed else ", ".join(failed)
                 colour = (0, 220, 0) if not failed else (0, 210, 255)
                 lines.append((
-                    f"pair {measurement.get('i')}-{measurement.get('j')}: d={distance_text}, angle={angle_text} [{verdict}]",
+                    f"pair {measurement.get('i')}-{measurement.get('j')}: d={distance_text}, angle={angle_text}, score={score_text} [{verdict}]",
                     colour,
                 ))
         if not accepted and result.get("fallback_reason"):

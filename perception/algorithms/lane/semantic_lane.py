@@ -186,6 +186,21 @@ class SemanticLaneDetector:
                 overlap_ok = _y_overlap_px(first, second)
                 parallel_ok = angle_deg is not None and angle_deg <= self.parallel_tolerance_deg
                 distance_ok = distance_mm is not None and pair_min_mm <= distance_mm <= pair_max_mm
+                parallel_loss = (
+                    None if angle_deg is None
+                    else float(angle_deg) / max(self.parallel_tolerance_deg, 1e-6)
+                )
+                distance_scale_mm = max(
+                    expected_distance_mm * self.distance_tolerance_ratio, 1e-6
+                )
+                template_loss = (
+                    None if distance_mm is None else
+                    ((float(distance_mm) - expected_distance_mm) / distance_scale_mm) ** 2
+                )
+                selection_score = (
+                    None if parallel_loss is None or template_loss is None
+                    else 0.6 * parallel_loss + 0.4 * template_loss
+                )
                 pair_measurements.append({
                     "i": first_index,
                     "j": second_index,
@@ -198,6 +213,9 @@ class SemanticLaneDetector:
                     "y_overlap_ok": overlap_ok,
                     "parallel_ok": parallel_ok,
                     "distance_ok": distance_ok,
+                    "parallel_loss": parallel_loss,
+                    "template_loss": template_loss,
+                    "selection_score": selection_score,
                 })
                 if opposite_sides and overlap_ok and parallel_ok and distance_ok:
                     pair_midpoint = (np.asarray(first).mean(axis=0) + np.asarray(second).mean(axis=0)) * 0.5
@@ -207,14 +225,16 @@ class SemanticLaneDetector:
                         "target_distance_mm": expected_distance_mm,
                         "parallel_angle_deg": float(angle_deg),
                         "mid_x_mm": float((pair_midpoint[0] - self.bev_width / 2.0) / self.pixel_per_mm),
+                        "parallel_loss": parallel_loss,
+                        "template_loss": template_loss,
+                        "selection_score": 0.6 * parallel_loss + 0.4 * template_loss,
                     })
         if pair_measurements:
             min_mm = min(item["min_distance_mm"] for item in pair_measurements)
             max_mm = max(item["max_distance_mm"] for item in pair_measurements)
         selected = min(
             candidates,
-            key=lambda item: (abs(item["distance_mm"] - item["target_distance_mm"]),
-                              abs(item["mid_x_mm"])),
+            key=lambda item: (item["selection_score"], abs(item["mid_x_mm"])),
         ) if candidates else None
         pairing_ms = (time.perf_counter() - stage_started) * 1000.0
         self.last_timing_ms = {
