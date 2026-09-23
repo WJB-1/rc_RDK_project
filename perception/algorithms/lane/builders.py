@@ -153,6 +153,8 @@ def build_lane_pipeline(settings: dict) -> LanePipeline:
             max_curve_residual_px=float(cfg.semantic_lane.get("max_curve_residual_px", 8.0)),
             template_pair_ids=tuple(cfg.semantic_lane.get("template_pair_ids", ("0", "1"))),
             template_x_at_ref_mm=cfg.template_x_at_ref_mm,
+            edge_row_step_px=int(cfg.semantic_lane.get("edge_row_step_px", 4)),
+            edge_row_search_px=int(cfg.semantic_lane.get("edge_row_search_px", 12)),
         )
     return LanePipeline(
         cfg=cfg,

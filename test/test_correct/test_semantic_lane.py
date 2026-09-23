@@ -30,6 +30,20 @@ class SemanticLaneTests(unittest.TestCase):
         self.assertEqual(len(lines), 2)
         self.assertEqual(int(np.count_nonzero(edge)), 200)
 
+    def test_sparse_edges_are_sampled_with_row_step_and_search_window(self):
+        from perception.algorithms.lane.semantic_lane import SemanticLaneDetector
+
+        mask = np.zeros((120, 160), dtype=np.uint8)
+        for y in range(20, 120, 7):
+            mask[y, 35] = 255
+            mask[y, 115] = 255
+        detector = SemanticLaneDetector(1.0, 160, 80, edge_row_step_px=5, edge_row_search_px=8)
+
+        edge, lines, _ = detector._extract_side_lines(mask)
+
+        self.assertEqual(len(lines), 2)
+        self.assertGreater(int(np.count_nonzero(edge)), 20)
+
     def test_angle_template_uses_left_origin_baseline(self):
         from perception.algorithms.lane.angle_template import template_positions_for_angle
         from perception.algorithms.lane.constants import TEMPLATE_LINE_ORDER, TEMPLATE_LINE_X_MM

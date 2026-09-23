@@ -129,6 +129,8 @@ lane_detection:
     max_curve_residual_px: 8.0
     template_pair_ids: ["0", "1"]
     distance_tolerance_mm: 5.0
+    edge_row_step_px: 4
+    edge_row_search_px: 12
 
   # ---- 模型输入尺寸 ----
   input_size: [512, 384]
