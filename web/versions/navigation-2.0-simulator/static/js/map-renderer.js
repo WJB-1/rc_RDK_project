@@ -55,6 +55,24 @@
     context.fillStyle = "#ef4444"; context.beginPath(); context.moveTo(length / 2 + 8, 0); context.lineTo(length / 2 - 8, -8); context.lineTo(length / 2 - 8, 8); context.closePath(); context.fill(); context.restore();
   }
 
+  function drawTunnel(context, transform, first, second) {
+    var a = project(transform, first), b = project(transform, second);
+    var lane = laneWidthMm * transform.scale;
+    var centerX = (a.x + b.x) / 2, centerY = (a.y + b.y) / 2;
+    context.save();
+    context.strokeStyle = "#c084fc";
+    context.lineWidth = 5;
+    context.setLineDash([14, 7]);
+    context.beginPath(); context.moveTo(a.x, a.y); context.lineTo(b.x, b.y); context.stroke();
+    context.setLineDash([]);
+    context.fillStyle = "#e9d5ff";
+    context.font = "bold 11px sans-serif";
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    context.fillText("TUNNEL", centerX, centerY - lane * .32);
+    context.restore();
+  }
+
   window.MapRenderer = function (canvas) {
     var context = canvas.getContext("2d");
     return function (snapshot, mode) {
@@ -82,6 +100,7 @@
         var a = project(transform, nodes[edge.from_node_id]), b = project(transform, nodes[edge.to_node_id]);
         context.strokeStyle = colors[status(edge, runtime)]; context.lineWidth = lane; context.beginPath(); context.moveTo(a.x, a.y); context.lineTo(b.x, b.y); context.stroke();
         context.strokeStyle = "rgba(255,255,255,.2)"; context.lineWidth = 1.5; context.setLineDash([7, 9]); context.beginPath(); context.moveTo(a.x, a.y); context.lineTo(b.x, b.y); context.stroke(); context.setLineDash([]);
+        if (edge.road_kind === "TUNNEL") drawTunnel(context, transform, nodes[edge.from_node_id], nodes[edge.to_node_id]);
         if (obstacles.indexOf(edge.edge_id) >= 0) drawFeature(context, transform, nodes[edge.from_node_id], nodes[edge.to_node_id], "obstacle", mode === 'truth');
         if (culverts.indexOf(edge.edge_id) >= 0) drawFeature(context, transform, nodes[edge.from_node_id], nodes[edge.to_node_id], "culvert", mode === 'truth');
       });
