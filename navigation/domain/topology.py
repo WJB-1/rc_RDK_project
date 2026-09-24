@@ -8,7 +8,6 @@ from typing import Dict, Iterable, Tuple
 # 导入静态赛道事实，避免从旧导航模块导入任何运行时类或单例状态。
 from .track_data import (
     BLOCK_SPECS,
-    CHECKPOINT_LABEL_MIRROR,
     PORT_OFFSETS,
     ROAD_SPECS,
     START_BRIDGE_LENGTH_MM,
@@ -282,7 +281,6 @@ def build_default_topology() -> TrackTopology:
     edges = []
     # 按固定中心规格生成中心节点、端口节点和中心到端口内部半边。
     for center_id, x_mm, y_mm, directions in BLOCK_SPECS:
-        center_id = _mirror_checkpoint_label(center_id)
         # 根据端口数量和名称为中心选择静态节点类别。
         center_kind = _get_center_kind(center_id, directions)
         # 写入路口或角落中心节点。
@@ -301,22 +299,10 @@ def build_default_topology() -> TrackTopology:
     edges.append(_make_edge("START", "J_START.P_N", START_BRIDGE_LENGTH_MM, "NORMAL"))
     # 按固定道路规格写入所有端口到端口道路段。
     for from_port_id, to_port_id, length_mm, road_kind in ROAD_SPECS:
-        from_port_id = _mirror_checkpoint_label(from_port_id)
-        to_port_id = _mirror_checkpoint_label(to_port_id)
         # 写入道路段，保留普通道路或隧道道路类别。
         edges.append(_make_edge(from_port_id, to_port_id, length_mm, road_kind))
     # 用新建节点和边创建独立只读拓扑。
     return TrackTopology(nodes=nodes, edges=edges)
-
-
-def _mirror_checkpoint_label(identifier: str) -> str:
-    """将路口中心名或带端口后缀的物理端点名应用现场编号镜像。"""
-
-    center_id, separator, port_suffix = identifier.partition(".")
-    mirrored_center_id = CHECKPOINT_LABEL_MIRROR.get(center_id, center_id)
-    if not separator:
-        return mirrored_center_id
-    return "{}.{}".format(mirrored_center_id, port_suffix)
 
 
 def _get_center_kind(center_id: str, directions: Tuple[str, ...]) -> str:

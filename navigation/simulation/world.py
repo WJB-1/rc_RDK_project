@@ -46,11 +46,30 @@ class SimWorld:
         self._internal_pose = initial_pose or WorldPose(start.x_mm, start.y_mm, 90.0)
 
         external = [edge.edge_id for edge in self._edges() if edge.road_kind != "INTERNAL"]
+        culvert_forbidden = self._truth_forbidden_edges((
+            ("START", "J_START"),
+            ("N1", "J_START"),
+            ("N12", "J_START"),
+            ("N2", "J_START"),
+        ))
+        culvert_candidates = [
+            edge_id for edge_id in external
+            if edge_id not in culvert_forbidden
+            and self.topology.get_physical_edge(edge_id).road_kind != "TUNNEL"
+        ]
+        obstacle_forbidden = culvert_forbidden | self._truth_forbidden_edges((
+            ("N1", "T1_R"),
+            ("N12", "T1_L"),
+        ))
+        obstacle_candidates = [
+            edge_id for edge_id in culvert_candidates
+            if edge_id not in obstacle_forbidden
+        ]
         if blocked_edge_ids is None:
-            blocked_edge_ids = self._random_truth(external, 3)
+            blocked_edge_ids = self._random_truth(obstacle_candidates, 3)
         blocked_edge_ids = tuple(blocked_edge_ids)
         if culvert_edge_ids is None:
-            candidates = [edge for edge in external if edge not in set(blocked_edge_ids)]
+            candidates = [edge for edge in culvert_candidates if edge not in set(blocked_edge_ids)]
             culvert_edge_ids = self._random_truth(candidates, 8)
         culvert_edge_ids = tuple(culvert_edge_ids)
         self._truth_blocked: Set[str] = set(blocked_edge_ids)
@@ -175,6 +194,19 @@ class SimWorld:
         if not candidates:
             return ()
         return tuple(self._random.sample(list(candidates), min(count, len(candidates))))
+
+    def _truth_forbidden_edges(self, junction_pairs):
+        forbidden = set()
+        for from_junction, to_junction in junction_pairs:
+            try:
+                cruise_edge = self.topology.get_cruise_edge(from_junction, to_junction)
+            except KeyError:
+                continue
+            forbidden.update(
+                edge_id for edge_id in cruise_edge.physical_edge_ids
+                if self.topology.get_physical_edge(edge_id).road_kind != "INTERNAL"
+            )
+        return forbidden
 
     def _advance_time(self, amount):
         self._now += max(0.0, float(amount)) / 1000.0
