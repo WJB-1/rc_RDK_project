@@ -23,6 +23,30 @@ class TargetSelector:
     def __init__(self, topology: TrackTopology):
         self._topology = topology
         self._goal_deriver = GoalDeriver(topology)
+        self._impossible_culvert_edges = self._build_impossible_culvert_edges()
+
+    def _build_impossible_culvert_edges(self):
+        """Return physical edges that can never contain a culvert."""
+        forbidden = {
+            edge.edge_id
+            for edge in self._topology._edges_by_id.values()
+            if edge.road_kind == "TUNNEL"
+        }
+        for from_node, to_node in (
+            ("START", "J_START"),
+            ("N1", "J_START"),
+            ("N12", "J_START"),
+        ):
+            try:
+                cruise_edge = self._topology.get_cruise_edge(from_node, to_node)
+            except KeyError:
+                continue
+            forbidden.update(
+                edge_id
+                for edge_id in cruise_edge.physical_edge_ids
+                if self._topology.get_physical_edge(edge_id).road_kind != "INTERNAL"
+            )
+        return frozenset(forbidden)
 
     def select(self, phase: PlanningPhase, pending_tasks: Tuple[Task, ...], mission_finished: bool, map_snapshot) -> TargetSelectionResult:
         """按阶段选择候选；任务已完成时只返回拒绝，不代替协调器切换状态。"""
@@ -42,6 +66,8 @@ class TargetSelector:
                     for edge_id in edge.physical_edge_ids
                     if self._topology.get_physical_edge(edge_id).road_kind != "INTERNAL"
                 )
+                if any(edge_id in self._impossible_culvert_edges for edge_id in external_edge_ids):
+                    continue
                 if any(self._edge_status(map_snapshot, edge_id) is EdgeKnowledgeStatus.BLOCKED for edge_id in external_edge_ids):
                     continue
                 if any(self._culvert_status(map_snapshot, edge_id) is CulvertKnowledgeStatus.DISCOVERED for edge_id in external_edge_ids):
