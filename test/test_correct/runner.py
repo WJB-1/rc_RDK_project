@@ -45,6 +45,7 @@ class DebugRunner:
         serial_factory=None,
         recorder_factory=None,
         enable_vision_recording: bool = False,
+        vision_only: bool = False,
     ):
         self.serial_port = serial_port
         self.baudrate = baudrate
@@ -52,6 +53,7 @@ class DebugRunner:
         self._serial_factory = serial_factory
         self._recorder_factory = recorder_factory or VisionRecorder
         self._enable_vision_recording = enable_vision_recording
+        self.vision_only = vision_only
         self._serial = None
         self._serial_lock = threading.Lock()
         self._state_lock = threading.Lock()
@@ -71,6 +73,8 @@ class DebugRunner:
         self._vision_preview = None
         self._vision_preview_sequence = 0
         self._preview_encode_ms = 0.0
+        self._last_preview_update_at = 0.0
+        self._preview_update_interval_s = 0.2
         self._vision_camera = None
         self._vision_tracker = None
         self._vision_cv2 = None
@@ -81,6 +85,12 @@ class DebugRunner:
 
     def start(self):
         self._prepare_vision()
+        if self.vision_only:
+            self._set_state(LinkState.IDLE)
+            self._append_log("LOCAL", "VISION_ONLY", b"enabled")
+            self._start_vision_loop()
+            self._create_app().run(host="0.0.0.0", port=self.web_port, threaded=True)
+            return
         self._start_rx_loop()
         self.connect()
         self._create_app().run(host="0.0.0.0", port=self.web_port, threaded=True)
@@ -138,9 +148,17 @@ class DebugRunner:
             self._append_log("LOCAL", "SEMANTIC_GATE", b"enabled" if enabled else b"disabled")
             return
         if command == "connect":
+            if self.vision_only:
+                self._vision_stop.clear()
+                self._start_vision_loop()
+                return
             self.connect()
             return
         if command == "stop":
+            if self.vision_only:
+                self._vision_stop.set()
+                self._append_log("LOCAL", "VISION_STOP", b"")
+                return
             self._require_connected()
             self._vision_stop.set()
             self._vision_tx_enabled.clear()
@@ -150,6 +168,14 @@ class DebugRunner:
                 self._pending_action = Action.STOP
                 self._state = LinkState.WAITING
             return
+
+        if self.vision_only:
+            if command == "correct":
+                self._vision_stop.clear()
+                self._start_vision_loop()
+                self._append_log("LOCAL", "VISION_START", b"")
+                return
+            raise RuntimeError("视觉调试模式不发送运动控制指令")
 
         with self._state_lock:
             if self._state is not LinkState.IDLE:
@@ -254,6 +280,10 @@ class DebugRunner:
                 "timing": dict(timing or {}),
             }
             self._vision_preview_sequence += 1
+
+    def _preview_update_due(self, now=None):
+        current = time.monotonic() if now is None else float(now)
+        return current - self._last_preview_update_at + 1e-9 >= self._preview_update_interval_s
 
     def _vision_preview_jpeg(self, view_name):
         if view_name not in VIEW_NAMES:
@@ -412,6 +442,12 @@ class DebugRunner:
         self._vision_thread = threading.Thread(target=self._vision_loop, daemon=True)
         self._vision_thread.start()
 
+    def _should_process_vision(self):
+        if self.vision_only:
+            return not self._vision_stop.is_set()
+        with self._state_lock:
+            return self._vision_action is not None and self._state in (LinkState.WAITING, LinkState.CORRECTING)
+
     def _start_vision_heartbeat(self):
         if self._vision_heartbeat_thread is not None and self._vision_heartbeat_thread.is_alive():
             return
@@ -479,11 +515,13 @@ class DebugRunner:
             if recorder is not None:
                 print(f"视觉回正记录目录: {recorder.run_dir}")
             while not self._vision_stop.is_set():
-                with self._state_lock:
-                    if self._vision_action is None or self._state not in (LinkState.WAITING, LinkState.CORRECTING):
-                        break
+                if not self._should_process_vision():
+                    break
                 frame = camera.get_frames().get("front")
                 if frame is not None:
+                    preview_due = self._preview_update_due()
+                    tracker.set_debug_capture_enabled(preview_due)
+                    tracker.set_debug_render_enabled(preview_due)
                     if self._vision_tx_enabled.is_set():
                         self._send(vision_processing(), "VISION_CORRECTION_PROCESSING")
                     stage = "tracker.process"
@@ -506,7 +544,7 @@ class DebugRunner:
                         self._last_offset_mm = offset_mm
                     clean_mask = tracker.last_seg_mask
                     lane_state = tracker.last_lane_state or {}
-                    if clean_mask is not None:
+                    if clean_mask is not None and preview_due:
                         edge_engine = tracker.edge_engine
                         lane_selector = tracker.lane_selector
                         diagnostics = {
@@ -540,6 +578,7 @@ class DebugRunner:
                             diagnostics=diagnostics,
                             timing=tracker.last_timing,
                         )
+                        self._last_preview_update_at = time.monotonic()
                     stage = "serial.vision_correction"
                     if self._vision_tx_enabled.is_set():
                         if lane_state.get("frame_dropped", False):
@@ -577,6 +616,9 @@ class DebugRunner:
         @app.route("/api/vision")
         def vision():
             view_name = request.args.get("view", "overlay")
+            pipeline = getattr(self._vision_tracker, "pipeline", None)
+            if pipeline is not None and hasattr(pipeline, "set_debug_view"):
+                pipeline.set_debug_view(view_name)
             try:
                 image = self._vision_preview_jpeg(view_name)
             except ValueError as error:

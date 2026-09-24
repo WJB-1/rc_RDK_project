@@ -12,7 +12,6 @@ import cv2
 import numpy as np
 
 from perception.algorithms.core.timing import reset_frame, block, get_frame_timings
-from perception.algorithms.core.mask_utils import clean_mask_by_cc
 from .line_detection import lines_to_mask
 
 from .types import LanePipelineResult
@@ -69,6 +68,7 @@ class LanePipeline:
         self.last_debug_capture = {}
         self.debug_render_enabled = bool(debug_cfg.get("render_enabled", False))
         self.debug_capture_enabled = bool(debug_cfg.get("capture_enabled", False))
+        self.debug_view_name = "overlay"
 
     # ------------------------------------------------------------------
     # 单帧处理
@@ -125,9 +125,7 @@ class LanePipeline:
                             (processing_input.shape[1], processing_input.shape[0]),
                             interpolation=cv2.INTER_NEAREST,
                         )
-                    semantic_mask, _ = clean_mask_by_cc(
-                        semantic_raw, min_bottom_y=semantic_raw.shape[0] - 10,
-                    )
+                    semantic_mask = semantic_raw
 
             with block("tracker.selector_analyze"):
                 if self.semantic_lane_detector is not None and semantic_mask is not None:
@@ -260,8 +258,10 @@ class LanePipeline:
     def _capture_debug(self, raw_frame, processing_input, lane_state, clean_mask,
                        bev_mask, original_view, renderer, semantic_mask=None, semantic_result=None,
                        ground_bev=None):
+        capture_started = time.perf_counter()
         edge_engine = self.edge_engine
         lane_selector = self.selector
+        requested_views = self._requested_debug_views(semantic_mask is not None)
         hough_view = raw_frame.copy()
         scale_x = hough_view.shape[1] / float(processing_input.shape[1])
         scale_y = hough_view.shape[0] / float(processing_input.shape[0])
@@ -278,9 +278,13 @@ class LanePipeline:
                 "binary": getattr(edge_engine, "last_binary", None),
                 "hough": hough_view,
                 "lane_bev": bev_mask,
-                "ground_bev": ground_bev if ground_bev is not None else renderer.render_new_ground_bev(),
+                "ground_bev": (
+                    ground_bev if ground_bev is not None else renderer.render_new_ground_bev()
+                ) if "ground_bev" in requested_views else None,
                 "overlay": original_view,
-                "parallel_groups": self._draw_parallel_groups(),
+                "parallel_groups": (
+                    self._draw_parallel_groups() if "parallel_groups" in requested_views else None
+                ),
             },
             "metrics": {
                 "raw_hough_count": (
@@ -304,6 +308,7 @@ class LanePipeline:
                 ),
             },
         }
+        debug_started = time.perf_counter()
         if semantic_mask is not None:
             semantic_debug = semantic_result or {
                 "edge_mask": cv2.Canny(np.asarray(semantic_mask, dtype=np.uint8), 50, 150),
@@ -318,16 +323,35 @@ class LanePipeline:
                 "accepted_bev_lines": [],
                 "rejected_bev_lines": [],
             }
-            capture["lane_views"].update({
-                "semantic_overlay": self._draw_semantic_overlay(processing_input, semantic_mask),
-                "semantic_bev": self._draw_semantic_bev(
+            if "semantic_overlay" in requested_views:
+                capture["lane_views"]["semantic_overlay"] = self._draw_semantic_overlay(
+                    processing_input, semantic_mask
+                )
+            if "semantic_bev" in requested_views:
+                capture["lane_views"]["semantic_bev"] = self._draw_semantic_bev(
                     semantic_debug, self.selector._matrix_for_profile("lane")
-                ),
-                "semantic_ground": self._draw_semantic_ground(renderer, semantic_result),
-            })
+                )
+            if "semantic_ground" in requested_views:
+                capture["lane_views"]["semantic_ground"] = self._draw_semantic_ground(
+                    renderer, semantic_result,
+                    base_view=ground_bev if ground_bev is not None else bev_mask,
+                )
+        capture["metrics"]["debug_render_ms"] = (time.perf_counter() - debug_started) * 1000.0
+        capture["metrics"]["debug_capture_total_ms"] = (time.perf_counter() - capture_started) * 1000.0
 
         self.last_debug_capture = capture
         return capture
+
+    def _requested_debug_views(self, semantic_frame):
+        requested = getattr(self, "debug_view_name", "overlay")
+        if semantic_frame and requested in {"overlay", "binary", "lane_bev", "ground_bev"}:
+            requested = {
+                "overlay": "semantic_overlay",
+                "binary": "semantic_overlay",
+                "lane_bev": "semantic_bev",
+                "ground_bev": "semantic_ground",
+            }[requested]
+        return {requested}
 
     def _semantic_lane_state(self, result):
         pair = result["pair"]
@@ -395,7 +419,9 @@ class LanePipeline:
 
     def _draw_parallel_groups(self):
         selector = self.selector
-        canvas = np.zeros((int(selector.canvas_h), int(selector.canvas_w), 3), dtype=np.uint8)
+        height = int(getattr(selector, "input_height", selector.canvas_h))
+        width = int(getattr(selector, "input_width", selector.canvas_w))
+        canvas = np.zeros((height, width, 3), dtype=np.uint8)
         groups = getattr(selector, "_last_parallel_groups", []) or []
         colors = ((0, 220, 255), (0, 255, 0), (255, 180, 0), (255, 0, 255))
         for group_index, group in enumerate(groups):
@@ -432,16 +458,19 @@ class LanePipeline:
             view[mask_pixels] = blended[mask_pixels]
         return view
 
-    def _draw_semantic_ground(self, renderer, semantic_result):
-        view = renderer.render_new_ground_bev()
+    def _draw_semantic_ground(self, renderer, semantic_result, base_view=None):
+        if base_view is None:
+            view = renderer.render_new_ground_bev()
+        else:
+            view = np.asarray(base_view).copy()
+            if view.ndim == 2:
+                view = cv2.cvtColor(view, cv2.COLOR_GRAY2BGR)
         projector = getattr(self.selector, "new_ground", None)
         if projector is None or not semantic_result:
             return view
         height, width = view.shape[:2]
         def ground_pixel(point):
-            x, y = point
-            return (int(round(40 + (x + 600.0) * 0.5)),
-                    int(round(height - 40 - y * 0.5)))
+            return renderer.ground_to_debug_pixel(*point)
         for line in semantic_result.get("image_lines", []):
             points = projector.source_line_to_ground(line)
             if len(points) < 2:
@@ -577,3 +606,7 @@ class LanePipeline:
     def set_debug_render_enabled(self, enabled: bool) -> bool:
         self.debug_render_enabled = bool(enabled)
         return self.debug_render_enabled
+
+    def set_debug_view(self, view_name: str) -> str:
+        self.debug_view_name = str(view_name)
+        return self.debug_view_name

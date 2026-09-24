@@ -86,7 +86,7 @@ def decode_yolov8_seg_outputs(predictions, prototypes, image_size,
 
     proto_height, proto_width = prototypes.shape[1:]
     proto_flat = prototypes.reshape(32, -1)
-    combined = np.zeros((image_height, image_width), dtype=np.uint8)
+    combined_probability = np.zeros((proto_height, proto_width), dtype=np.float32)
     detections = []
     for local_index in kept:
         coefficients = candidates[local_index, 5:37]
@@ -101,9 +101,12 @@ def decode_yolov8_seg_outputs(predictions, prototypes, image_size,
             cropped[mask_y1:mask_y2, mask_x1:mask_x2] = probability[mask_y1:mask_y2, mask_x1:mask_x2]
         else:
             cropped = probability
-        full_mask = cv2.resize(cropped, (image_width, image_height), interpolation=cv2.INTER_LINEAR)
-        combined[full_mask >= mask_threshold] = 255
+        np.maximum(combined_probability, cropped, out=combined_probability)
         detections.append({"box_xyxy": boxes[local_index].tolist(), "score": float(scores[selected][local_index])})
+    full_mask = cv2.resize(
+        combined_probability, (image_width, image_height), interpolation=cv2.INTER_LINEAR
+    )
+    combined = np.where(full_mask >= mask_threshold, 255, 0).astype(np.uint8)
     return combined, detections
 
 

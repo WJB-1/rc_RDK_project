@@ -1,9 +1,45 @@
 import unittest
 
 import numpy as np
+from unittest.mock import patch
+from unittest.mock import patch
 
 
 class YoloRoadSegTests(unittest.TestCase):
+    def test_multiple_masks_are_resized_as_one_union(self):
+        from perception.models.yolo_road_seg import decode_yolov8_seg_outputs
+
+        predictions = np.zeros((1, 37, 8400, 1), dtype=np.float32)
+        for index, center_x in enumerate((160.0, 480.0)):
+            predictions[0, :4, index, 0] = (center_x, 320.0, 120.0, 240.0)
+            predictions[0, 4, index, 0] = 0.9
+            predictions[0, 5 + index, index, 0] = 8.0
+        prototypes = np.zeros((1, 32, 160, 160), dtype=np.float32)
+        prototypes[0, 0, :, :80] = 1.0
+        prototypes[0, 1, :, 80:] = 1.0
+
+        with patch("perception.models.yolo_road_seg.cv2.resize", wraps=__import__("cv2").resize) as resize:
+            _, detections = decode_yolov8_seg_outputs(predictions, prototypes, (640, 640))
+
+        self.assertEqual(len(detections), 2)
+        self.assertEqual(resize.call_count, 1)
+    def test_multiple_masks_are_resized_as_one_union(self):
+        from perception.models.yolo_road_seg import decode_yolov8_seg_outputs
+
+        predictions = np.zeros((1, 37, 8400, 1), dtype=np.float32)
+        for index, center_x in enumerate((160.0, 480.0)):
+            predictions[0, :4, index, 0] = (center_x, 320.0, 120.0, 240.0)
+            predictions[0, 4, index, 0] = 0.9
+            predictions[0, 5 + index, index, 0] = 8.0
+        prototypes = np.zeros((1, 32, 160, 160), dtype=np.float32)
+        prototypes[0, 0, :, :80] = 1.0
+        prototypes[0, 1, :, 80:] = 1.0
+
+        with patch("perception.models.yolo_road_seg.cv2.resize", wraps=__import__("cv2").resize) as resize:
+            _, detections = decode_yolov8_seg_outputs(predictions, prototypes, (640, 640))
+
+        self.assertEqual(len(detections), 2)
+        self.assertEqual(resize.call_count, 1)
     def test_prototype_shape_reveals_square_compiled_model(self):
         from perception.models.yolo_road_seg import _prototype_spatial_shape
 

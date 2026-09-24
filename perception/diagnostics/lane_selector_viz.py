@@ -236,19 +236,28 @@ class LaneSelectorRenderer:
         return self._draw_original_ground_ipm(processing_frame)
 
     # ---------------- 新地面系视图 ----------------
+    def _new_ground_geometry(self):
+        width = int(getattr(self.s, "input_width", self.s.canvas_w))
+        height = int(getattr(self.s, "input_height", self.s.canvas_h))
+        margin = max(16, min(width, height) // 16)
+        x_min, x_max = -600.0, 600.0
+        scale = max((width - 2 * margin) / (x_max - x_min), 0.01)
+        y_min = 0.0
+        y_max = (height - 2 * margin) / scale
+        return width, height, margin, x_min, x_max, y_min, y_max, scale
+
+    def ground_to_debug_pixel(self, x, y):
+        _, height, margin, x_min, _, y_min, _, scale = self._new_ground_geometry()
+        u = margin + (x - x_min) * scale
+        v = height - margin - (y - y_min) * scale
+        return int(round(u)), int(round(v))
+
     def render_new_ground_bev(self):
         s = self.s
-        X_MIN, X_MAX = -600.0, 600.0
-        Y_MIN, Y_MAX = 0.0, 3000.0
-        SCALE = 0.5
-        MARGIN = 40
-        W = int(round((X_MAX - X_MIN) * SCALE)) + 2 * MARGIN
-        H = int(round((Y_MAX - Y_MIN) * SCALE)) + 2 * MARGIN
+        W, H, MARGIN, X_MIN, X_MAX, Y_MIN, Y_MAX, SCALE = self._new_ground_geometry()
 
         def g2b(x, y):
-            u = MARGIN + (x - X_MIN) * SCALE
-            v = H - MARGIN - (y - Y_MIN) * SCALE
-            return int(round(u)), int(round(v))
+            return self.ground_to_debug_pixel(x, y)
 
         canvas = np.zeros((H, W, 3), dtype=np.uint8)
         canvas[:] = (28, 28, 28)
@@ -296,7 +305,7 @@ class LaneSelectorRenderer:
 
         if center_fit is not None:
             a_c, b_c = center_fit
-            ys = np.linspace(50.0, Y_MAX - 100.0, 20)
+            ys = np.linspace(50.0, max(50.0, Y_MAX - 50.0), 20)
             cpts = [(a_c * y + b_c, y) for y in ys]
             draw_pts(cpts, (255, 0, 255), 2)
             mid = cpts[len(cpts) // 2]

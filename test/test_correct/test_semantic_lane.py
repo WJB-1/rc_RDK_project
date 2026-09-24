@@ -5,6 +5,38 @@ import numpy as np
 
 
 class SemanticLaneTests(unittest.TestCase):
+    def test_semantic_debug_capture_only_renders_requested_view(self):
+        from perception.algorithms.lane.pipeline import LanePipeline
+
+        pipeline = LanePipeline.__new__(LanePipeline)
+        pipeline.debug_view_name = "semantic_overlay"
+
+        self.assertEqual(pipeline._requested_debug_views(True), {"semantic_overlay"})
+
+    def test_boundary_roi_preserves_original_image_coordinates(self):
+        from perception.algorithms.lane.semantic_lane import SemanticLaneDetector
+
+        mask = np.zeros((480, 640), dtype=np.uint8)
+        mask[300:480, 220:421] = 255
+
+        _, lines, _, _ = SemanticLaneDetector(1.0, 640, 200)._extract_side_lines(mask)
+
+        self.assertEqual(len(lines), 2)
+        self.assertTrue(all(min(line["y1"], line["y2"]) >= 290 for line in lines))
+        self.assertTrue(any(abs((line["x1"] + line["x2"]) * 0.5 - 220) < 3 for line in lines))
+        self.assertTrue(any(abs((line["x1"] + line["x2"]) * 0.5 - 420) < 3 for line in lines))
+    def test_boundary_roi_preserves_original_image_coordinates(self):
+        from perception.algorithms.lane.semantic_lane import SemanticLaneDetector
+
+        mask = np.zeros((480, 640), dtype=np.uint8)
+        mask[300:480, 220:421] = 255
+
+        _, lines, _, _ = SemanticLaneDetector(1.0, 640, 200)._extract_side_lines(mask)
+
+        self.assertEqual(len(lines), 2)
+        self.assertTrue(all(min(line["y1"], line["y2"]) >= 290 for line in lines))
+        self.assertTrue(any(abs((line["x1"] + line["x2"]) * 0.5 - 220) < 3 for line in lines))
+        self.assertTrue(any(abs((line["x1"] + line["x2"]) * 0.5 - 420) < 3 for line in lines))
     def test_component_selector_keeps_largest_ground_touching_region(self):
         from perception.algorithms.lane.semantic_lane import SemanticLaneDetector
 
