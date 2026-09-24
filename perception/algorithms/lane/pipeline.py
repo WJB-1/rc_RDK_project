@@ -262,10 +262,10 @@ class LanePipeline:
         edge_engine = self.edge_engine
         lane_selector = self.selector
         requested_views = self._requested_debug_views(semantic_mask is not None)
-        hough_view = raw_frame.copy()
+        hough_view = raw_frame.copy() if "hough" in requested_views else None
         scale_x = hough_view.shape[1] / float(processing_input.shape[1])
         scale_y = hough_view.shape[0] / float(processing_input.shape[0])
-        for line in getattr(edge_engine, "last_lines", []) or []:
+        for line in (getattr(edge_engine, "last_lines", []) or []) if hough_view is not None else []:
             cv2.line(
                 hough_view,
                 (round(line["x1"] * scale_x), round(line["y1"] * scale_y)),
@@ -485,7 +485,9 @@ class LanePipeline:
             edge_mask = np.zeros((self.selector.canvas_h, self.selector.canvas_w), dtype=np.uint8)
         view = np.zeros((self.selector.canvas_h, self.selector.canvas_w, 3), dtype=np.uint8)
         for points in (result.get("bev_boundary_points") or {}).values():
-            pixels = np.round(points).astype(np.int32).reshape(-1, 1, 2)
+            points = np.asarray(points)
+            step = max(1, len(points) // 120)
+            pixels = np.round(points[::step]).astype(np.int32).reshape(-1, 1, 2)
             if len(pixels) >= 2:
                 cv2.polylines(view, [pixels], False, (255, 255, 255), 1, cv2.LINE_AA)
         for segment in result.get("rejected_bev_lines", []):

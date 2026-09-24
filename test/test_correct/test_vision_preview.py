@@ -213,6 +213,21 @@ class VisionPreviewTests(unittest.TestCase):
         self.assertEqual(response.mimetype, "image/jpeg")
         self.assertTrue(response.data.startswith(b"\xff\xd8"))
 
+    def test_semantic_view_waits_for_a_frame_rendered_for_that_view(self):
+        from runner import DebugRunner
+
+        runner = DebugRunner("loopback", 115200, 5002, serial_factory=lambda *args, **kwargs: None)
+        raw = np.zeros((120, 160, 3), dtype=np.uint8)
+        runner.update_vision_preview(
+            raw, np.zeros((120, 160), dtype=np.uint8), np.zeros((80, 80), dtype=np.uint8),
+            {}, 0.0, False, 2.0,
+            diagnostics={"debug_capture": {"lane_views": {"semantic_overlay": raw}}},
+        )
+
+        response = runner._create_app().test_client().get("/api/vision?view=semantic_bev")
+
+        self.assertEqual(response.status_code, 404)
+
     def test_status_exposes_vision_timing_and_lane_metrics(self):
         from runner import DebugRunner
 

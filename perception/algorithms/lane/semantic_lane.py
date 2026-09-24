@@ -95,12 +95,10 @@ class SemanticLaneDetector:
         binary = np.asarray(mask, dtype=np.uint8) > 0
         edge = np.zeros_like(np.asarray(mask, dtype=np.uint8))
         sides = {"left": [], "right": []}
-        occupied_y, occupied_x = np.nonzero(binary)
+        occupied_y = np.flatnonzero(np.any(binary, axis=1))
         if not len(occupied_y):
             return edge, [], 0, {}
         y_start, y_stop = int(occupied_y.min()), int(occupied_y.max()) + 1
-        x_start = max(0, int(occupied_x.min()) - 2)
-        x_stop = min(binary.shape[1], int(occupied_x.max()) + 3)
         for y in range(y_start, y_stop):
             xs = np.flatnonzero(binary[y])
             if not len(xs):
@@ -111,13 +109,7 @@ class SemanticLaneDetector:
             sides["left"].append((left_x, y))
             if right_x != left_x:
                 sides["right"].append((right_x, y))
-        roi_edge = edge[y_start:y_stop, x_start:x_stop]
-        raw_lines = detect_lines(roi_edge)
-        for line in raw_lines:
-            line["x1"] += x_start
-            line["x2"] += x_start
-            line["y1"] += y_start
-            line["y2"] += y_start
+        raw_lines = detect_lines(edge)
         merged_lines = merge_lines(raw_lines, min_length=self.min_segment_length_px)
         lines = []
         boundary_points = {}

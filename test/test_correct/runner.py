@@ -292,6 +292,9 @@ class DebugRunner:
             preview = self._vision_preview
             if preview is None:
                 return None
+            lane_views = (preview["diagnostics"].get("debug_capture") or {}).get("lane_views") or {}
+            if view_name.startswith("semantic_") and lane_views.get(view_name) is None:
+                return None
             timing = dict(preview["timing"])
             timing["encode_tx_ms"] = self._preview_encode_ms
             encode_started = time.perf_counter()
