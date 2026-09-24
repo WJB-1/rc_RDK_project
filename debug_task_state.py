@@ -75,9 +75,9 @@ def main(max_steps=200):
         print("=" * 78)
         print("STEP {:3d}  loop_streak={}".format(step, loop_streak))
         print("  world_pose  = {}".format(fmt_pose(world.pose)))
-        print("  logical     = {} hdg={}".format(
+        print("  logical     = {} yaw={}".format(
             fmt_location(logical.location if logical else None),
-            logical.heading_deg if logical else None,
+            logical.world_pose.yaw_deg if logical else None,
         ))
         print("  nav_state   = {}".format(nav_state))
         print("  substate    = {}".format(nav_substate))
