@@ -263,8 +263,8 @@ class LanePipeline:
         lane_selector = self.selector
         requested_views = self._requested_debug_views(semantic_mask is not None)
         hough_view = raw_frame.copy() if "hough" in requested_views else None
-        scale_x = hough_view.shape[1] / float(processing_input.shape[1])
-        scale_y = hough_view.shape[0] / float(processing_input.shape[0])
+        scale_x = raw_frame.shape[1] / float(processing_input.shape[1])
+        scale_y = raw_frame.shape[0] / float(processing_input.shape[0])
         for line in (getattr(edge_engine, "last_lines", []) or []) if hough_view is not None else []:
             cv2.line(
                 hough_view,

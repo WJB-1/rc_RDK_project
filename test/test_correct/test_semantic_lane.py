@@ -13,6 +13,32 @@ class SemanticLaneTests(unittest.TestCase):
 
         self.assertEqual(pipeline._requested_debug_views(True), {"semantic_overlay"})
 
+    def test_non_hough_debug_capture_does_not_require_hough_canvas(self):
+        from perception.algorithms.lane.pipeline import LanePipeline
+
+        pipeline = LanePipeline.__new__(LanePipeline)
+        pipeline.debug_view_name = "semantic_bev"
+        pipeline.edge_engine = type("Edge", (), {
+            "last_lines": [], "last_binary": None, "last_raw_lines": [],
+        })()
+        pipeline.selector = type("Selector", (), {
+            "final_pair": None, "_last_template_match_diagnostics": {},
+            "_matrix_for_profile": lambda self, profile: np.eye(3),
+        })()
+        pipeline._draw_semantic_bev = lambda result, matrix: np.zeros((40, 60, 3), dtype=np.uint8)
+
+        capture = pipeline._capture_debug(
+            raw_frame=np.zeros((80, 120, 3), dtype=np.uint8),
+            processing_input=np.zeros((40, 60, 3), dtype=np.uint8),
+            lane_state={}, clean_mask=np.zeros((40, 60), dtype=np.uint8),
+            bev_mask=np.zeros((40, 60, 3), dtype=np.uint8),
+            original_view=np.zeros((40, 60, 3), dtype=np.uint8),
+            renderer=object(), semantic_mask=np.zeros((40, 60), dtype=np.uint8),
+            semantic_result={"raw_hough_segment_count": 0}, ground_bev=None,
+        )
+
+        self.assertIn("semantic_bev", capture["lane_views"])
+
     def test_boundary_roi_preserves_original_image_coordinates(self):
         from perception.algorithms.lane.semantic_lane import SemanticLaneDetector
 
